@@ -1,4 +1,4 @@
-import { pgEnum, pgTable, text, timestamp, uuid, integer, jsonb, uniqueIndex, index, check } from "drizzle-orm/pg-core";
+import { boolean, pgEnum, pgTable, text, timestamp, uuid, integer, jsonb, uniqueIndex, index, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 export const roleEnum = pgEnum("user_role", ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "ADMIN"]);
@@ -9,6 +9,17 @@ export const caseSourceEnum = pgEnum("case_source", ["PICKER_REPORT", "TL_MANUAL
 export const shortPickLineStateEnum = pgEnum("short_pick_line_state", ["OPEN", "CHECKING", "FOUND", "RETRIEVING", "RESOLVED", "CANCELLED"]);
 export const checkTaskStatusEnum = pgEnum("check_task_status", ["AVAILABLE", "CLAIMED", "ASSIGNED", "COMPLETED"]);
 export const checkCompletionCodeEnum = pgEnum("check_completion_code", ["FOUND", "NOT_FOUND", "WRONG_LOCATION", "OTHER"]);
+export const notificationTypeEnum = pgEnum("notification_type", [
+  "RESPONSIBILITY_CASE_ASSIGNED", "RESPONSIBILITY_CHECK_ASSIGNED", "RESPONSIBILITY_RETRIEVAL_ASSIGNED",
+  "RESPONSIBILITY_NEW_LOCATION", "RESPONSIBILITY_CASE_REOPENED",
+  "NEW_SHORT_PICK", "CHECK_CLAIMED", "NEW_LOCATION", "TROUBLESHOOTER_MESSAGE",
+  "UNRESOLVED_OVER_THRESHOLD", "CASE_RESOLVED",
+]);
+export const notificationPreferenceKeyEnum = pgEnum("notification_preference_key", [
+  "NEW_SHORT_PICK", "CHECK_CLAIMED", "NEW_LOCATION", "TROUBLESHOOTER_MESSAGE",
+  "UNRESOLVED_OVER_THRESHOLD", "CASE_RESOLVED",
+]);
+export const pushOutboxStatusEnum = pgEnum("push_outbox_status", ["QUEUED", "PROCESSING", "SENT", "RETRY", "FAILED", "DISABLED"]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -165,3 +176,67 @@ export const caseMessages = pgTable("case_messages", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("case_messages_case_created_idx").on(table.caseId, table.createdAt),
   check("case_messages_text_length_check", sql`length(btrim(${table.message})) BETWEEN 1 AND 2000`)]);
+
+export const notifications = pgTable("notifications", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  recipientUserId: uuid("recipient_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  type: notificationTypeEnum("type").notNull(),
+  caseId: uuid("case_id").references(() => orderCases.id, { onDelete: "set null" }),
+  shortPickLineId: uuid("short_pick_line_id").references(() => shortPickLines.id, { onDelete: "set null" }),
+  payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
+  dedupeKey: text("dedupe_key"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  readAt: timestamp("read_at", { withTimezone: true }),
+  pushAttemptedAt: timestamp("push_attempted_at", { withTimezone: true }),
+}, (table) => [
+  index("notifications_recipient_created_idx").on(table.recipientUserId, table.createdAt),
+  index("notifications_recipient_unread_idx").on(table.recipientUserId, table.readAt),
+  uniqueIndex("notifications_recipient_dedupe_uq").on(table.recipientUserId, table.dedupeKey).where(sql`${table.dedupeKey} IS NOT NULL`),
+]);
+
+export const notificationPreferences = pgTable("notification_preferences", {
+  userId: uuid("user_id").notNull().references(() => users.id),
+  key: notificationPreferenceKeyEnum("key").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  thresholdMinutes: integer("threshold_minutes"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("notification_preferences_user_key_uq").on(table.userId, table.key),
+  check("notification_preferences_threshold_check", sql`${table.thresholdMinutes} IS NULL OR ${table.thresholdMinutes} BETWEEN 1 AND 1440`),
+]);
+
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  endpoint: text("endpoint").notNull(),
+  p256dh: text("p256dh").notNull(),
+  auth: text("auth").notNull(),
+  expirationTime: timestamp("expiration_time", { withTimezone: true }),
+  deviceLabel: text("device_label").notNull().default("Browser device"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  disabledAt: timestamp("disabled_at", { withTimezone: true }),
+}, (table) => [
+  uniqueIndex("push_subscriptions_endpoint_uq").on(table.endpoint),
+  index("push_subscriptions_user_active_idx").on(table.userId, table.disabledAt),
+  check("push_subscriptions_endpoint_https_check", sql`${table.endpoint} LIKE 'https://%'`),
+  check("push_subscriptions_device_label_length_check", sql`length(btrim(${table.deviceLabel})) BETWEEN 1 AND 100`),
+]);
+
+export const pushOutbox = pgTable("push_outbox", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  notificationId: uuid("notification_id").notNull().references(() => notifications.id, { onDelete: "cascade" }),
+  subscriptionId: uuid("subscription_id").notNull().references(() => pushSubscriptions.id, { onDelete: "cascade" }),
+  status: pushOutboxStatusEnum("status").notNull().default("QUEUED"),
+  attempts: integer("attempts").notNull().default(0),
+  availableAt: timestamp("available_at", { withTimezone: true }).notNull().defaultNow(),
+  leaseUntil: timestamp("lease_until", { withTimezone: true }),
+  lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("push_outbox_notification_subscription_uq").on(table.notificationId, table.subscriptionId),
+  index("push_outbox_claim_idx").on(table.status, table.availableAt, table.leaseUntil),
+  check("push_outbox_attempts_nonnegative_check", sql`${table.attempts} >= 0`),
+]);

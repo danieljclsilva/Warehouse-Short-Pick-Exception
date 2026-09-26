@@ -5,6 +5,7 @@ import { appSettings, auditLog, caseEvents, caseMessages, checkTasks, orderCases
 import { addLineSchema, CaseApiError, createCaseSchema, getCaseForUser, hasCurrentCaseResponsibility, normalizeOrderNumber } from "@/server/cases";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
+import { insertMonitoringNotifications, insertResponsibilityNotification } from "@/server/notifications";
 
 const activePhase = ne(orderCases.phase, "CLOSED");
 const terminalStates = new Set(["RESOLVED", "CANCELLED"]);
@@ -96,6 +97,8 @@ export async function createManualCase(auth: AuthContext, input: z.infer<typeof 
     await tx.insert(caseEvents).values({ caseId: record!.id, actorUserId: auth.user.id, eventType: "CASE_CREATED", details: { orderNumber, source, reason: input.reason, originalPickerUserId: input.originalPickerUserId ?? null } });
     await tx.insert(caseEvents).values({ caseId: record!.id, shortPickLineId: line!.id, actorUserId: auth.user.id, eventType: "SHORT_PICK_LINE_ADDED", details: { location: input.firstLine.location, sku: input.firstLine.sku, quantity: input.firstLine.quantity } });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CASE_CREATED", details: { caseId: record!.id, source, reason: input.reason } });
+    await insertMonitoringNotifications(tx, { type: "NEW_SHORT_PICK", caseId: record!.id, shortPickLineId: line!.id,
+      payload: { orderNumber, location: input.firstLine.location, sku: input.firstLine.sku, quantity: input.firstLine.quantity }, excludeUserId: auth.user.id });
     return { kind: "CREATED" as const, id: record!.id };
   });
   if (result.kind === "OPEN_EXISTS") throw new CaseApiError("OPEN_CASE_EXISTS", "An open case already exists", 409, { case: await getCaseForUser(auth, result.id) });
@@ -118,6 +121,8 @@ export async function addCaseMessage(auth: AuthContext, caseId: string, input: z
     }
     const [message] = await tx.insert(caseMessages).values({ caseId, shortPickLineId: input.lineId ?? null, authorUserId: auth.user.id, message: input.message }).returning();
     await tx.insert(caseEvents).values({ caseId, shortPickLineId: input.lineId ?? null, actorUserId: auth.user.id, eventType: "CASE_MESSAGE_ADDED", details: { messageId: message!.id } });
+    await insertMonitoringNotifications(tx, { type: "TROUBLESHOOTER_MESSAGE", caseId, shortPickLineId: input.lineId ?? null,
+      payload: { messageId: message!.id }, excludeUserId: auth.user.id });
     return { ...message!, authorName: auth.user.displayName };
   });
 }
@@ -132,6 +137,8 @@ export async function assignCaseResponsibility(auth: AuthContext, caseId: string
     await tx.update(orderCases).set({ currentCaseResponsibleUserId: userId, updatedAt: new Date(), version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
     await tx.insert(caseEvents).values({ caseId, actorUserId: auth.user.id, eventType: "RESPONSIBILITY_CHANGED", details: { previousUserId: record.currentCaseResponsibleUserId, responsibleUserId: userId } });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "RESPONSIBILITY_CHANGED", details: { caseId, previousUserId: record.currentCaseResponsibleUserId, userId } });
+    await insertResponsibilityNotification(tx, { recipientUserId: userId, type: "RESPONSIBILITY_CASE_ASSIGNED", caseId,
+      payload: { orderNumber: record.orderNumber, previousUserId: record.currentCaseResponsibleUserId } });
     return { caseId, responsibleUserId: userId };
   });
 }
@@ -159,6 +166,8 @@ export async function closeCase(auth: AuthContext, caseId: string, input: z.infe
     await tx.update(orderCases).set({ phase: "CLOSED", resolvedAt: now, resolvedByUserId: auth.user.id, currentCaseResponsibleUserId: auth.user.id, updatedAt: now, version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
     await tx.insert(caseEvents).values({ caseId, actorUserId: auth.user.id, eventType: "CASE_CLOSED", details: { administrativeResolutionReason: input.administrativeResolutionReason ?? null } });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CASE_CLOSED", details: { caseId, administrativeResolutionReason: input.administrativeResolutionReason ?? null } });
+    await insertMonitoringNotifications(tx, { type: "CASE_RESOLVED", caseId,
+      payload: { orderNumber: record.orderNumber, administrative: Boolean(input.administrativeResolutionReason) }, excludeUserId: auth.user.id });
     return { caseId, phase: "CLOSED" as const };
   });
 }
@@ -190,6 +199,8 @@ export async function reopenCase(auth: AuthContext, caseId: string, input: z.inf
     }
     await tx.insert(caseEvents).values({ caseId, actorUserId: auth.user.id, eventType: "CASE_REOPENED", details: { phase: input.phase, responsibleUserId: input.responsibleUserId, lineIds } });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CASE_REOPENED", details: { caseId, lineIds, responsibleUserId: input.responsibleUserId } });
+    await insertResponsibilityNotification(tx, { recipientUserId: input.responsibleUserId,
+      type: "RESPONSIBILITY_CASE_REOPENED", caseId, payload: { orderNumber: record.orderNumber, phase: input.phase, lineIds } });
     return { caseId, phase: input.phase };
   });
   return result;

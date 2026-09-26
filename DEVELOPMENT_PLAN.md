@@ -8,7 +8,7 @@ The [product requirements](./Warehouse_Short_Pick_Exception%20_System.md) are th
 | 2. Core case workflow | One open case per order, lines, duplicate history, picker lists, events | Complete locally; deployment pending |
 | 3. Checking and responsibility | Claim/assignment races, discovery, retrieval, staging, responsibility routing | Complete locally; deployment pending |
 | 4. Operations | TL dashboard, manual cases, troubleshooter, messages, close/reopen | Complete locally; deployment pending |
-| 5. Notifications | In-app notifications, preferences, Web Push | Pending |
+| 5. Notifications | In-app notifications, preferences, Web Push | Complete locally; deployment pending |
 | 6. Configuration | Editable values, immutable versions, case snapshots, audit | Pending |
 | 7. Analytics and export | Filters, duplicate analysis, CSV, PDF | Pending |
 | 8. Hardening | End-to-end tests, accessibility, performance, logging, security, deployment, backups | Pending |
@@ -59,9 +59,20 @@ The [product requirements](./Warehouse_Short_Pick_Exception%20_System.md) are th
 - A fresh `shortpick_phase4_verify` PostgreSQL database applied migrations `0000` through `0005`. Twenty-six tests across five test files passed; `db:check`, type checking, linting, and the production build passed.
 - Final browser QA covered the operations workflow at 796px and 390px, including manual staged case creation, administrative close and reopen, preserved event timeline, localized physical-state and line/retrieval labels, no horizontal overflow, and no browser warnings or errors.
 
+## Phase 5 acceptance
+
+- Responsibility notifications are persisted in-app and routed to the current responsible picker, checker, retriever, or troubleshooter. Monitoring notifications are routed only to active manager users with the required permissions and respect per-user preferences.
+- The notification center lists recent notifications, shows unread state, supports marking a notification read, and keeps responsibility notifications visible regardless of monitoring preferences.
+- Team Leaders, Assistants, and Admins with `VIEW_ALL_OPEN_CASES` can save monitoring preferences and the unresolved-case threshold. Preferences are validated and persisted by the server.
+- Browser push is device-specific and optional. Each notification is persisted in-app before any push delivery attempt; push failures do not fail the originating operational action. The browser UI supports enabling and removing individual devices when VAPID configuration and HTTPS are available.
+- A fresh `shortpick_phase5_verify` PostgreSQL database applied migrations `0000` through `0009`. Thirty-two tests across seven test files passed; `db:check`, type checking, linting, and the production build passed.
+- Final browser QA covered the notification list, mark-read action, preference save, unavailable push state, the `/` deep link with `section=notifications`, 390px and 796px layouts without horizontal overflow, and no browser warnings or errors.
+
 ## Known limitations
 
-- In-app notifications, editable configuration UI, analytics, and Railway service deployment remain later work. Check capacity is configurable through an authorized API; the broader settings interface belongs to Phase 6.
+- Editable configuration UI, analytics, and Railway service deployment remain later work. Check capacity is configurable through an authorized API; the broader settings interface belongs to Phase 6.
+- Web Push deployment requires HTTPS plus stable `PUSH_PUBLIC_KEY`, `PUSH_PRIVATE_KEY`, and `PUSH_SUBJECT` Railway variables. Live push delivery remains deployment QA; local acceptance covered the configured and unavailable states, while in-app notifications work without push.
+- Railway Phase 8 must schedule `npm run notifications:emit` for unresolved-case monitoring and `npm run push:deliver` for queued Web Push delivery. These periodic jobs are separate from the web service and are not yet provisioned.
 - The Team Leader duplicate-line override is enforced in the API; its management interface belongs to the later Team Leader operations phase.
 - Local migration and integration checks used a disposable PostgreSQL instance; production database and web services have not been provisioned.
 - Browser cookie retention caps can require a new login after a very long period without opening the app. Active sessions refresh their persistent HTTP-only cookie; server sessions have no time-based expiration.

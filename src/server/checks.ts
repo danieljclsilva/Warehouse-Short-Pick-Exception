@@ -5,6 +5,7 @@ import { appSettings, auditLog, caseEvents, checkTasks, orderCases, shortPickLin
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/cases";
+import { insertMonitoringNotifications, insertResponsibilityNotification } from "@/server/notifications";
 
 const CHECK_LIMIT_KEY = "MAX_SIMULTANEOUS_CHECKS_PER_CASE";
 
@@ -89,6 +90,8 @@ export async function claimCheck(auth: AuthContext, taskId: string) {
     await tx.update(orderCases).set({ updatedAt: now, version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
     await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType: "CHECK_CLAIMED", details: { taskId } });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CHECK_CLAIMED", details: { caseId, lineId: line.id, taskId } });
+    await insertMonitoringNotifications(tx, { type: "CHECK_CLAIMED", caseId, shortPickLineId: line.id,
+      payload: { taskId, checkerUserId: auth.user.id }, excludeUserId: auth.user.id });
     return { taskId, caseId, lineId: line.id, status: "CLAIMED" as const };
   });
 }
@@ -122,6 +125,8 @@ export async function assignCheck(auth: AuthContext, taskId: string, userId: str
     const eventType = isReassignment ? "CHECK_REASSIGNED" : "CHECK_ASSIGNED";
     await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType, details: { taskId, assignedToUserId: userId, previousUserId: task.assignedToUserId ?? task.claimedByUserId } });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: eventType, details: { caseId, lineId: line.id, taskId, userId } });
+    await insertResponsibilityNotification(tx, { recipientUserId: userId, type: "RESPONSIBILITY_CHECK_ASSIGNED", caseId,
+      shortPickLineId: line.id, payload: { taskId, orderNumber: record.orderNumber, reassigned: isReassignment } });
     return { taskId, caseId, lineId: line.id, status: "ASSIGNED" as const, assignedToUserId: userId };
   });
 }
@@ -141,7 +146,15 @@ export async function completeCheck(auth: AuthContext, taskId: string, input: z.
     const now = new Date();
     await tx.update(checkTasks).set({ status: "COMPLETED", completionCode: input.code, completedAt: now, updatedAt: now, version: sql`${checkTasks.version} + 1` }).where(eq(checkTasks.id, taskId));
     const found = input.code === "FOUND";
-    const retrievalUserId = found ? (record.phase === "PICKING" ? record.pickingUserId : hasAuthPermission(auth, "CONFIRM_RETRIEVAL") ? auth.user.id : null) : null;
+    const [stagedCaseResponsible] = record.phase === "STAGED" && record.currentCaseResponsibleUserId
+      ? await tx.select({ id: users.id, role: users.role, permissions: users.permissions }).from(users).where(and(eq(users.id, record.currentCaseResponsibleUserId), eq(users.status, "ACTIVE"))).limit(1)
+      : [];
+    const [stagedChecker] = record.phase === "STAGED" && (task.assignedToUserId ?? task.claimedByUserId)
+      ? await tx.select({ id: users.id, permissions: users.permissions }).from(users).where(eq(users.id, task.assignedToUserId ?? task.claimedByUserId!)).limit(1)
+      : [];
+    const stagedResponsible = stagedCaseResponsible?.role === "TROUBLESHOOTER" && stagedCaseResponsible.permissions.includes("CONFIRM_RETRIEVAL") ? stagedCaseResponsible.id
+      : stagedChecker?.permissions.includes("CONFIRM_RETRIEVAL") ? stagedChecker.id : null;
+    const retrievalUserId = found ? (record.phase === "PICKING" ? record.pickingUserId : stagedResponsible) : null;
     await tx.update(shortPickLines).set({
       state: found ? "FOUND" : "OPEN", currentResponsibleUserId: retrievalUserId,
       discoveredLocation: found ? input.discoveredLocation : null, discoveredByUserId: found ? auth.user.id : null,
@@ -153,6 +166,10 @@ export async function completeCheck(auth: AuthContext, taskId: string, input: z.
     if (found) {
       await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType: "NEW_LOCATION_REPORTED", details: { taskId, location: input.discoveredLocation } });
       await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType: "RETRIEVAL_ASSIGNED", details: { responsibleUserId: retrievalUserId, casePhase: record.phase } });
+      if (retrievalUserId) await insertResponsibilityNotification(tx, { recipientUserId: retrievalUserId, type: "RESPONSIBILITY_NEW_LOCATION",
+        caseId, shortPickLineId: line.id, payload: { taskId, orderNumber: record.orderNumber, discoveredLocation: input.discoveredLocation } });
+      await insertMonitoringNotifications(tx, { type: "NEW_LOCATION", caseId, shortPickLineId: line.id,
+        payload: { taskId, orderNumber: record.orderNumber, discoveredLocation: input.discoveredLocation }, excludeUserId: auth.user.id });
     }
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CHECK_COMPLETED", details: { caseId, lineId: line.id, taskId, code: input.code, discoveredLocation: input.discoveredLocation } });
     return { taskId, caseId, lineId: line.id, code: input.code, retrievalResponsibleUserId: retrievalUserId };

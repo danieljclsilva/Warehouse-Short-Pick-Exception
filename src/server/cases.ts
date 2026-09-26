@@ -4,6 +4,7 @@ import { getDb } from "@/db";
 import { auditLog, caseEvents, caseMessages, checkTasks, orderCases, shortPickLines, users } from "@/db/schema";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
+import { insertMonitoringNotifications } from "@/server/notifications";
 
 export const orderNumberSchema = z.string().trim().regex(/^\d+$/, "Order number must contain digits only").max(64);
 export const lookupOrderSchema = z.object({ orderNumber: orderNumberSchema });
@@ -114,6 +115,8 @@ export async function createCase(auth: AuthContext, rawOrderNumber: string, conf
     await tx.insert(caseEvents).values({ caseId: created!.id, actorUserId: auth.user.id, eventType: "CASE_CREATED", details: { orderNumber, source: "PICKER_REPORT" } });
     await tx.insert(caseEvents).values({ caseId: created!.id, shortPickLineId: line!.id, actorUserId: auth.user.id, eventType: "SHORT_PICK_LINE_ADDED", details: { lineId: line!.id, location: firstLine.location, sku: firstLine.sku, quantity: firstLine.quantity } });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CASE_CREATED", details: { caseId: created!.id, orderNumber, source: "PICKER_REPORT" } });
+    await insertMonitoringNotifications(tx, { type: "NEW_SHORT_PICK", caseId: created!.id, shortPickLineId: line!.id,
+      payload: { orderNumber, location: firstLine.location, sku: firstLine.sku, quantity: firstLine.quantity }, excludeUserId: auth.user.id });
     return { kind: "CREATED" as const, caseId: created!.id };
   });
   if (result.kind === "OPEN_EXISTS") {

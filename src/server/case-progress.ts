@@ -5,6 +5,7 @@ import { appSettings, auditLog, caseEvents, checkTasks, orderCases, shortPickLin
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/cases";
+import { insertResponsibilityNotification } from "@/server/notifications";
 
 export const stageCaseSchema = z.object({ confirmedPhysicalPlacement: z.literal(true) });
 export const retrievalSchema = z.object({ result: z.enum(["RETRIEVED", "FAILED"]) });
@@ -45,6 +46,8 @@ export async function stageCase(auth: AuthContext, caseId: string) {
       if (responsibleUserId !== line.retrievalResponsibleUserId) {
         await tx.update(shortPickLines).set({ retrievalResponsibleUserId: responsibleUserId, currentResponsibleUserId: responsibleUserId, updatedAt: now, version: sql`${shortPickLines.version} + 1` }).where(eq(shortPickLines.id, line.id));
         await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType: "RETRIEVAL_ASSIGNED", details: { responsibleUserId, previousUserId: line.retrievalResponsibleUserId, casePhase: "STAGED" } });
+        if (responsibleUserId) await insertResponsibilityNotification(tx, { recipientUserId: responsibleUserId, type: "RESPONSIBILITY_RETRIEVAL_ASSIGNED",
+          caseId, shortPickLineId: line.id, payload: { orderNumber: record.orderNumber, discoveredLocation: line.discoveredLocation, reassigned: true } });
       }
     }
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "ORDER_STAGED", details: { caseId, physicalLocation } });
@@ -66,6 +69,8 @@ export async function assignRetrieval(auth: AuthContext, caseId: string, lineId:
     await tx.update(shortPickLines).set({ retrievalResponsibleUserId: userId, currentResponsibleUserId: userId, retrievalState: "PENDING", updatedAt: now, version: sql`${shortPickLines.version} + 1` }).where(eq(shortPickLines.id, lineId));
     await tx.insert(caseEvents).values({ caseId, shortPickLineId: lineId, actorUserId: auth.user.id, eventType: "RETRIEVAL_ASSIGNED", details: { responsibleUserId: userId, previousUserId: line.retrievalResponsibleUserId, casePhase: record.phase } });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "RETRIEVAL_ASSIGNED", details: { caseId, lineId, userId } });
+    await insertResponsibilityNotification(tx, { recipientUserId: userId, type: "RESPONSIBILITY_RETRIEVAL_ASSIGNED", caseId, shortPickLineId: lineId,
+      payload: { orderNumber: record.orderNumber, discoveredLocation: line.discoveredLocation, reassigned: line.retrievalResponsibleUserId !== userId } });
     return { caseId, lineId, retrievalResponsibleUserId: userId };
   });
 }

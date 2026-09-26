@@ -12,16 +12,20 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:check": "drizzle-kit check",
+    "notifications:emit": "tsx scripts/emit-notifications.ts",
+    "push:deliver": "tsx scripts/deliver-push.ts",
     "seed:admin": "tsx scripts/seed-admin.ts",
     "recover:admin": "tsx scripts/recover-admin.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.2.1",
+    "@types/web-push": "^3.6.4",
     "drizzle-orm": "^0.45.3",
     "next": "16.3.6",
     "postgres": "^3.4.9",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "web-push": "^3.6.7",
     "zod": "^4.6.5"
   },
   "devDependencies": {

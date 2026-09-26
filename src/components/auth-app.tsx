@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { PickerWorkflow } from "@/components/picker-workflow";
 import { CheckWorkflow } from "@/components/check-workflow";
 import { OperationsDashboard } from "@/components/operations-dashboard";
+import { NotificationCenter } from "@/components/notification-center";
 import {
   getMessages,
   supportedLocales,
@@ -44,11 +45,12 @@ const navigation = [
   { key: "myWork", permission: ["REPORT_SHORT_PICK", "VIEW_OWN_CASES"] },
   { key: "checks", permission: ["VIEW_AVAILABLE_CHECKS", "CLAIM_CHECK", "COMPLETE_CHECK", "ASSIGN_CHECK", "REASSIGN_CHECK"] },
   { key: "openCases", permission: ["VIEW_ALL_OPEN_CASES"] },
+  { key: "notifications", permission: [] },
   { key: "invitations", permission: ["CREATE_INVITES"] },
 ] as const satisfies { key: MessageKey; permission: string[] }[];
 
 function navigationFor(user: AuthUser) {
-  return navigation.filter((item) => (item.key !== "myWork" || user.role === "PICKER") && item.permission.some((permission) => user.permissions.includes(permission)));
+  return navigation.filter((item) => item.key === "notifications" || ((item.key !== "myWork" || user.role === "PICKER") && item.permission.some((permission) => user.permissions.includes(permission))));
 }
 
 const roleKeys: Record<InviteRole | "ADMIN", MessageKey> = {
@@ -113,6 +115,9 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
   }
   if (name === "openCases" || name === "myWork") {
     return <svg {...common}><rect x="4" y="4" width="16" height="16" rx="2" /><path d="M8 9h8M8 13h8M8 17h4" /></svg>;
+  }
+  if (name === "notifications") {
+    return <svg {...common}><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z" /><path d="M10 21h4" /></svg>;
   }
   if (name === "checks") {
     return <svg {...common}><circle cx="12" cy="12" r="8.5" /><path d="m8.5 12 2.3 2.3 4.8-5" /></svg>;
@@ -183,8 +188,11 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             setUser(body.user);
             setLocale(body.user.preferredLanguage || "en");
             const firstSection = navigationFor(body.user).at(0);
-            setActiveSection(firstSection?.key ?? "workspace");
+            const requestedSection = window.location.pathname === "/"
+              && new URLSearchParams(window.location.search).get("section") === "notifications";
+            setActiveSection(requestedSection ? "notifications" : firstSection?.key ?? "workspace");
             setView("workspace");
+            if (requestedSection) router.replace("/", { scroll: false });
           }
         } else if (response.status !== 401 && !cancelled) {
           setSessionError(tr("sessionError"));
@@ -197,7 +205,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
     };
     void readSession();
     return () => { cancelled = true; };
-  }, [tr]);
+  }, [router, tr]);
 
   useEffect(() => {
     if (typeof window !== "undefined") window.localStorage.setItem("short-pick-language", locale);
@@ -212,6 +220,13 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
   const canUsePickerWorkflow = user?.role === "PICKER" && Boolean(user.permissions.some((permission) => permission === "REPORT_SHORT_PICK" || permission === "VIEW_OWN_CASES"));
   const canOverrideDuplicateLine = Boolean(user?.permissions.includes("OVERRIDE_DUPLICATE_SHORT_PICK_LINE"));
   const assignableRoles = user ? inviteRolesByActor[user.role] ?? [] : [];
+  const notificationCaseDestination: MessageKey | null = allowedNavigation.some((item) => item.key === "openCases")
+    ? "openCases"
+    : canUsePickerWorkflow
+      ? "myWork"
+      : allowedNavigation.some((item) => item.key === "checks")
+        ? "checks"
+        : null;
 
   const loadInvites = useCallback(async () => {
     try {
@@ -479,6 +494,13 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
                 canAssign={user.permissions.includes("ASSIGN_TROUBLESHOOTER")}
                 canClose={user.permissions.includes("RESOLVE_CASE")}
                 canReopen={user.permissions.includes("REOPEN_CASE")}
+              />
+            ) : activeSection === "notifications" ? (
+              <NotificationCenter
+                tr={tr}
+                locale={locale}
+                canManagePreferences={user.permissions.includes("VIEW_ALL_OPEN_CASES")}
+                onOpenCase={notificationCaseDestination ? () => setActiveSection(notificationCaseDestination) : undefined}
               />
             ) : canUsePickerWorkflow && activeSection === "myWork" ? (
               <PickerWorkflow locale={locale} tr={tr} userId={user.id} canReportShortPick={Boolean(user.permissions.includes("REPORT_SHORT_PICK"))} canViewOwnCases={Boolean(user.permissions.includes("VIEW_OWN_CASES"))} canOverrideDuplicateLine={canOverrideDuplicateLine} canStage={user.permissions.includes("MARK_ORDER_STAGED")} canConfirmRetrieval={user.permissions.includes("CONFIRM_RETRIEVAL")} canClose={user.permissions.includes("RESOLVE_CASE")} />
