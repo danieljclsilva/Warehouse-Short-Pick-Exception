@@ -22,6 +22,20 @@
       "when": 1790433158724,
       "tag": "0002_hesitant_red_hulk",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790434713644,
+      "tag": "0003_dashing_patch",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790434913585,
+      "tag": "0004_great_wind_dancer",
+      "breakpoints": true
     }
   ]
 }

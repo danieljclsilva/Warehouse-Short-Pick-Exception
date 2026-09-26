@@ -7,6 +7,8 @@ export const casePhaseEnum = pgEnum("case_phase", ["PICKING", "STAGED", "CLOSED"
 export const physicalStateEnum = pgEnum("physical_state", ["WITH_PICKER", "SHORT_PICK_HOLD", "OTHER_KNOWN_LOCATION", "UNKNOWN"]);
 export const caseSourceEnum = pgEnum("case_source", ["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "ADMIN_MANUAL"]);
 export const shortPickLineStateEnum = pgEnum("short_pick_line_state", ["OPEN", "CHECKING", "FOUND", "RETRIEVING", "RESOLVED", "CANCELLED"]);
+export const checkTaskStatusEnum = pgEnum("check_task_status", ["AVAILABLE", "CLAIMED", "ASSIGNED", "COMPLETED"]);
+export const checkCompletionCodeEnum = pgEnum("check_completion_code", ["FOUND", "NOT_FOUND", "WRONG_LOCATION", "OTHER"]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -123,9 +125,31 @@ export const shortPickLines = pgTable("short_pick_lines", {
   check("short_pick_lines_version_positive_check", sql`${table.version} > 0`),
 ]);
 
+export const checkTasks = pgTable("check_tasks", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  shortPickLineId: uuid("short_pick_line_id").notNull().references(() => shortPickLines.id),
+  status: checkTaskStatusEnum("status").notNull().default("AVAILABLE"),
+  claimedByUserId: uuid("claimed_by_user_id").references(() => users.id),
+  assignedToUserId: uuid("assigned_to_user_id").references(() => users.id),
+  claimedAt: timestamp("claimed_at", { withTimezone: true }),
+  assignedAt: timestamp("assigned_at", { withTimezone: true }),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  completionCode: checkCompletionCodeEnum("completion_code"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  version: integer("version").notNull().default(1),
+}, (table) => [
+  index("check_tasks_status_created_idx").on(table.status, table.createdAt),
+  index("check_tasks_assignee_status_idx").on(table.assignedToUserId, table.status),
+  uniqueIndex("check_tasks_one_active_per_line_uq").on(table.shortPickLineId).where(sql`${table.status} <> 'COMPLETED'`),
+  check("check_tasks_version_positive_check", sql`${table.version} > 0`),
+]);
+
 export const caseEvents = pgTable("case_events", {
   id: uuid("id").primaryKey().defaultRandom(),
   caseId: uuid("case_id").notNull().references(() => orderCases.id),
+  shortPickLineId: uuid("short_pick_line_id").references(() => shortPickLines.id),
   actorUserId: uuid("actor_user_id").references(() => users.id),
   eventType: text("event_type").notNull(),
   details: jsonb("details").$type<Record<string, unknown>>().notNull().default({}),

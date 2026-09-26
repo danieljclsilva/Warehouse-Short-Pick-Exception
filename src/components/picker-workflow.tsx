@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Locale, MessageKey } from "@/i18n/messages";
 
-type ShortPickLine = { id: string; location: string; sku: string; quantity: number; state: string };
+type ShortPickLine = { id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation?: string | null; retrievalState?: string; retrievalResponsibleUserId?: string | null };
 type OrderCase = {
   id: string;
   orderNumber: string;
@@ -17,11 +17,14 @@ type PriorCase = { id: string; createdAt: string; phase: string };
 type ApiError = { code?: string; error?: string; case?: OrderCase; history?: PriorCase[]; line?: ShortPickLine };
 
 type PickerWorkflowProps = {
+  userId: string;
   locale: Locale;
   tr: (key: MessageKey, values?: Record<string, string>) => string;
   canReportShortPick: boolean;
   canViewOwnCases: boolean;
   canOverrideDuplicateLine: boolean;
+  canStage: boolean;
+  canConfirmRetrieval: boolean;
 };
 
 function formatDate(value: string, locale: Locale) {
@@ -33,7 +36,8 @@ function statusKey(state: string, tr: PickerWorkflowProps["tr"]) {
   switch (state.toUpperCase()) {
     case "CHECKING": return tr("caseChecking");
     case "FOUND": return tr("caseFound");
-    case "RETRIEVED": return tr("caseRetrieved");
+    case "RETRIEVED":
+    case "RESOLVED": return tr("caseRetrieved");
     case "CLOSED": return tr("caseClosed");
     default: return tr("caseOpen");
   }
@@ -56,7 +60,7 @@ async function readBody(response: Response) {
   return (await response.json().catch(() => ({}))) as ApiError & { kind?: string; normalizedOrderNumber?: string; history?: PriorCase[]; cases?: CaseSummary[]; case?: OrderCase; line?: ShortPickLine };
 }
 
-export function PickerWorkflow({ locale, tr, canReportShortPick, canViewOwnCases, canOverrideDuplicateLine }: PickerWorkflowProps) {
+export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canViewOwnCases, canOverrideDuplicateLine, canStage, canConfirmRetrieval }: PickerWorkflowProps) {
   const [cases, setCases] = useState<CaseSummary[]>([]);
   const [loading, setLoading] = useState(canViewOwnCases);
   const [busy, setBusy] = useState(false);
@@ -73,6 +77,8 @@ export function PickerWorkflow({ locale, tr, canReportShortPick, canViewOwnCases
   const [sku, setSku] = useState("");
   const [quantity, setQuantity] = useState(1);
   const [duplicateLine, setDuplicateLine] = useState<ShortPickLine | null>(null);
+  const [stageConfirm, setStageConfirm] = useState(false);
+  const [actionNotice, setActionNotice] = useState("");
 
   const loadCases = useCallback(async () => {
     if (!canViewOwnCases) { setCases([]); setLoading(false); return; }
@@ -124,11 +130,38 @@ export function PickerWorkflow({ locale, tr, canReportShortPick, canViewOwnCases
       setActiveCase(body.case);
       setHistory([]);
       setShowLineForm(false);
+      setStageConfirm(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : tr("caseLoadError"));
     } finally {
       setBusy(false);
     }
+  };
+
+  const stageOrder = async () => {
+    if (!activeCase) return;
+    setBusy(true); setError(""); setActionNotice("");
+    try {
+      const response = await fetch(`/api/cases/${activeCase.id}/stage`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmedPhysicalPlacement: true }) });
+      if (!response.ok) throw new Error(tr("checkActionFailed"));
+      await openCase(activeCase.id);
+      await loadCases();
+      setActionNotice(tr("stagingSuccess"));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : tr("checkActionFailed")); }
+    finally { setBusy(false); setStageConfirm(false); }
+  };
+
+  const confirmLineRetrieval = async (lineId: string, result: "RETRIEVED" | "FAILED") => {
+    if (!activeCase) return;
+    setBusy(true); setError(""); setActionNotice("");
+    try {
+      const response = await fetch(`/api/cases/${activeCase.id}/lines/${lineId}/retrieve`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ result }) });
+      if (!response.ok) throw new Error(tr("checkActionFailed"));
+      await openCase(activeCase.id);
+      await loadCases();
+      setActionNotice(tr("checkActionSaved"));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : tr("checkActionFailed")); }
+    finally { setBusy(false); }
   };
 
   const submitOrder = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -140,6 +173,7 @@ export function PickerWorkflow({ locale, tr, canReportShortPick, canViewOwnCases
     }
     setBusy(true);
     setError("");
+    setActionNotice("");
     setHistory([]);
     setHistoryDraftOrder("");
     try {
@@ -208,6 +242,7 @@ export function PickerWorkflow({ locale, tr, canReportShortPick, canViewOwnCases
     }
     setBusy(true);
     setError("");
+    setActionNotice("");
     try {
       if (pendingOrder) { await createCase(); return; }
       if (!activeCase) return;
@@ -247,6 +282,7 @@ export function PickerWorkflow({ locale, tr, canReportShortPick, canViewOwnCases
     setSku("");
     setQuantity(1);
     setError("");
+    setActionNotice("");
     void loadCases();
   };
 
@@ -257,6 +293,7 @@ export function PickerWorkflow({ locale, tr, canReportShortPick, canViewOwnCases
   return (
     <div className="picker-workflow">
       {error && <p className="case-alert" role="alert">{error}</p>}
+      {actionNotice && <p className="check-notice" role="status">{actionNotice}</p>}
       {displayCase ? (
         <section className="case-detail" aria-labelledby="case-detail-title">
           <button className="case-back-button" type="button" onClick={closeDetail} disabled={busy}>‹ {tr("backToMyOrders")}</button>
@@ -270,6 +307,8 @@ export function PickerWorkflow({ locale, tr, canReportShortPick, canViewOwnCases
               <article className="case-line" key={line.id}>
                 <div className="case-line-primary"><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></div>
                 <span className={`case-line-status state-${line.state.toLowerCase()}`}>{statusKey(line.state, tr)}</span>
+                {line.discoveredLocation && <p className="case-discovered-location">{tr("newLocation")}: <strong>{line.discoveredLocation}</strong></p>}
+                {canConfirmRetrieval && line.state === "FOUND" && line.retrievalResponsibleUserId === userId && ["PENDING", "FAILED"].includes(line.retrievalState || "") && <div className="case-retrieval-actions"><button type="button" className="secondary-button" disabled={busy} onClick={() => void confirmLineRetrieval(line.id, "FAILED")}>{tr("reportRetrievalFailed")}</button><button type="button" className="primary-button" disabled={busy} onClick={() => void confirmLineRetrieval(line.id, "RETRIEVED")}>{tr("confirmRetrieved")}</button></div>}
               </article>
             ))}
           </div>
@@ -287,6 +326,7 @@ export function PickerWorkflow({ locale, tr, canReportShortPick, canViewOwnCases
               {!duplicateLine && <button className="primary-button" type="submit" disabled={busy}>{busy ? tr("savingLine") : tr("saveMissingItem")}</button>}
             </form>
           ))}
+          {activeCase && canStage && activeCase.phase === "PICKING" && <div className="case-stage-panel">{stageConfirm ? <><p>{tr("stagingConfirm")}</p><div className="case-stage-actions"><button className="secondary-button" type="button" onClick={() => setStageConfirm(false)} disabled={busy}>{tr("cancel")}</button><button className="primary-button" type="button" onClick={() => void stageOrder()} disabled={busy}>{tr("stagingConfirmButton")}</button></div></> : <button className="secondary-button" type="button" onClick={() => setStageConfirm(true)} disabled={busy}>{tr("stagingAction")}</button>}</div>}
         </section>
       ) : (
         <>

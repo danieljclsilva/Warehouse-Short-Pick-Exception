@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { closeDb, getDb } from "../src/db";
-import { auditLog, caseEvents, orderCases, sessions, shortPickLines, users } from "../src/db/schema";
+import { auditLog, caseEvents, checkTasks, orderCases, sessions, shortPickLines, users } from "../src/db/schema";
 import { defaultPermissions, type Role } from "../src/domain/permissions";
 import { createSession } from "../src/server/auth";
 import { hashPin } from "../src/server/security";
@@ -50,6 +50,8 @@ describeDatabase("Phase 2 case workflow against PostgreSQL", () => {
   afterAll(async () => {
     if (caseIds.length) {
       await getDb().delete(caseEvents).where(inArray(caseEvents.caseId, caseIds));
+      const lineRows = await getDb().select({ id: shortPickLines.id }).from(shortPickLines).where(inArray(shortPickLines.caseId, caseIds));
+      if (lineRows.length) await getDb().delete(checkTasks).where(inArray(checkTasks.shortPickLineId, lineRows.map((row) => row.id)));
       await getDb().delete(shortPickLines).where(inArray(shortPickLines.caseId, caseIds));
       await getDb().delete(orderCases).where(inArray(orderCases.id, caseIds));
     }

@@ -6,7 +6,7 @@ The [product requirements](./Warehouse_Short_Pick_Exception%20_System.md) are th
 | --- | --- | --- |
 | 1. Foundation | PostgreSQL, migrations, invite-only registration, PIN login, persistent revocable sessions, granular permissions, four-language base UI | Complete locally; deployment pending |
 | 2. Core case workflow | One open case per order, lines, duplicate history, picker lists, events | Complete locally; deployment pending |
-| 3. Checking and responsibility | Claim/assignment races, discovery, retrieval, staging, responsibility routing | Pending |
+| 3. Checking and responsibility | Claim/assignment races, discovery, retrieval, staging, responsibility routing | Complete locally; deployment pending |
 | 4. Operations | TL dashboard, manual cases, troubleshooter, messages, close/reopen | Pending |
 | 5. Notifications | In-app notifications, preferences, Web Push | Pending |
 | 6. Configuration | Editable values, immutable versions, case snapshots, audit | Pending |
@@ -40,9 +40,18 @@ The [product requirements](./Warehouse_Short_Pick_Exception%20_System.md) are th
 - Case creation and shortage-line mutations record immutable case events in their database transactions.
 - Phase 2 integration tests, type checking, linting, migration validation, production build, and mobile browser checks pass.
 
+## Phase 3 acceptance
+
+- Every reported shortage line receives its own available check task. Claiming and assigning are transactional; simultaneous claims produce one winner, assigned checks cannot be claimed, and only authorized managers can reassign.
+- The maximum active checks per case defaults to one and supports an authorized setting of 1–100 or unlimited. Changing capacity affects later claims without moving case ownership away from the picker.
+- Check completion records a structured outcome. Reporting a new location creates a separate retrieval obligation; it does not mark stock retrieved. A failed check leaves the line open for an authorized new task.
+- During picking, retrieval routes to the active picker. After the picker explicitly confirms physical placement in Short Pick / Hold, staged retrieval routes to the checker when permitted. A case-level lock serializes discovery and staging so either event order yields the staged routing.
+- Picker and checker workflows have responsive controls in all four supported languages. A mobile browser walkthrough covered staging, discovery, retrieval, and console errors.
+- A fresh PostgreSQL database applied all tracked migrations, then 22 tests passed. Type checking, linting, migration validation, and production build passed.
+
 ## Known limitations
 
-- Check tasks, staging, retrieval, closure, notifications, configuration, analytics, and Railway service deployment are later phases and are not yet implemented.
+- Closure/reopen, in-app notifications, editable configuration UI, analytics, and Railway service deployment are later phases. Check capacity is configurable through an authorized API; the broader settings interface belongs to Phase 6.
 - The Team Leader duplicate-line override is enforced in the API; its management interface belongs to the later Team Leader operations phase.
 - Local migration and integration checks used a disposable PostgreSQL instance; production database and web services have not been provisioned.
 - Browser cookie retention caps can require a new login after a very long period without opening the app. Active sessions refresh their persistent HTTP-only cookie; server sessions have no time-based expiration.

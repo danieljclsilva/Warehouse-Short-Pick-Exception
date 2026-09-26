@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { PickerWorkflow } from "@/components/picker-workflow";
+import { CheckWorkflow } from "@/components/check-workflow";
 import {
   getMessages,
   supportedLocales,
@@ -40,8 +41,13 @@ type AuthAppProps = { initialInviteToken?: string; initialView?: View };
 
 const navigation = [
   { key: "myWork", permission: ["REPORT_SHORT_PICK", "VIEW_OWN_CASES"] },
+  { key: "checks", permission: ["VIEW_AVAILABLE_CHECKS", "CLAIM_CHECK", "COMPLETE_CHECK", "ASSIGN_CHECK", "REASSIGN_CHECK"] },
   { key: "invitations", permission: ["CREATE_INVITES"] },
 ] as const satisfies { key: MessageKey; permission: string[] }[];
+
+function navigationFor(user: AuthUser) {
+  return navigation.filter((item) => (item.key !== "myWork" || user.role === "PICKER") && item.permission.some((permission) => user.permissions.includes(permission)));
+}
 
 const roleKeys: Record<InviteRole | "ADMIN", MessageKey> = {
   PICKER: "invitePicker",
@@ -174,7 +180,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
           if (!cancelled && body.user) {
             setUser(body.user);
             setLocale(body.user.preferredLanguage || "en");
-            const firstSection = navigation.find((item) => (item.key !== "myWork" || body.user?.role === "PICKER") && item.permission.some((permission) => body.user?.permissions.includes(permission)));
+            const firstSection = navigationFor(body.user).at(0);
             setActiveSection(firstSection?.key ?? "workspace");
             setView("workspace");
           }
@@ -197,8 +203,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
 
   const allowedNavigation = useMemo(() => {
     if (!user) return [];
-    const granted = new Set(user.permissions);
-    return navigation.filter((item) => (item.key !== "myWork" || user.role === "PICKER") && item.permission.some((permission) => granted.has(permission)));
+    return navigationFor(user);
   }, [user]);
 
   const canCreateInvites = user?.role === "ADMIN" || Boolean(user?.permissions.includes("CREATE_INVITES"));
@@ -275,8 +280,8 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
       }
       setUser(body.user);
       setLocale(body.user.preferredLanguage || locale);
-      const firstSection = navigation.find((item) => (item.key !== "myWork" || body.user?.role === "PICKER") && item.permission.some((permission) => body.user?.permissions.includes(permission)));
-      setActiveSection(firstSection?.key ?? "workspace");
+      const firstSection = navigationFor(body.user);
+      setActiveSection(firstSection.at(0)?.key ?? "workspace");
       setView("workspace");
       setPin("");
     } catch {
@@ -325,8 +330,8 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
       setInviteToken("");
       setPin("");
       setConfirmPin("");
-      const firstSection = navigation.find((item) => (item.key !== "myWork" || body.user?.role === "PICKER") && item.permission.some((permission) => body.user?.permissions.includes(permission)));
-      setActiveSection(firstSection?.key ?? "workspace");
+      const firstSection = navigationFor(body.user);
+      setActiveSection(firstSection.at(0)?.key ?? "workspace");
       setView("registered");
     } catch {
       setFormError(tr("unknownError"));
@@ -465,7 +470,9 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
           </header>
           <main className="workspace-content">
             {canUsePickerWorkflow && activeSection === "myWork" ? (
-              <PickerWorkflow locale={locale} tr={tr} canReportShortPick={Boolean(user.permissions.includes("REPORT_SHORT_PICK"))} canViewOwnCases={Boolean(user.permissions.includes("VIEW_OWN_CASES"))} canOverrideDuplicateLine={canOverrideDuplicateLine} />
+              <PickerWorkflow locale={locale} tr={tr} userId={user.id} canReportShortPick={Boolean(user.permissions.includes("REPORT_SHORT_PICK"))} canViewOwnCases={Boolean(user.permissions.includes("VIEW_OWN_CASES"))} canOverrideDuplicateLine={canOverrideDuplicateLine} canStage={user.permissions.includes("MARK_ORDER_STAGED")} canConfirmRetrieval={user.permissions.includes("CONFIRM_RETRIEVAL")} />
+            ) : activeSection === "checks" && allowedNavigation.some((item) => item.key === "checks") ? (
+              <CheckWorkflow tr={tr} canViewAvailable={user.permissions.includes("VIEW_AVAILABLE_CHECKS") || user.permissions.includes("ASSIGN_CHECK")} canClaim={user.permissions.includes("CLAIM_CHECK")} canComplete={user.permissions.includes("COMPLETE_CHECK")} canAssign={user.permissions.includes("ASSIGN_CHECK")} canReassign={user.permissions.includes("REASSIGN_CHECK")} canRetrieve={user.permissions.includes("CONFIRM_RETRIEVAL")} />
             ) : canCreateInvites && activeSection === "invitations" ? (
               <>
                 <div className="content-heading"><div><h1>{tr("inviteManagementTitle")}</h1><p>{tr("inviteManagementDescription")}</p></div></div>

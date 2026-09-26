@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { auditLog, caseEvents, orderCases, shortPickLines } from "@/db/schema";
+import { auditLog, caseEvents, checkTasks, orderCases, shortPickLines } from "@/db/schema";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 
@@ -19,7 +19,7 @@ export const createCaseSchema = z.object({
   confirmedHistoricalCaseIds: z.array(z.string().uuid()).max(1000).default([]),
 });
 
-export type CaseApiErrorCode = "OPEN_CASE_EXISTS" | "OPEN_CASE_NOT_ACCESSIBLE" | "HISTORICAL_CONFIRMATION_REQUIRED" | "DUPLICATE_LINE" | "CASE_NOT_FOUND" | "CASE_NOT_OPEN" | "CASE_ACCESS_DENIED" | "DUPLICATE_OVERRIDE_FORBIDDEN";
+export type CaseApiErrorCode = "OPEN_CASE_EXISTS" | "OPEN_CASE_NOT_ACCESSIBLE" | "HISTORICAL_CONFIRMATION_REQUIRED" | "DUPLICATE_LINE" | "CASE_NOT_FOUND" | "CASE_NOT_OPEN" | "CASE_ACCESS_DENIED" | "DUPLICATE_OVERRIDE_FORBIDDEN" | "CHECK_NOT_AVAILABLE" | "CHECK_CAPACITY_REACHED" | "RETRIEVAL_NOT_PENDING";
 export class CaseApiError extends Error {
   constructor(readonly code: CaseApiErrorCode, message: string, readonly status = 409, readonly data: Record<string, unknown> = {}) { super(message); }
 }
@@ -35,7 +35,7 @@ async function readCase(caseId: string) {
   const [record] = await db.select().from(orderCases).where(eq(orderCases.id, caseId)).limit(1);
   if (!record) return null;
   const lines = await db.select().from(shortPickLines).where(eq(shortPickLines.caseId, caseId)).orderBy(shortPickLines.createdAt, shortPickLines.id);
-  const events = await db.select({ id: caseEvents.id, actorUserId: caseEvents.actorUserId, eventType: caseEvents.eventType, details: caseEvents.details, createdAt: caseEvents.createdAt })
+  const events = await db.select({ id: caseEvents.id, shortPickLineId: caseEvents.shortPickLineId, actorUserId: caseEvents.actorUserId, eventType: caseEvents.eventType, details: caseEvents.details, createdAt: caseEvents.createdAt })
     .from(caseEvents).where(eq(caseEvents.caseId, caseId)).orderBy(caseEvents.createdAt, caseEvents.id);
   return { ...record, lines: lines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity })), events };
 }
@@ -80,8 +80,9 @@ export async function createCase(auth: AuthContext, rawOrderNumber: string, conf
       caseId: created!.id, originalLocation: firstLine.location, sku: firstLine.sku,
       missingQuantity: firstLine.quantity, reportedByUserId: auth.user.id,
     }).returning({ id: shortPickLines.id });
+    await tx.insert(checkTasks).values({ shortPickLineId: line!.id });
     await tx.insert(caseEvents).values({ caseId: created!.id, actorUserId: auth.user.id, eventType: "CASE_CREATED", details: { orderNumber, source: "PICKER_REPORT" } });
-    await tx.insert(caseEvents).values({ caseId: created!.id, actorUserId: auth.user.id, eventType: "SHORT_PICK_LINE_ADDED", details: { lineId: line!.id, location: firstLine.location, sku: firstLine.sku, quantity: firstLine.quantity } });
+    await tx.insert(caseEvents).values({ caseId: created!.id, shortPickLineId: line!.id, actorUserId: auth.user.id, eventType: "SHORT_PICK_LINE_ADDED", details: { lineId: line!.id, location: firstLine.location, sku: firstLine.sku, quantity: firstLine.quantity } });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CASE_CREATED", details: { caseId: created!.id, orderNumber, source: "PICKER_REPORT" } });
     return { kind: "CREATED" as const, caseId: created!.id };
   });
@@ -119,9 +120,10 @@ export async function addCaseLine(auth: AuthContext, caseId: string, input: z.in
       return { kind: "DUPLICATE" as const, duplicate, mayOverride };
     }
     const [line] = await tx.insert(shortPickLines).values({ caseId, originalLocation: normalizedLocation, sku: normalizedSku, missingQuantity: input.quantity, reportedByUserId: auth.user.id }).returning();
+    await tx.insert(checkTasks).values({ shortPickLineId: line!.id });
     await tx.update(orderCases).set({ updatedAt: new Date(), version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
     const details = { lineId: line!.id, location: normalizedLocation, sku: normalizedSku, quantity: input.quantity, ...(duplicate ? { duplicateOfLineId: duplicate.id, override: true } : {}) };
-    await tx.insert(caseEvents).values({ caseId, actorUserId: auth.user.id, eventType: duplicate ? "SHORT_PICK_LINE_DUPLICATE_OVERRIDE_USED" : "SHORT_PICK_LINE_ADDED", details });
+    await tx.insert(caseEvents).values({ caseId, shortPickLineId: line!.id, actorUserId: auth.user.id, eventType: duplicate ? "SHORT_PICK_LINE_DUPLICATE_OVERRIDE_USED" : "SHORT_PICK_LINE_ADDED", details });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: duplicate ? "SHORT_PICK_LINE_DUPLICATE_OVERRIDE_USED" : "SHORT_PICK_LINE_ADDED", details: { caseId, ...details } });
     return { kind: "CREATED" as const, line: line! };
   });
