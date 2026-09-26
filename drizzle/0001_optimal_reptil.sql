@@ -1,0 +1,1 @@
+ALTER TABLE "invites" ADD CONSTRAINT "invites_registration_bounds_check" CHECK ("invites"."max_registrations" > 0 AND "invites"."registrations_used" >= 0 AND "invites"."registrations_used" <= "invites"."max_registrations");

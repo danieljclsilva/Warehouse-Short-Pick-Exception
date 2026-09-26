@@ -1,0 +1,47 @@
+import { desc, eq, inArray, or } from "drizzle-orm";
+import { z } from "zod";
+import { getDb } from "@/db";
+import { auditLog, invites } from "@/db/schema";
+import { canManageRole, defaultPermissions as rolePermissions, permissionsAllowedForRole, PERMISSIONS, ROLES } from "@/domain/permissions";
+import { authenticate, hasAuthPermission } from "@/server/auth";
+import { createToken, digestToken } from "@/server/security";
+import { handleRouteError, jsonError, parseJson } from "@/server/http";
+
+const schema = z.object({
+  defaultRole: z.enum(ROLES).default("PICKER"),
+  defaultPermissions: z.array(z.enum(PERMISSIONS)).max(PERMISSIONS.length).optional(),
+  expiresInHours: z.number().int().min(1).max(720).default(8),
+  maxRegistrations: z.number().int().min(1).max(1000).default(1),
+});
+
+export async function GET(request: Request) {
+  const auth = await authenticate(request);
+  if (!auth) return jsonError("Unauthenticated", 401);
+  if (!hasAuthPermission(auth, "CREATE_INVITES")) return jsonError("Forbidden", 403);
+  const query = getDb().select({ id: invites.id, expiresAt: invites.expiresAt, maxRegistrations: invites.maxRegistrations, registrationsUsed: invites.registrationsUsed, defaultRole: invites.defaultRole, createdBy: invites.createdBy, createdAt: invites.createdAt, revokedAt: invites.revokedAt }).from(invites);
+  const rows = await (auth.user.role === "ASSISTANT"
+    ? query.where(or(eq(invites.createdBy, auth.user.id), inArray(invites.defaultRole, ["PICKER", "TROUBLESHOOTER"])))
+    : query).orderBy(desc(invites.createdAt)).limit(100);
+  return Response.json({ invites: rows });
+}
+
+export async function POST(request: Request) {
+  try {
+    const auth = await authenticate(request);
+    if (!auth) return jsonError("Unauthenticated", 401);
+    if (!hasAuthPermission(auth, "CREATE_INVITES")) return jsonError("Forbidden", 403);
+    const input = await parseJson(request, schema);
+    if (input.defaultRole === "ADMIN" || !canManageRole(auth.user.role, input.defaultRole)) return jsonError("Cannot create an invitation for that role", 403);
+    const defaultPermissions = input.defaultPermissions ?? rolePermissions(input.defaultRole);
+    if (!permissionsAllowedForRole(input.defaultRole, defaultPermissions)) return jsonError("Those permissions cannot be assigned to that role", 400);
+    const token = createToken();
+    const expiresAt = new Date(Date.now() + input.expiresInHours * 3_600_000);
+    const db = getDb();
+    const [created] = await db.transaction(async (tx) => {
+      const result = await tx.insert(invites).values({ tokenHash: digestToken(token), expiresAt, maxRegistrations: input.maxRegistrations, defaultRole: input.defaultRole, defaultPermissions: defaultPermissions ?? [], createdBy: auth.user.id }).returning({ id: invites.id });
+      await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "INVITE_CREATED", details: { inviteId: result[0]!.id, role: input.defaultRole, expiresAt: expiresAt.toISOString(), maxRegistrations: input.maxRegistrations } });
+      return result;
+    });
+    return Response.json({ invite: { id: created.id, token, registrationUrl: `/register?invite=${encodeURIComponent(token)}`, expiresAt, maxRegistrations: input.maxRegistrations, defaultRole: input.defaultRole, registrationsUsed: 0 } }, { status: 201 });
+  } catch (error) { return handleRouteError(error); }
+}
