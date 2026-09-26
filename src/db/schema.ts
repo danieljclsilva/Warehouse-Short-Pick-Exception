@@ -155,3 +155,13 @@ export const caseEvents = pgTable("case_events", {
   details: jsonb("details").$type<Record<string, unknown>>().notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("case_events_case_created_idx").on(table.caseId, table.createdAt)]);
+
+export const caseMessages = pgTable("case_messages", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  caseId: uuid("case_id").notNull().references(() => orderCases.id),
+  shortPickLineId: uuid("short_pick_line_id").references(() => shortPickLines.id),
+  authorUserId: uuid("author_user_id").notNull().references(() => users.id),
+  message: text("message").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("case_messages_case_created_idx").on(table.caseId, table.createdAt),
+  check("case_messages_text_length_check", sql`length(btrim(${table.message})) BETWEEN 1 AND 2000`)]);

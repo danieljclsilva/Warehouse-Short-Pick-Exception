@@ -2,6 +2,10 @@
 
 Internal web application for reporting and resolving warehouse short-pick exceptions. The full behavior is defined in the [product requirements](./Warehouse_Short_Pick_Exception%20_System.md); implementation progress is in [DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md).
 
+## Current implementation status
+
+Phases 1–4 are complete locally. The Phase 4 verification passed 26 tests across five files, database, type, lint, build, and responsive browser checks, including the final operations-drawer QA. Notifications, configuration, analytics, hardening, and Railway deployment remain pending.
+
 ## Local setup
 
 Requirements: Node.js, npm, and PostgreSQL.
@@ -14,6 +18,8 @@ Requirements: Node.js, npm, and PostgreSQL.
 6. Run `npm run dev` and open the URL in `APP_URL`.
 
 The application has no public self-registration. An administrator must create an invitation before another person can register.
+
+Team Leaders, Assistants, and Admins have an operations dashboard for reviewing cases, creating manual staged cases found in Short Pick / Hold, assigning responsibility, adding operational case messages, and closing or reopening cases. These actions are permission checked on the server; timeline events are immutable, and consequential assignments, closures, and reopenings also write audit entries.
 
 Authenticated activity refreshes the persistent HTTP-only session cookie. Server sessions have no scheduled expiry, but browsers can discard cookies after extended inactivity under their own retention limits.
 

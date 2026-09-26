@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { PickerWorkflow } from "@/components/picker-workflow";
 import { CheckWorkflow } from "@/components/check-workflow";
+import { OperationsDashboard } from "@/components/operations-dashboard";
 import {
   getMessages,
   supportedLocales,
@@ -42,6 +43,7 @@ type AuthAppProps = { initialInviteToken?: string; initialView?: View };
 const navigation = [
   { key: "myWork", permission: ["REPORT_SHORT_PICK", "VIEW_OWN_CASES"] },
   { key: "checks", permission: ["VIEW_AVAILABLE_CHECKS", "CLAIM_CHECK", "COMPLETE_CHECK", "ASSIGN_CHECK", "REASSIGN_CHECK"] },
+  { key: "openCases", permission: ["VIEW_ALL_OPEN_CASES"] },
   { key: "invitations", permission: ["CREATE_INVITES"] },
 ] as const satisfies { key: MessageKey; permission: string[] }[];
 
@@ -469,10 +471,19 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             <div className="topbar-actions"><LanguagePicker locale={locale} label={tr("language")} onChange={setLocale} /><span className="avatar avatar-small" aria-hidden="true">{user.displayName.slice(0, 1).toUpperCase()}</span></div>
           </header>
           <main className="workspace-content">
-            {canUsePickerWorkflow && activeSection === "myWork" ? (
-              <PickerWorkflow locale={locale} tr={tr} userId={user.id} canReportShortPick={Boolean(user.permissions.includes("REPORT_SHORT_PICK"))} canViewOwnCases={Boolean(user.permissions.includes("VIEW_OWN_CASES"))} canOverrideDuplicateLine={canOverrideDuplicateLine} canStage={user.permissions.includes("MARK_ORDER_STAGED")} canConfirmRetrieval={user.permissions.includes("CONFIRM_RETRIEVAL")} />
+            {activeSection === "openCases" && allowedNavigation.some((item) => item.key === "openCases") ? (
+              <OperationsDashboard
+                tr={tr}
+                canCreateManual={user.permissions.includes("CREATE_CASE_ON_BEHALF")}
+                canMessage={user.permissions.includes("ADD_CASE_MESSAGE")}
+                canAssign={user.permissions.includes("ASSIGN_TROUBLESHOOTER")}
+                canClose={user.permissions.includes("RESOLVE_CASE")}
+                canReopen={user.permissions.includes("REOPEN_CASE")}
+              />
+            ) : canUsePickerWorkflow && activeSection === "myWork" ? (
+              <PickerWorkflow locale={locale} tr={tr} userId={user.id} canReportShortPick={Boolean(user.permissions.includes("REPORT_SHORT_PICK"))} canViewOwnCases={Boolean(user.permissions.includes("VIEW_OWN_CASES"))} canOverrideDuplicateLine={canOverrideDuplicateLine} canStage={user.permissions.includes("MARK_ORDER_STAGED")} canConfirmRetrieval={user.permissions.includes("CONFIRM_RETRIEVAL")} canClose={user.permissions.includes("RESOLVE_CASE")} />
             ) : activeSection === "checks" && allowedNavigation.some((item) => item.key === "checks") ? (
-              <CheckWorkflow tr={tr} canViewAvailable={user.permissions.includes("VIEW_AVAILABLE_CHECKS") || user.permissions.includes("ASSIGN_CHECK")} canClaim={user.permissions.includes("CLAIM_CHECK")} canComplete={user.permissions.includes("COMPLETE_CHECK")} canAssign={user.permissions.includes("ASSIGN_CHECK")} canReassign={user.permissions.includes("REASSIGN_CHECK")} canRetrieve={user.permissions.includes("CONFIRM_RETRIEVAL")} />
+              <CheckWorkflow locale={locale} tr={tr} canViewAvailable={user.permissions.includes("VIEW_AVAILABLE_CHECKS") || user.permissions.includes("ASSIGN_CHECK")} canClaim={user.permissions.includes("CLAIM_CHECK")} canComplete={user.permissions.includes("COMPLETE_CHECK")} canAssign={user.permissions.includes("ASSIGN_CHECK")} canReassign={user.permissions.includes("REASSIGN_CHECK")} canRetrieve={user.permissions.includes("CONFIRM_RETRIEVAL")} canMessage={user.permissions.includes("ADD_CASE_MESSAGE")} />
             ) : canCreateInvites && activeSection === "invitations" ? (
               <>
                 <div className="content-heading"><div><h1>{tr("inviteManagementTitle")}</h1><p>{tr("inviteManagementDescription")}</p></div></div>

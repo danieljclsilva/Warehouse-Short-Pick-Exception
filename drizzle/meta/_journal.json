@@ -36,6 +36,13 @@
       "when": 1790434913585,
       "tag": "0004_great_wind_dancer",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790436072416,
+      "tag": "0005_wild_iron_fist",
+      "breakpoints": true
     }
   ]
 }

@@ -7,7 +7,7 @@ The [product requirements](./Warehouse_Short_Pick_Exception%20_System.md) are th
 | 1. Foundation | PostgreSQL, migrations, invite-only registration, PIN login, persistent revocable sessions, granular permissions, four-language base UI | Complete locally; deployment pending |
 | 2. Core case workflow | One open case per order, lines, duplicate history, picker lists, events | Complete locally; deployment pending |
 | 3. Checking and responsibility | Claim/assignment races, discovery, retrieval, staging, responsibility routing | Complete locally; deployment pending |
-| 4. Operations | TL dashboard, manual cases, troubleshooter, messages, close/reopen | Pending |
+| 4. Operations | TL dashboard, manual cases, troubleshooter, messages, close/reopen | Complete locally; deployment pending |
 | 5. Notifications | In-app notifications, preferences, Web Push | Pending |
 | 6. Configuration | Editable values, immutable versions, case snapshots, audit | Pending |
 | 7. Analytics and export | Filters, duplicate analysis, CSV, PDF | Pending |
@@ -49,9 +49,19 @@ The [product requirements](./Warehouse_Short_Pick_Exception%20_System.md) are th
 - Picker and checker workflows have responsive controls in all four supported languages. A mobile browser walkthrough covered staging, discovery, retrieval, and console errors.
 - A fresh PostgreSQL database applied all tracked migrations, then 22 tests passed. Type checking, linting, migration validation, and production build passed.
 
+## Phase 4 acceptance
+
+- Team Leaders, Assistants, and Admins can use the operations dashboard to review open and recently closed cases, filter the work list, inspect case details, and assign responsibility where permitted.
+- Team Leaders, Assistants, and Admins can create a manual case for a physical Short Pick / Hold, including order, location, SKU, quantity, reason, and optional picker context. Manual cases start in the staged physical-hold state and record a `CASE_CREATED` event with the manual source and reason.
+- Authorized operational users can add immutable case messages, and messages appear with structured events in the chronological case timeline. Pickers cannot use the general operations messaging flow.
+- Authorized users can close cases when all lines are terminal or provide an authorized administrative resolution. Closure records the resolver, `CASE_CLOSED` event, and audit entry in one transaction.
+- Team Leaders, Assistants, and Admins can reopen closed cases with an explicit active phase, responsibility, and line set. Reopening preserves closure history and records `CASE_REOPENED`, responsibility, and audit events atomically.
+- A fresh `shortpick_phase4_verify` PostgreSQL database applied migrations `0000` through `0005`. Twenty-six tests across five test files passed; `db:check`, type checking, linting, and the production build passed.
+- Final browser QA covered the operations workflow at 796px and 390px, including manual staged case creation, administrative close and reopen, preserved event timeline, localized physical-state and line/retrieval labels, no horizontal overflow, and no browser warnings or errors.
+
 ## Known limitations
 
-- Closure/reopen, in-app notifications, editable configuration UI, analytics, and Railway service deployment are later phases. Check capacity is configurable through an authorized API; the broader settings interface belongs to Phase 6.
+- In-app notifications, editable configuration UI, analytics, and Railway service deployment remain later work. Check capacity is configurable through an authorized API; the broader settings interface belongs to Phase 6.
 - The Team Leader duplicate-line override is enforced in the API; its management interface belongs to the later Team Leader operations phase.
 - Local migration and integration checks used a disposable PostgreSQL instance; production database and web services have not been provisioned.
 - Browser cookie retention caps can require a new login after a very long period without opening the app. Active sessions refresh their persistent HTTP-only cookie; server sessions have no time-based expiration.

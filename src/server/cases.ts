@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { auditLog, caseEvents, checkTasks, orderCases, shortPickLines } from "@/db/schema";
+import { auditLog, caseEvents, caseMessages, checkTasks, orderCases, shortPickLines, users } from "@/db/schema";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 
@@ -19,7 +19,7 @@ export const createCaseSchema = z.object({
   confirmedHistoricalCaseIds: z.array(z.string().uuid()).max(1000).default([]),
 });
 
-export type CaseApiErrorCode = "OPEN_CASE_EXISTS" | "OPEN_CASE_NOT_ACCESSIBLE" | "HISTORICAL_CONFIRMATION_REQUIRED" | "DUPLICATE_LINE" | "CASE_NOT_FOUND" | "CASE_NOT_OPEN" | "CASE_ACCESS_DENIED" | "DUPLICATE_OVERRIDE_FORBIDDEN" | "CHECK_NOT_AVAILABLE" | "CHECK_CAPACITY_REACHED" | "RETRIEVAL_NOT_PENDING";
+export type CaseApiErrorCode = "OPEN_CASE_EXISTS" | "OPEN_CASE_NOT_ACCESSIBLE" | "HISTORICAL_CONFIRMATION_REQUIRED" | "DUPLICATE_LINE" | "CASE_NOT_FOUND" | "CASE_NOT_OPEN" | "CASE_ACCESS_DENIED" | "DUPLICATE_OVERRIDE_FORBIDDEN" | "CHECK_NOT_AVAILABLE" | "CHECK_CAPACITY_REACHED" | "RETRIEVAL_NOT_PENDING" | "CASE_NOT_CLOSABLE" | "CASE_REOPEN_CONFLICT";
 export class CaseApiError extends Error {
   constructor(readonly code: CaseApiErrorCode, message: string, readonly status = 409, readonly data: Record<string, unknown> = {}) { super(message); }
 }
@@ -30,19 +30,49 @@ export function normalizeOrderNumber(value: string) {
 
 const isOpen = ne(orderCases.phase, "CLOSED");
 
-async function readCase(caseId: string) {
-  const db = getDb();
+async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: string, includeMessages: boolean) {
   const [record] = await db.select().from(orderCases).where(eq(orderCases.id, caseId)).limit(1);
   if (!record) return null;
   const lines = await db.select().from(shortPickLines).where(eq(shortPickLines.caseId, caseId)).orderBy(shortPickLines.createdAt, shortPickLines.id);
-  const events = await db.select({ id: caseEvents.id, shortPickLineId: caseEvents.shortPickLineId, actorUserId: caseEvents.actorUserId, eventType: caseEvents.eventType, details: caseEvents.details, createdAt: caseEvents.createdAt })
-    .from(caseEvents).where(eq(caseEvents.caseId, caseId)).orderBy(caseEvents.createdAt, caseEvents.id);
-  return { ...record, lines: lines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity })), events };
+  const checks = lines.length ? await db.select().from(checkTasks).where(inArray(checkTasks.shortPickLineId, lines.map((line) => line.id))).orderBy(checkTasks.createdAt, checkTasks.id) : [];
+  const events = await db.select({ id: caseEvents.id, shortPickLineId: caseEvents.shortPickLineId, actorUserId: caseEvents.actorUserId, actorName: users.displayName, eventType: caseEvents.eventType, details: caseEvents.details, createdAt: caseEvents.createdAt })
+    .from(caseEvents).leftJoin(users, eq(caseEvents.actorUserId, users.id)).where(eq(caseEvents.caseId, caseId)).orderBy(caseEvents.createdAt, caseEvents.id);
+  const messages = includeMessages ? await db.select({ id: caseMessages.id, shortPickLineId: caseMessages.shortPickLineId, authorUserId: caseMessages.authorUserId, authorName: users.displayName, message: caseMessages.message, createdAt: caseMessages.createdAt })
+    .from(caseMessages).innerJoin(users, eq(caseMessages.authorUserId, users.id)).where(eq(caseMessages.caseId, caseId)).orderBy(caseMessages.createdAt, caseMessages.id) : [];
+  const personIds = [record.pickingUserId, record.currentCaseResponsibleUserId].filter((id): id is string => Boolean(id));
+  const people = personIds.length ? await db.select({ id: users.id, displayName: users.displayName }).from(users).where(inArray(users.id, personIds)) : [];
+  const names = new Map(people.map((person) => [person.id, person.displayName]));
+  const unresolvedLines = lines.filter((line) => line.state !== "RESOLVED" && line.state !== "CANCELLED");
+  const checkingCount = lines.filter((line) => line.state === "CHECKING").length;
+  const currentIssue = lines.some((line) => line.retrievalState === "FAILED") ? "RETRIEVAL_FAILED"
+    : lines.some((line) => line.state === "FOUND") ? "RETRIEVAL_PENDING"
+      : checkingCount ? "CHECKING" : unresolvedLines.length ? "OPEN" : "READY_TO_CLOSE";
+  return { ...record, pickerName: record.pickingUserId ? names.get(record.pickingUserId) ?? null : null,
+    responsibleName: record.currentCaseResponsibleUserId ? names.get(record.currentCaseResponsibleUserId) ?? null : null,
+    missingCount: unresolvedLines.reduce((total, line) => total + line.missingQuantity, 0), checkingCount, currentIssue,
+    lines: lines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity })), checks, events, messages };
 }
 
 function canReadCase(auth: AuthContext, row: typeof orderCases.$inferSelect) {
-  return (row.phase !== "CLOSED" && hasAuthPermission(auth, "VIEW_ALL_OPEN_CASES"))
+  return hasAuthPermission(auth, "VIEW_ALL_OPEN_CASES")
     || (row.pickingUserId === auth.user.id && hasAuthPermission(auth, "VIEW_OWN_CASES"));
+}
+
+export async function hasCurrentCaseResponsibility(
+  db: Pick<ReturnType<typeof getDb>, "select">,
+  auth: AuthContext,
+  row: typeof orderCases.$inferSelect,
+) {
+  if (row.currentCaseResponsibleUserId === auth.user.id) return true;
+  const [retrieval] = await db.select({ id: shortPickLines.id }).from(shortPickLines).where(and(
+    eq(shortPickLines.caseId, row.id), eq(shortPickLines.retrievalResponsibleUserId, auth.user.id),
+    eq(shortPickLines.state, "FOUND"), inArray(shortPickLines.retrievalState, ["PENDING", "FAILED"]),
+  )).limit(1);
+  if (retrieval) return true;
+  const [check] = await db.select({ id: checkTasks.id }).from(checkTasks).innerJoin(shortPickLines, eq(checkTasks.shortPickLineId, shortPickLines.id))
+    .where(and(eq(shortPickLines.caseId, row.id), eq(shortPickLines.state, "CHECKING"), inArray(checkTasks.status, ["CLAIMED", "ASSIGNED"]),
+      sql`(${checkTasks.claimedByUserId} = ${auth.user.id} OR ${checkTasks.assignedToUserId} = ${auth.user.id})`)).limit(1);
+  return Boolean(check);
 }
 
 export async function lookupOrder(auth: AuthContext, rawOrderNumber: string) {
@@ -51,7 +81,7 @@ export async function lookupOrder(auth: AuthContext, rawOrderNumber: string) {
   const [open] = await db.select().from(orderCases).where(and(eq(orderCases.orderNumber, orderNumber), isOpen)).limit(1);
   if (open) {
     if (!canReadCase(auth, open)) throw new CaseApiError("OPEN_CASE_NOT_ACCESSIBLE", "An open case exists for this order, but you cannot access it", 403);
-    return { kind: "OPEN" as const, case: await readCase(open.id) };
+    return { kind: "OPEN" as const, case: await readCase(db, open.id, hasAuthPermission(auth, "VIEW_CASE_MESSAGES")) };
   }
   const history = await db.select({ id: orderCases.id, createdAt: orderCases.createdAt, phase: orderCases.phase })
     .from(orderCases).where(eq(orderCases.orderNumber, orderNumber)).orderBy(desc(orderCases.createdAt));
@@ -88,10 +118,10 @@ export async function createCase(auth: AuthContext, rawOrderNumber: string, conf
   });
   if (result.kind === "OPEN_EXISTS") {
     if (!result.accessible) throw new CaseApiError("OPEN_CASE_NOT_ACCESSIBLE", "An open case exists for this order, but you cannot access it", 403);
-    throw new CaseApiError("OPEN_CASE_EXISTS", "An open case already exists for this order", 409, { case: await readCase(result.caseId) });
+    throw new CaseApiError("OPEN_CASE_EXISTS", "An open case already exists for this order", 409, { case: await readCase(db, result.caseId, hasAuthPermission(auth, "VIEW_CASE_MESSAGES")) });
   }
   if (result.kind === "HISTORY_CONFIRMATION_REQUIRED") throw new CaseApiError("HISTORICAL_CONFIRMATION_REQUIRED", "Confirm the current historical cases before creating another case", 409, { history: result.history });
-  return readCase(result.caseId);
+  return readCase(db, result.caseId, hasAuthPermission(auth, "VIEW_CASE_MESSAGES"));
 }
 
 export async function addCaseLine(auth: AuthContext, caseId: string, input: z.infer<typeof addLineSchema>) {
@@ -136,10 +166,16 @@ export async function addCaseLine(auth: AuthContext, caseId: string, input: z.in
 }
 
 export async function getCaseForUser(auth: AuthContext, caseId: string) {
-  const [row] = await getDb().select().from(orderCases).where(eq(orderCases.id, caseId)).limit(1);
-  if (!row) throw new CaseApiError("CASE_NOT_FOUND", "Case not found", 404);
-  if (!canReadCase(auth, row)) throw new CaseApiError("CASE_ACCESS_DENIED", "You cannot access this case", 403);
-  return readCase(caseId);
+  return getDb().transaction(async (tx) => {
+    const [row] = await tx.select().from(orderCases).where(eq(orderCases.id, caseId)).for("update").limit(1);
+    if (!row) throw new CaseApiError("CASE_NOT_FOUND", "Case not found", 404);
+    if (!canReadCase(auth, row)) {
+      if (row.phase === "CLOSED" || !hasAuthPermission(auth, "VIEW_CASE_MESSAGES") || !(await hasCurrentCaseResponsibility(tx, auth, row))) {
+        throw new CaseApiError("CASE_ACCESS_DENIED", "You cannot access this case", 403);
+      }
+    }
+    return readCase(tx, caseId, hasAuthPermission(auth, "VIEW_CASE_MESSAGES"));
+  });
 }
 
 export async function listCasesForUser(auth: AuthContext, scope: "mine" | "active") {

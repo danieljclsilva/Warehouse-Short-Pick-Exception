@@ -25,6 +25,7 @@ type PickerWorkflowProps = {
   canOverrideDuplicateLine: boolean;
   canStage: boolean;
   canConfirmRetrieval: boolean;
+  canClose: boolean;
 };
 
 function formatDate(value: string, locale: Locale) {
@@ -60,7 +61,7 @@ async function readBody(response: Response) {
   return (await response.json().catch(() => ({}))) as ApiError & { kind?: string; normalizedOrderNumber?: string; history?: PriorCase[]; cases?: CaseSummary[]; case?: OrderCase; line?: ShortPickLine };
 }
 
-export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canViewOwnCases, canOverrideDuplicateLine, canStage, canConfirmRetrieval }: PickerWorkflowProps) {
+export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canViewOwnCases, canOverrideDuplicateLine, canStage, canConfirmRetrieval, canClose }: PickerWorkflowProps) {
   const [cases, setCases] = useState<CaseSummary[]>([]);
   const [loading, setLoading] = useState(canViewOwnCases);
   const [busy, setBusy] = useState(false);
@@ -161,6 +162,19 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
       await loadCases();
       setActionNotice(tr("checkActionSaved"));
     } catch (cause) { setError(cause instanceof Error ? cause.message : tr("checkActionFailed")); }
+    finally { setBusy(false); }
+  };
+
+  const closeResolvedCase = async () => {
+    if (!activeCase) return;
+    setBusy(true); setError(""); setActionNotice("");
+    try {
+      const response = await fetch(`/api/cases/${activeCase.id}/close`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (!response.ok) throw new Error(tr("caseActionFailed"));
+      await openCase(activeCase.id);
+      await loadCases();
+      setActionNotice(tr("caseClosedNotice"));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : tr("caseActionFailed")); }
     finally { setBusy(false); }
   };
 
@@ -327,6 +341,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
             </form>
           ))}
           {activeCase && canStage && activeCase.phase === "PICKING" && <div className="case-stage-panel">{stageConfirm ? <><p>{tr("stagingConfirm")}</p><div className="case-stage-actions"><button className="secondary-button" type="button" onClick={() => setStageConfirm(false)} disabled={busy}>{tr("cancel")}</button><button className="primary-button" type="button" onClick={() => void stageOrder()} disabled={busy}>{tr("stagingConfirmButton")}</button></div></> : <button className="secondary-button" type="button" onClick={() => setStageConfirm(true)} disabled={busy}>{tr("stagingAction")}</button>}</div>}
+          {activeCase && canClose && activeCase.phase !== "CLOSED" && activeCase.lines.length > 0 && activeCase.lines.every((line) => ["RESOLVED", "CANCELLED"].includes(line.state)) && <button className="secondary-button case-close-button" type="button" disabled={busy} onClick={() => void closeResolvedCase()}>{tr("closeCase")}</button>}
         </section>
       ) : (
         <>

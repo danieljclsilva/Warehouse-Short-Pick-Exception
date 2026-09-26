@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { closeDb, getDb } from "../src/db";
-import { appSettings, auditLog, caseEvents, checkTasks, orderCases, sessions, shortPickLines, users } from "../src/db/schema";
+import { appSettings, auditLog, caseEvents, caseMessages, checkTasks, orderCases, sessions, shortPickLines, users } from "../src/db/schema";
 import { defaultPermissions, type Role } from "../src/domain/permissions";
 import { createSession } from "../src/server/auth";
 import { hashPin } from "../src/server/security";
@@ -16,6 +16,8 @@ import { POST as retrieveRoute } from "../src/app/api/cases/[id]/lines/[lineId]/
 import { POST as requestCheckRoute } from "../src/app/api/cases/[id]/lines/[lineId]/checks/route";
 import { PUT as setCapacityRoute } from "../src/app/api/admin/check-capacity/route";
 import { GET as listChecksRoute } from "../src/app/api/checks/route";
+import { GET as caseDetailRoute } from "../src/app/api/cases/[id]/route";
+import { POST as messageRoute } from "../src/app/api/cases/[id]/messages/route";
 
 const describeDatabase = process.env.DATABASE_URL ? describe : describe.skip;
 const request = (path: string, method: string, body?: unknown, cookie?: string) => new Request(`http://localhost${path}`, {
@@ -58,6 +60,7 @@ describeDatabase("Phase 3 checking, responsibility and staging against PostgreSQ
 
   beforeAll(async () => {
     await getDb().select().from(checkTasks).limit(1);
+    await getDb().delete(appSettings).where(eq(appSettings.key, "MAX_SIMULTANEOUS_CHECKS_PER_CASE"));
     const picker = await makeUser("PICKER", "picker");
     const checkerOne = await makeUser("TROUBLESHOOTER", "checker-one");
     const checkerTwo = await makeUser("TROUBLESHOOTER", "checker-two");
@@ -77,6 +80,7 @@ describeDatabase("Phase 3 checking, responsibility and staging against PostgreSQ
     if (caseIds.length) {
       const db = getDb();
       await db.delete(caseEvents).where(inArray(caseEvents.caseId, caseIds));
+      await db.delete(caseMessages).where(inArray(caseMessages.caseId, caseIds));
       const lineIds = (await db.select({ id: shortPickLines.id }).from(shortPickLines).where(inArray(shortPickLines.caseId, caseIds))).map((row) => row.id);
       if (lineIds.length) await db.delete(checkTasks).where(inArray(checkTasks.shortPickLineId, lineIds));
       await db.delete(shortPickLines).where(inArray(shortPickLines.caseId, caseIds));
@@ -99,6 +103,21 @@ describeDatabase("Phase 3 checking, responsibility and staging against PostgreSQ
     const [task] = await getDb().select().from(checkTasks).where(eq(checkTasks.id, item.taskId));
     expect(task.status).toBe("CLAIMED");
     expect([checkerOneId, checkerTwoId]).toContain(task.claimedByUserId);
+  });
+
+  it("shows a case to its assigned checker without exposing unrelated cases", async () => {
+    const item = await makeCase("8");
+    const path = `/api/cases/${item.caseId}`;
+    expect((await caseDetailRoute(request(path, "GET", undefined, checkerOneCookie), { params: Promise.resolve({ id: item.caseId }) })).status).toBe(403);
+    expect((await claimRoute(request(`/api/checks/${item.taskId}/claim`, "POST", undefined, checkerOneCookie), { params: Promise.resolve({ id: item.taskId }) })).status).toBe(200);
+    const detail = await caseDetailRoute(request(path, "GET", undefined, checkerOneCookie), { params: Promise.resolve({ id: item.caseId }) });
+    expect(detail.status).toBe(200);
+    expect((await detail.json()).case.checks).toEqual(expect.arrayContaining([expect.objectContaining({ id: item.taskId })]));
+    expect((await caseDetailRoute(request(path, "GET", undefined, checkerTwoCookie), { params: Promise.resolve({ id: item.caseId }) })).status).toBe(403);
+    expect((await messageRoute(request(path + "/messages", "POST", { message: "Checking this line." }, checkerOneCookie), { params: Promise.resolve({ id: item.caseId }) })).status).toBe(201);
+    expect((await completeRoute(request("/api/checks/" + item.taskId + "/complete", "POST", { code: "NOT_FOUND" }, checkerOneCookie), { params: Promise.resolve({ id: item.taskId }) })).status).toBe(200);
+    expect((await caseDetailRoute(request(path, "GET", undefined, checkerOneCookie), { params: Promise.resolve({ id: item.caseId }) })).status).toBe(403);
+    expect((await messageRoute(request(path + "/messages", "POST", { message: "No longer assigned." }, checkerOneCookie), { params: Promise.resolve({ id: item.caseId }) })).status).toBe(403);
   });
 
   it("enforces per-case check capacity across distinct lines and allows an authorized configuration change", async () => {
