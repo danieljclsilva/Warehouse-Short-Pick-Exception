@@ -6,6 +6,7 @@ import { ROLES } from "@/domain/permissions";
 import { hashPin } from "@/server/security";
 import { createToken, digestToken, persistentSessionCookie } from "@/server/security";
 import { handleRouteError, jsonError, parseJson } from "@/server/http";
+import { canManageConfigurationForUser, getCurrentConfiguration } from "@/server/configuration";
 
 const schema = z.object({
   inviteToken: z.string().min(20).max(200),
@@ -32,13 +33,14 @@ export async function POST(request: Request) {
         permissions, preferredLanguage: input.preferredLanguage,
       }).returning();
       if (!user) return null;
+      const configuration = await getCurrentConfiguration(tx);
       await tx.update(invites).set({ registrationsUsed: sql`${invites.registrationsUsed} + 1` }).where(eq(invites.id, invite.id));
       await tx.insert(sessions).values({ userId: user.id, tokenHash: digestToken(sessionToken) });
       await tx.insert(auditLog).values({ actorUserId: user.id, targetUserId: user.id, action: "USER_REGISTERED", details: { inviteId: invite.id } });
-      return user;
+      return { user, canManageConfiguration: canManageConfigurationForUser(user, configuration.values) };
     });
     if (!registration) return jsonError("Invitation is invalid, expired, revoked, or exhausted", 400);
-    const user = { id: registration.id, displayName: registration.displayName, loginIdentifier: registration.identifier, role: registration.role, preferredLanguage: registration.preferredLanguage, permissions: registration.permissions };
-    return Response.json({ user, loginIdentifier: registration.identifier }, { status: 201, headers: { "Set-Cookie": persistentSessionCookie(sessionToken) } });
+    const user = { id: registration.user.id, displayName: registration.user.displayName, loginIdentifier: registration.user.identifier, role: registration.user.role, preferredLanguage: registration.user.preferredLanguage, permissions: registration.user.permissions, canManageConfiguration: registration.canManageConfiguration };
+    return Response.json({ user, loginIdentifier: registration.user.identifier }, { status: 201, headers: { "Set-Cookie": persistentSessionCookie(sessionToken) } });
   } catch (error) { return handleRouteError(error); }
 }

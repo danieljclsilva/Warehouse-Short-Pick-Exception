@@ -9,7 +9,7 @@ The [product requirements](./Warehouse_Short_Pick_Exception%20_System.md) are th
 | 3. Checking and responsibility | Claim/assignment races, discovery, retrieval, staging, responsibility routing | Complete locally; deployment pending |
 | 4. Operations | TL dashboard, manual cases, troubleshooter, messages, close/reopen | Complete locally; deployment pending |
 | 5. Notifications | In-app notifications, preferences, Web Push | Complete locally; deployment pending |
-| 6. Configuration | Editable values, immutable versions, case snapshots, audit | Pending |
+| 6. Configuration | Editable values, immutable versions, case snapshots, audit | Complete locally; deployment pending |
 | 7. Analytics and export | Filters, duplicate analysis, CSV, PDF | Pending |
 | 8. Hardening | End-to-end tests, accessibility, performance, logging, security, deployment, backups | Pending |
 
@@ -68,9 +68,18 @@ The [product requirements](./Warehouse_Short_Pick_Exception%20_System.md) are th
 - A fresh `shortpick_phase5_verify` PostgreSQL database applied migrations `0000` through `0009`. Thirty-two tests across seven test files passed; `db:check`, type checking, linting, and the production build passed.
 - Final browser QA covered the notification list, mark-read action, preference save, unavailable push state, the `/` deep link with `section=notifications`, 390px and 796px layouts without horizontal overflow, and no browser warnings or errors.
 
+## Phase 6 acceptance
+
+- Authorized Team Leaders and Admins can edit the 17 active operational configuration keys. Assistants can use the panel only when they have the permission and the Team Leader controlled Assistant access setting is enabled. The server remains the authorization boundary.
+- Configuration values are validated against documented bounds and defaults, including an 8-hour default invitation expiry. The maximum simultaneous checks setting supports a finite value or unlimited (`null`); resolution codes describe checker completion outcomes; environment-only secrets are not exposed in the panel.
+- Every successful change creates an immutable configuration version and audit record. The panel shows the current version number and ID, changed values, actor, and timestamp. A stale `expectedVersion` produces a conflict that requires reviewing the latest version before retrying.
+- New cases store their configuration version snapshot. Existing cases continue using the configuration version under which they were created, so later edits do not silently change historical behavior. The legacy configuration migration initializes the versioned settings from the previous policy values.
+- A fresh PostgreSQL database applied migrations `0000` through `0011`. Forty-three tests across eight test files passed; `db:check`, type checking, linting, and the production build passed.
+- Browser QA covered saving warning threshold v2 to v3 with immediate immutable history refresh, the unlimited check-capacity control, translated configuration labels, dashboard attention badges, 390px and 796px layouts without horizontal overflow, and no browser warnings or errors.
+
 ## Known limitations
 
-- Editable configuration UI, analytics, and Railway service deployment remain later work. Check capacity is configurable through an authorized API; the broader settings interface belongs to Phase 6.
+- Analytics and Railway service deployment remain later work. Configuration is versioned in PostgreSQL; login lockout policy is now managed there rather than through environment variables.
 - Web Push deployment requires HTTPS plus stable `PUSH_PUBLIC_KEY`, `PUSH_PRIVATE_KEY`, and `PUSH_SUBJECT` Railway variables. Live push delivery remains deployment QA; local acceptance covered the configured and unavailable states, while in-app notifications work without push.
 - Railway Phase 8 must schedule `npm run notifications:emit` for unresolved-case monitoring and `npm run push:deliver` for queued Web Push delivery. These periodic jobs are separate from the web service and are not yet provisioned.
 - The Team Leader duplicate-line override is enforced in the API; its management interface belongs to the later Team Leader operations phase.

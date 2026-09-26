@@ -7,6 +7,7 @@ import { PickerWorkflow } from "@/components/picker-workflow";
 import { CheckWorkflow } from "@/components/check-workflow";
 import { OperationsDashboard } from "@/components/operations-dashboard";
 import { NotificationCenter } from "@/components/notification-center";
+import { ConfigurationPanel } from "@/components/configuration-panel";
 import {
   getMessages,
   supportedLocales,
@@ -22,6 +23,7 @@ type AuthUser = {
   role: string;
   preferredLanguage: Locale;
   permissions: string[];
+  canManageConfiguration: boolean;
 };
 
 type AuthResponse = { user?: AuthUser; loginIdentifier?: string; error?: string };
@@ -47,10 +49,11 @@ const navigation = [
   { key: "openCases", permission: ["VIEW_ALL_OPEN_CASES"] },
   { key: "notifications", permission: [] },
   { key: "invitations", permission: ["CREATE_INVITES"] },
+  { key: "configuration", permission: ["MANAGE_CONFIGURATION"] },
 ] as const satisfies { key: MessageKey; permission: string[] }[];
 
 function navigationFor(user: AuthUser) {
-  return navigation.filter((item) => item.key === "notifications" || ((item.key !== "myWork" || user.role === "PICKER") && item.permission.some((permission) => user.permissions.includes(permission))));
+  return navigation.filter((item) => item.key === "notifications" || (item.key === "configuration" && user.canManageConfiguration === true) || ((item.key !== "myWork" || user.role === "PICKER") && item.permission.some((permission) => user.permissions.includes(permission))));
 }
 
 const roleKeys: Record<InviteRole | "ADMIN", MessageKey> = {
@@ -486,7 +489,9 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             <div className="topbar-actions"><LanguagePicker locale={locale} label={tr("language")} onChange={setLocale} /><span className="avatar avatar-small" aria-hidden="true">{user.displayName.slice(0, 1).toUpperCase()}</span></div>
           </header>
           <main className="workspace-content">
-            {activeSection === "openCases" && allowedNavigation.some((item) => item.key === "openCases") ? (
+            {activeSection === "configuration" && allowedNavigation.some((item) => item.key === "configuration") ? (
+              <ConfigurationPanel tr={tr} locale={locale} role={user.role} />
+            ) : activeSection === "openCases" && allowedNavigation.some((item) => item.key === "openCases") ? (
               <OperationsDashboard
                 tr={tr}
                 canCreateManual={user.permissions.includes("CREATE_CASE_ON_BEHALF")}

@@ -5,6 +5,8 @@ import { auditLog, caseEvents, caseMessages, checkTasks, orderCases, shortPickLi
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { insertMonitoringNotifications } from "@/server/notifications";
+import { getCurrentConfiguration } from "@/server/configuration";
+import { CaseApiError } from "@/server/case-errors";
 
 export const orderNumberSchema = z.string().trim().regex(/^\d+$/, "Order number must contain digits only").max(64);
 export const lookupOrderSchema = z.object({ orderNumber: orderNumberSchema });
@@ -20,10 +22,7 @@ export const createCaseSchema = z.object({
   confirmedHistoricalCaseIds: z.array(z.string().uuid()).max(1000).default([]),
 });
 
-export type CaseApiErrorCode = "OPEN_CASE_EXISTS" | "OPEN_CASE_NOT_ACCESSIBLE" | "HISTORICAL_CONFIRMATION_REQUIRED" | "DUPLICATE_LINE" | "CASE_NOT_FOUND" | "CASE_NOT_OPEN" | "CASE_ACCESS_DENIED" | "DUPLICATE_OVERRIDE_FORBIDDEN" | "CHECK_NOT_AVAILABLE" | "CHECK_CAPACITY_REACHED" | "RETRIEVAL_NOT_PENDING" | "CASE_NOT_CLOSABLE" | "CASE_REOPEN_CONFLICT";
-export class CaseApiError extends Error {
-  constructor(readonly code: CaseApiErrorCode, message: string, readonly status = 409, readonly data: Record<string, unknown> = {}) { super(message); }
-}
+export { CaseApiError } from "@/server/case-errors";
 
 export function normalizeOrderNumber(value: string) {
   return orderNumberSchema.parse(value);
@@ -106,7 +105,8 @@ export async function createCase(auth: AuthContext, rawOrderNumber: string, conf
     if (expectedIds.length !== confirmedIds.length || expectedIds.some((id, index) => id !== confirmedIds[index])) {
       return { kind: "HISTORY_CONFIRMATION_REQUIRED" as const, history };
     }
-    const [created] = await tx.insert(orderCases).values({ orderNumber, pickingUserId: auth.user.id, currentCaseResponsibleUserId: auth.user.id, createdByUserId: auth.user.id, source: "PICKER_REPORT" }).returning();
+    const configuration = await getCurrentConfiguration(tx);
+    const [created] = await tx.insert(orderCases).values({ orderNumber, pickingUserId: auth.user.id, currentCaseResponsibleUserId: auth.user.id, createdByUserId: auth.user.id, source: "PICKER_REPORT", configurationVersionId: configuration.id }).returning();
     const [line] = await tx.insert(shortPickLines).values({
       caseId: created!.id, originalLocation: firstLine.location, sku: firstLine.sku,
       missingQuantity: firstLine.quantity, reportedByUserId: auth.user.id,

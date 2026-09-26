@@ -1,13 +1,12 @@
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { appSettings, auditLog, caseEvents, checkTasks, orderCases, shortPickLines, users } from "@/db/schema";
+import { auditLog, caseEvents, checkTasks, configurationAudits, configurationVersions, orderCases, shortPickLines, users } from "@/db/schema";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/cases";
 import { insertMonitoringNotifications, insertResponsibilityNotification } from "@/server/notifications";
-
-const CHECK_LIMIT_KEY = "MAX_SIMULTANEOUS_CHECKS_PER_CASE";
+import { assertConfigurationPermission, getConfigurationVersion, getCurrentConfiguration, normalizeConfigurationValues } from "@/server/configuration";
 
 export const assignCheckSchema = z.object({ userId: z.string().uuid() });
 export const completeCheckSchema = z.object({
@@ -23,23 +22,24 @@ export const completeCheckSchema = z.object({
 });
 export const checkLimitSchema = z.object({ maxSimultaneousChecksPerCase: z.number().int().min(1).max(100).nullable() });
 
-function parseCheckLimit(value: unknown): number | null {
-  if (value === "UNLIMITED") return null;
-  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100 ? value : 1;
-}
-
 export async function getCheckLimit() {
-  const [setting] = await getDb().select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, CHECK_LIMIT_KEY)).limit(1);
-  return parseCheckLimit(setting ? setting.value : 1);
+  return (await getCurrentConfiguration()).values.MAX_SIMULTANEOUS_CHECKS_PER_CASE;
 }
 
 export async function setCheckLimit(auth: AuthContext, limit: number | null) {
-  if (!hasAuthPermission(auth, "MANAGE_CONFIGURATION")) throw new CaseApiError("CASE_ACCESS_DENIED", "Cannot change check capacity", 403);
   const value = checkLimitSchema.parse({ maxSimultaneousChecksPerCase: limit }).maxSimultaneousChecksPerCase;
-  const storedValue = value === null ? "UNLIMITED" : value;
   await getDb().transaction(async (tx) => {
-    await tx.insert(appSettings).values({ key: CHECK_LIMIT_KEY, value: storedValue }).onConflictDoUpdate({ target: appSettings.key, set: { value: storedValue, updatedAt: new Date() } });
-    await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CHECK_CAPACITY_CHANGED", details: { maxSimultaneousChecksPerCase: value } });
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext('short-pick-configuration'))`);
+    const [current] = await tx.select().from(configurationVersions).orderBy(desc(configurationVersions.version)).limit(1).for("update");
+    if (!current) throw new Error("Configuration has not been initialized; run migrations");
+    const previous = normalizeConfigurationValues(current.values);
+    assertConfigurationPermission(auth, previous);
+    const next = { ...previous, MAX_SIMULTANEOUS_CHECKS_PER_CASE: value };
+    if (previous.MAX_SIMULTANEOUS_CHECKS_PER_CASE === value) return;
+    const [created] = await tx.insert(configurationVersions).values({ version: current.version + 1, values: next, changedByUserId: auth.user.id }).returning({ id: configurationVersions.id, version: configurationVersions.version });
+    if (!created) throw new Error("Configuration version was not created");
+    await tx.insert(configurationAudits).values({ previousVersionId: current.id, newVersionId: created.id, changedByUserId: auth.user.id, changedValues: { MAX_SIMULTANEOUS_CHECKS_PER_CASE: value } });
+    await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CONFIGURATION_CHANGED", details: { previousVersion: current.version, newVersion: created.version, changedValues: { MAX_SIMULTANEOUS_CHECKS_PER_CASE: value }, source: "legacy_check_capacity_endpoint" } });
   });
   return value;
 }
@@ -74,12 +74,13 @@ export async function claimCheck(auth: AuthContext, taskId: string) {
   return getDb().transaction(async (tx) => {
     const [record] = await tx.select().from(orderCases).where(eq(orderCases.id, caseId)).for("update").limit(1);
     if (!record || record.phase === "CLOSED") throw new CaseApiError("CASE_NOT_OPEN", "Case is closed", 409);
+    const configuration = await getConfigurationVersion(tx, record.configurationVersionId);
+    if (configuration && !configuration.values.CLAIM_CHECKS_ENABLED) throw new CaseApiError("CASE_ACCESS_DENIED", "Claiming checks is disabled", 403);
     const [task] = await tx.select().from(checkTasks).where(eq(checkTasks.id, taskId)).for("update").limit(1);
     if (!task || task.status !== "AVAILABLE") throw new CaseApiError("CHECK_NOT_AVAILABLE", "Check is already claimed or assigned", 409);
     const [line] = await tx.select().from(shortPickLines).where(eq(shortPickLines.id, task.shortPickLineId)).limit(1);
     if (!line || line.state !== "OPEN") throw new CaseApiError("CHECK_NOT_AVAILABLE", "Line is not available for checking", 409);
-    const [setting] = await tx.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, CHECK_LIMIT_KEY)).limit(1);
-    const limit = parseCheckLimit(setting ? setting.value : 1);
+    const limit = configuration ? configuration.values.MAX_SIMULTANEOUS_CHECKS_PER_CASE : 1;
     const [active] = await tx.select({ count: sql<number>`count(*)::int` }).from(checkTasks)
       .innerJoin(shortPickLines, eq(checkTasks.shortPickLineId, shortPickLines.id))
       .where(and(eq(shortPickLines.caseId, caseId), inArray(checkTasks.status, ["CLAIMED", "ASSIGNED"])));
@@ -101,6 +102,7 @@ export async function assignCheck(auth: AuthContext, taskId: string, userId: str
   return getDb().transaction(async (tx) => {
     const [record] = await tx.select().from(orderCases).where(eq(orderCases.id, caseId)).for("update").limit(1);
     if (!record || record.phase === "CLOSED") throw new CaseApiError("CASE_NOT_OPEN", "Case is closed", 409);
+    const configuration = await getConfigurationVersion(tx, record.configurationVersionId);
     const [task] = await tx.select().from(checkTasks).where(eq(checkTasks.id, taskId)).for("update").limit(1);
     if (!task || task.status === "COMPLETED") throw new CaseApiError("CHECK_NOT_AVAILABLE", "Check task is complete", 409);
     const isReassignment = task.status !== "AVAILABLE";
@@ -111,8 +113,7 @@ export async function assignCheck(auth: AuthContext, taskId: string, userId: str
     if (!line) throw new CaseApiError("CASE_NOT_FOUND", "Line not found", 404);
     if (!isReassignment && line.state !== "OPEN") throw new CaseApiError("CHECK_NOT_AVAILABLE", "Line is not available for checking", 409);
     if (!isReassignment) {
-      const [setting] = await tx.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, CHECK_LIMIT_KEY)).limit(1);
-      const limit = parseCheckLimit(setting ? setting.value : 1);
+      const limit = configuration ? configuration.values.MAX_SIMULTANEOUS_CHECKS_PER_CASE : 1;
       const [active] = await tx.select({ count: sql<number>`count(*)::int` }).from(checkTasks)
         .innerJoin(shortPickLines, eq(checkTasks.shortPickLineId, shortPickLines.id))
         .where(and(eq(shortPickLines.caseId, caseId), inArray(checkTasks.status, ["CLAIMED", "ASSIGNED"])));
@@ -138,6 +139,8 @@ export async function completeCheck(auth: AuthContext, taskId: string, input: z.
   return getDb().transaction(async (tx) => {
     const [record] = await tx.select().from(orderCases).where(eq(orderCases.id, caseId)).for("update").limit(1);
     if (!record || record.phase === "CLOSED") throw new CaseApiError("CASE_NOT_OPEN", "Case is closed", 409);
+    const configuration = await getConfigurationVersion(tx, record.configurationVersionId);
+    if (configuration && !configuration.values.ALLOWED_RESOLUTION_CODES.includes(input.code)) throw new CaseApiError("CASE_ACCESS_DENIED", "This resolution code is disabled", 400);
     const [task] = await tx.select().from(checkTasks).where(eq(checkTasks.id, taskId)).for("update").limit(1);
     if (!task || !["CLAIMED", "ASSIGNED"].includes(task.status)) throw new CaseApiError("CHECK_NOT_AVAILABLE", "Check is not active", 409);
     if ((task.assignedToUserId ?? task.claimedByUserId) !== auth.user.id) throw new CaseApiError("CASE_ACCESS_DENIED", "This check belongs to another worker", 403);
@@ -154,7 +157,12 @@ export async function completeCheck(auth: AuthContext, taskId: string, input: z.
       : [];
     const stagedResponsible = stagedCaseResponsible?.role === "TROUBLESHOOTER" && stagedCaseResponsible.permissions.includes("CONFIRM_RETRIEVAL") ? stagedCaseResponsible.id
       : stagedChecker?.permissions.includes("CONFIRM_RETRIEVAL") ? stagedChecker.id : null;
-    const retrievalUserId = found ? (record.phase === "PICKING" ? record.pickingUserId : stagedResponsible) : null;
+    const checkerUserId = task.assignedToUserId ?? task.claimedByUserId;
+    const [pickingChecker] = record.phase === "PICKING" && configuration?.values.CHECKER_RETRIEVAL_DURING_PICKING_ENABLED && checkerUserId
+      ? await tx.select({ id: users.id, permissions: users.permissions }).from(users).where(and(eq(users.id, checkerUserId), eq(users.status, "ACTIVE"))).limit(1)
+      : [];
+    const pickingResponsible = pickingChecker?.permissions.includes("CONFIRM_RETRIEVAL") ? pickingChecker.id : record.pickingUserId;
+    const retrievalUserId = found ? (record.phase === "PICKING" ? pickingResponsible : configuration?.values.CHECKER_RETRIEVAL_WHEN_STAGED_ENABLED ? stagedResponsible : null) : null;
     await tx.update(shortPickLines).set({
       state: found ? "FOUND" : "OPEN", currentResponsibleUserId: retrievalUserId,
       discoveredLocation: found ? input.discoveredLocation : null, discoveredByUserId: found ? auth.user.id : null,

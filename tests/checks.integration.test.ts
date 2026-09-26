@@ -138,15 +138,27 @@ describeDatabase("Phase 3 checking, responsibility and staging against PostgreSQ
     const [firstState] = await getDb().select().from(checkTasks).where(eq(checkTasks.id, item.taskId));
     const pendingTask = firstState.status === "AVAILABLE" ? item.taskId : secondTask!.id;
     const pendingCookie = pendingTask === item.taskId ? checkerOneCookie : checkerTwoCookie;
-    expect((await claimRoute(request(`/api/checks/${pendingTask}/claim`, "POST", undefined, pendingCookie), { params: Promise.resolve({ id: pendingTask }) })).status).toBe(200);
-    expect((await getDb().select().from(shortPickLines).where(eq(shortPickLines.caseId, item.caseId))).map((line) => line.state)).toEqual(["CHECKING", "CHECKING"]);
-    const third = await addLineRoute(request(`/api/cases/${item.caseId}/lines`, "POST", { location: "03.cc.3", sku: "sku-c", quantity: 1 }, pickerCookie), { params: Promise.resolve({ id: item.caseId }) });
+    // The legacy endpoint creates a new immutable configuration version. The existing case keeps its original capacity of one.
+    expect((await claimRoute(request(`/api/checks/${pendingTask}/claim`, "POST", undefined, pendingCookie), { params: Promise.resolve({ id: pendingTask }) })).status).toBe(409);
+
+    // A case created after the change receives capacity two and can claim both lines.
+    const newCase = await makeCase("22");
+    const newLineResponse = await addLineRoute(request(`/api/cases/${newCase.caseId}/lines`, "POST", { location: "02.bb.3", sku: "sku-new", quantity: 1 }, pickerCookie), { params: Promise.resolve({ id: newCase.caseId }) });
+    expect(newLineResponse.status).toBe(201);
+    const newLine = (await newLineResponse.json()).line as { id: string };
+    const [newTask] = await getDb().select().from(checkTasks).where(eq(checkTasks.shortPickLineId, newLine.id));
+    expect((await claimRoute(request(`/api/checks/${newCase.taskId}/claim`, "POST", undefined, checkerOneCookie), { params: Promise.resolve({ id: newCase.taskId }) })).status).toBe(200);
+    expect((await claimRoute(request(`/api/checks/${newTask!.id}/claim`, "POST", undefined, checkerTwoCookie), { params: Promise.resolve({ id: newTask!.id }) })).status).toBe(200);
+    expect((await getDb().select().from(shortPickLines).where(eq(shortPickLines.caseId, newCase.caseId))).map((line) => line.state)).toEqual(["CHECKING", "CHECKING"]);
+
+    const third = await addLineRoute(request(`/api/cases/${newCase.caseId}/lines`, "POST", { location: "03.cc.3", sku: "sku-c", quantity: 1 }, pickerCookie), { params: Promise.resolve({ id: newCase.caseId }) });
     expect(third.status).toBe(201);
     const thirdLine = (await third.json()).line as { id: string };
     const [thirdTask] = await getDb().select().from(checkTasks).where(eq(checkTasks.shortPickLineId, thirdLine.id));
     expect((await claimRoute(request(`/api/checks/${thirdTask!.id}/claim`, "POST", undefined, checkerOneCookie), { params: Promise.resolve({ id: thirdTask!.id }) })).status).toBe(409);
     expect((await setCapacityRoute(request("/api/admin/check-capacity", "PUT", { maxSimultaneousChecksPerCase: null }, leaderCookie))).status).toBe(200);
-    expect((await claimRoute(request(`/api/checks/${thirdTask!.id}/claim`, "POST", undefined, checkerOneCookie), { params: Promise.resolve({ id: thirdTask!.id }) })).status).toBe(200);
+    // The case was created under capacity two; changing the current setting to unlimited does not migrate it.
+    expect((await claimRoute(request(`/api/checks/${thirdTask!.id}/claim`, "POST", undefined, checkerOneCookie), { params: Promise.resolve({ id: thirdTask!.id }) })).status).toBe(409);
   });
 
   it("keeps assigned checks unclaimable and records failed completion for a later retry", async () => {

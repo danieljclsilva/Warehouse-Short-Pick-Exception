@@ -6,12 +6,13 @@ import { canManageRole, defaultPermissions as rolePermissions, permissionsAllowe
 import { authenticate, hasAuthPermission } from "@/server/auth";
 import { createToken, digestToken } from "@/server/security";
 import { handleRouteError, jsonError, parseJson } from "@/server/http";
+import { getCurrentConfiguration } from "@/server/configuration";
 
 const schema = z.object({
   defaultRole: z.enum(ROLES).default("PICKER"),
   defaultPermissions: z.array(z.enum(PERMISSIONS)).max(PERMISSIONS.length).optional(),
-  expiresInHours: z.number().int().min(1).max(720).default(8),
-  maxRegistrations: z.number().int().min(1).max(1000).default(1),
+  expiresInHours: z.number().int().min(1).max(720).optional(),
+  maxRegistrations: z.number().int().min(1).max(1000).optional(),
 });
 
 export async function GET(request: Request) {
@@ -35,13 +36,16 @@ export async function POST(request: Request) {
     const defaultPermissions = input.defaultPermissions ?? rolePermissions(input.defaultRole);
     if (!permissionsAllowedForRole(input.defaultRole, defaultPermissions)) return jsonError("Those permissions cannot be assigned to that role", 400);
     const token = createToken();
-    const expiresAt = new Date(Date.now() + input.expiresInHours * 3_600_000);
     const db = getDb();
-    const [created] = await db.transaction(async (tx) => {
-      const result = await tx.insert(invites).values({ tokenHash: digestToken(token), expiresAt, maxRegistrations: input.maxRegistrations, defaultRole: input.defaultRole, defaultPermissions: defaultPermissions ?? [], createdBy: auth.user.id }).returning({ id: invites.id });
-      await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "INVITE_CREATED", details: { inviteId: result[0]!.id, role: input.defaultRole, expiresAt: expiresAt.toISOString(), maxRegistrations: input.maxRegistrations } });
-      return result;
+    const created = await db.transaction(async (tx) => {
+      const configuration = await getCurrentConfiguration(tx);
+      const expiresInHours = input.expiresInHours ?? configuration.values.INVITE_DEFAULT_EXPIRY_HOURS;
+      const maxRegistrations = input.maxRegistrations ?? configuration.values.INVITE_DEFAULT_MAX_REGISTRATIONS;
+      const expiresAt = new Date(Date.now() + expiresInHours * 3_600_000);
+      const result = await tx.insert(invites).values({ tokenHash: digestToken(token), expiresAt, maxRegistrations, defaultRole: input.defaultRole, defaultPermissions: defaultPermissions ?? [], createdBy: auth.user.id }).returning({ id: invites.id });
+      await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "INVITE_CREATED", details: { inviteId: result[0]!.id, role: input.defaultRole, expiresAt: expiresAt.toISOString(), maxRegistrations } });
+      return { result, expiresAt, maxRegistrations };
     });
-    return Response.json({ invite: { id: created.id, token, registrationUrl: `/register?invite=${encodeURIComponent(token)}`, expiresAt, maxRegistrations: input.maxRegistrations, defaultRole: input.defaultRole, registrationsUsed: 0 } }, { status: 201 });
+    return Response.json({ invite: { id: created.result[0]!.id, token, registrationUrl: `/register?invite=${encodeURIComponent(token)}`, expiresAt: created.expiresAt, maxRegistrations: created.maxRegistrations, defaultRole: input.defaultRole, registrationsUsed: 0 } }, { status: 201 });
   } catch (error) { return handleRouteError(error); }
 }

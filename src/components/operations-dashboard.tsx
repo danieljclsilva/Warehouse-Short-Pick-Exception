@@ -40,6 +40,7 @@ type CaseSummary = {
   lines?: CaseLine[];
   events?: CaseEvent[];
   messages?: CaseMessage[];
+  attentionLevel?: "NORMAL" | "WARNING" | "ATTENTION" | "CRITICAL";
   resolvedAt?: string | null;
   closedAt?: string | null;
 };
@@ -53,7 +54,7 @@ type ClosedCaseSummary = {
   responsibleName: string | null;
 };
 type Worker = { id: string; displayName: string; role: string; status: string };
-type DashboardResponse = { metrics?: Metrics; attentionThresholdMinutes?: number; cases?: CaseSummary[]; recentClosedCases?: ClosedCaseSummary[] };
+type DashboardResponse = { metrics?: Metrics; attentionThresholdMinutes?: number; thresholds?: { warning?: number; attention?: number; critical?: number }; cases?: CaseSummary[]; recentClosedCases?: ClosedCaseSummary[] };
 type HistoricalCase = { id: string; createdAt: string; phase: string };
 type CaseResponse = { case?: CaseSummary; history?: HistoricalCase[]; code?: string; users?: Worker[] };
 type Props = {
@@ -118,10 +119,21 @@ function physicalStateLabel(state: string | undefined, tr: Translator) {
   return tr(keys[state?.toUpperCase() ?? "UNKNOWN"] ?? "physicalUnknown");
 }
 
+function attentionLabel(level: CaseSummary["attentionLevel"], tr: Translator) {
+  const keys: Record<NonNullable<CaseSummary["attentionLevel"]>, MessageKey> = {
+    NORMAL: "attentionNormal",
+    WARNING: "attentionWarning",
+    ATTENTION: "attentionAttention",
+    CRITICAL: "attentionCritical",
+  };
+  return tr(keys[level ?? "NORMAL"]);
+}
+
 export function OperationsDashboard({ tr, canCreateManual, canMessage, canAssign, canClose, canReopen }: Props) {
   const dashboardRequestInFlight = useRef(false);
   const [metrics, setMetrics] = useState<Metrics>(EMPTY_METRICS);
   const [attentionThresholdMinutes, setAttentionThresholdMinutes] = useState(15);
+  const [thresholds, setThresholds] = useState({ warning: 5, attention: 10, critical: 15 });
   const [cases, setCases] = useState<CaseSummary[]>([]);
   const [recentClosedCases, setRecentClosedCases] = useState<ClosedCaseSummary[]>([]);
   const [workers, setWorkers] = useState<Worker[]>([]);
@@ -157,6 +169,7 @@ export function OperationsDashboard({ tr, canCreateManual, canMessage, canAssign
       const body = await readBody<DashboardResponse>(response);
       if (!response.ok) throw new Error(tr("operationsLoadFailed"));
       setMetrics({ ...EMPTY_METRICS, ...(body.metrics || {}) });
+      if (body.thresholds) setThresholds((current) => ({ ...current, ...body.thresholds }));
       if (body.attentionThresholdMinutes && body.attentionThresholdMinutes > 0) setAttentionThresholdMinutes(body.attentionThresholdMinutes);
       setCases(body.cases || []);
       setRecentClosedCases(body.recentClosedCases || []);
@@ -333,11 +346,12 @@ export function OperationsDashboard({ tr, canCreateManual, canMessage, canAssign
       {loading ? <p className={styles.empty}>{tr("loadingCases")}</p> : visibleCases.length ? <div className={styles.caseList}>
         {visibleCases.map((item) => {
           const age = clockNow === null ? 0 : Math.floor((clockNow - Date.parse(item.createdAt)) / 60_000);
-          const attentionAt = Math.max(1, Math.floor(attentionThresholdMinutes * 2 / 3));
-          const warningAt = Math.max(1, Math.floor(attentionThresholdMinutes / 3));
-          const attentionClass = age >= attentionThresholdMinutes ? styles.critical : age >= attentionAt ? styles.attention : age >= warningAt ? styles.warning : "";
+          const fallbackLevel: NonNullable<CaseSummary["attentionLevel"]> = age >= thresholds.critical ? "CRITICAL" : age >= thresholds.attention ? "ATTENTION" : age >= thresholds.warning ? "WARNING" : "NORMAL";
+          const level = item.attentionLevel ?? fallbackLevel;
+          const attentionClass = level === "CRITICAL" ? styles.critical : level === "ATTENTION" ? styles.attention : level === "WARNING" ? styles.warning : "";
+          const badgeClass = level === "CRITICAL" ? styles.attentionBadgeCritical : level === "ATTENTION" ? styles.attentionBadgeAttention : level === "WARNING" ? styles.attentionBadgeWarning : styles.attentionBadgeNormal;
           return <button type="button" className={`${styles.caseCard} ${attentionClass}`} key={item.id} onClick={() => void loadCase(item.id)}>
-            <div className={styles.caseTop}><strong>{tr("orderLabel")} {item.orderNumber}</strong><span className={`${styles.phase} ${item.phase === "STAGED" ? styles.phaseStaged : ""}`}>{item.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span></div>
+            <div className={styles.caseTop}><strong>{tr("orderLabel")} {item.orderNumber}</strong><span className={styles.caseBadges}><span className={`${styles.attentionBadge} ${badgeClass}`} aria-label={`${tr("attentionLevelLabel")}: ${attentionLabel(level, tr)}`}>{attentionLabel(level, tr)}</span><span className={`${styles.phase} ${item.phase === "STAGED" ? styles.phaseStaged : ""}`}>{item.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span></span></div>
             <div className={styles.caseData}><span><b>{item.missingCount}</b> {tr("missingItemsLabel")}</span><span>{item.checkingCount} {tr("checkingLabel")}</span><span className={styles.age}>{formatAge(item.createdAt)}</span></div>
             <div className={styles.caseFoot}><span>{item.pickerName || tr("unknownPicker")}</span><span className={styles.issue}>{item.currentIssue ? tr(`issue_${item.currentIssue}` as MessageKey) : tr("caseNoCurrentIssue")}</span><span>{item.responsibleName || "—"}</span></div>
           </button>;

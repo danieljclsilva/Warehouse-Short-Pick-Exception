@@ -21,6 +21,23 @@ export const notificationPreferenceKeyEnum = pgEnum("notification_preference_key
 ]);
 export const pushOutboxStatusEnum = pgEnum("push_outbox_status", ["QUEUED", "PROCESSING", "SENT", "RETRY", "FAILED", "DISABLED"]);
 
+export const configurationVersions = pgTable("configuration_versions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  version: integer("version").notNull(),
+  values: jsonb("values").$type<Record<string, unknown>>().notNull(),
+  changedByUserId: uuid("changed_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("configuration_versions_version_uq").on(table.version), index("configuration_versions_created_idx").on(table.createdAt)]);
+
+export const configurationAudits = pgTable("configuration_audits", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  previousVersionId: uuid("previous_version_id").references(() => configurationVersions.id),
+  newVersionId: uuid("new_version_id").notNull().references(() => configurationVersions.id),
+  changedByUserId: uuid("changed_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  changedAt: timestamp("changed_at", { withTimezone: true }).notNull().defaultNow(),
+  changedValues: jsonb("changed_values").$type<Record<string, unknown>>().notNull(),
+}, (table) => [index("configuration_audits_changed_idx").on(table.changedAt), index("configuration_audits_new_version_idx").on(table.newVersionId)]);
+
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   identifier: text("identifier").notNull(),
@@ -96,6 +113,7 @@ export const orderCases = pgTable("order_cases", {
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
   resolvedByUserId: uuid("resolved_by_user_id").references(() => users.id),
   reopenedAt: timestamp("reopened_at", { withTimezone: true }),
+  configurationVersionId: uuid("configuration_version_id").notNull().references(() => configurationVersions.id),
   version: integer("version").notNull().default(1),
 }, (table) => [
   index("order_cases_order_created_idx").on(table.orderNumber, table.createdAt),

@@ -1,11 +1,12 @@
 import { and, desc, eq, gte, inArray, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { appSettings, auditLog, caseEvents, caseMessages, checkTasks, orderCases, shortPickLines, users } from "@/db/schema";
+import { auditLog, caseEvents, caseMessages, checkTasks, configurationVersions, orderCases, shortPickLines, users } from "@/db/schema";
 import { addLineSchema, CaseApiError, createCaseSchema, getCaseForUser, hasCurrentCaseResponsibility, normalizeOrderNumber } from "@/server/cases";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { insertMonitoringNotifications, insertResponsibilityNotification } from "@/server/notifications";
+import { getCurrentConfiguration, normalizeConfigurationValues } from "@/server/configuration";
 
 const activePhase = ne(orderCases.phase, "CLOSED");
 const terminalStates = new Set(["RESOLVED", "CANCELLED"]);
@@ -31,10 +32,15 @@ export async function getOperationsDashboard(auth: AuthContext) {
   const db = getDb();
   const now = new Date();
   const today = new Date(now); today.setHours(0, 0, 0, 0);
-  const [setting] = await db.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, "DASHBOARD_ATTENTION_CRITICAL_MINUTES")).limit(1);
-  const threshold = typeof setting?.value === "number" && Number.isFinite(setting.value) && setting.value > 0 ? setting.value : 15;
+  const configuration = (await getCurrentConfiguration(db)).values;
+  const threshold = configuration.CRITICAL_THRESHOLD_MINUTES;
   const rows = await db.select().from(orderCases).where(activePhase).orderBy(orderCases.createdAt).limit(500);
   const closedRows = await db.select().from(orderCases).where(eq(orderCases.phase, "CLOSED")).orderBy(desc(orderCases.resolvedAt)).limit(50);
+  const configurationVersionIds = [...new Set(rows.map((row) => row.configurationVersionId))];
+  const versionRows = configurationVersionIds.length
+    ? await db.select({ id: configurationVersions.id, values: configurationVersions.values }).from(configurationVersions).where(inArray(configurationVersions.id, configurationVersionIds))
+    : [];
+  const caseConfigurations = new Map(versionRows.map((row) => [row.id, normalizeConfigurationValues(row.values)]));
   const ids = rows.map((row) => row.id);
   const lines = ids.length ? await db.select().from(shortPickLines).where(inArray(shortPickLines.caseId, ids)) : [];
   const userIds = [...new Set([...rows, ...closedRows].flatMap((row) => [row.pickingUserId, row.currentCaseResponsibleUserId]).filter((id): id is string => Boolean(id)))];
@@ -43,15 +49,21 @@ export async function getOperationsDashboard(auth: AuthContext) {
   const byCase = new Map<string, typeof lines>();
   for (const line of lines) byCase.set(line.caseId, [...(byCase.get(line.caseId) ?? []), line]);
   const cases = rows.map((row) => {
+    const caseConfiguration = caseConfigurations.get(row.configurationVersionId);
+    if (!caseConfiguration) throw new Error(`Configuration version is missing for case ${row.id}`);
     const ownLines = byCase.get(row.id) ?? [];
     const missingCount = ownLines.filter((line) => !terminalStates.has(line.state)).reduce((total, line) => total + line.missingQuantity, 0);
     const checkingCount = ownLines.filter((line) => line.state === "CHECKING").length;
     const currentIssue = ownLines.some((line) => line.retrievalState === "FAILED") ? "RETRIEVAL_FAILED"
       : ownLines.some((line) => line.state === "FOUND") ? "RETRIEVAL_PENDING"
         : checkingCount ? "CHECKING" : missingCount ? "OPEN" : "READY_TO_CLOSE";
+    const ageMinutes = Math.floor((now.getTime() - row.createdAt.getTime()) / 60_000);
+    const attentionLevel = ageMinutes >= caseConfiguration.CRITICAL_THRESHOLD_MINUTES ? "CRITICAL"
+      : ageMinutes >= caseConfiguration.ATTENTION_THRESHOLD_MINUTES ? "ATTENTION"
+        : ageMinutes >= caseConfiguration.WARNING_THRESHOLD_MINUTES ? "WARNING" : "NORMAL";
     return { ...row, pickerName: row.pickingUserId ? names.get(row.pickingUserId) ?? null : null,
       responsibleName: row.currentCaseResponsibleUserId ? names.get(row.currentCaseResponsibleUserId) ?? null : null,
-      missingCount, checkingCount, currentIssue,
+      missingCount, checkingCount, currentIssue, attentionLevel,
       lines: ownLines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity })) };
   });
   const [resolved] = await db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(and(eq(orderCases.phase, "CLOSED"), gte(orderCases.resolvedAt, today)));
@@ -60,9 +72,9 @@ export async function getOperationsDashboard(auth: AuthContext) {
     openShortPicks: cases.reduce((total, item) => total + item.missingCount, 0),
     checking: cases.reduce((total, item) => total + item.checkingCount, 0),
     staged: cases.filter((item) => item.phase === "STAGED").length,
-    overThreshold: cases.filter((item) => now.getTime() - item.createdAt.getTime() >= threshold * 60_000).length,
+    overThreshold: cases.filter((item) => item.attentionLevel === "CRITICAL").length,
     resolvedToday: resolved?.count ?? 0,
-  }, attentionThresholdMinutes: threshold, cases,
+  }, attentionThresholdMinutes: threshold, thresholds: { warning: configuration.WARNING_THRESHOLD_MINUTES, attention: configuration.ATTENTION_THRESHOLD_MINUTES, critical: configuration.CRITICAL_THRESHOLD_MINUTES }, cases,
     recentClosedCases: closedRows.map((row) => ({
       id: row.id, orderNumber: row.orderNumber, phase: "CLOSED" as const, createdAt: row.createdAt, resolvedAt: row.resolvedAt,
       pickerName: row.pickingUserId ? names.get(row.pickingUserId) ?? null : null,
@@ -85,12 +97,13 @@ export async function createManualCase(auth: AuthContext, input: z.infer<typeof 
       const [picker] = await tx.select({ id: users.id }).from(users).where(and(eq(users.id, input.originalPickerUserId), eq(users.role, "PICKER"), eq(users.status, "ACTIVE"))).limit(1);
       if (!picker) throw new CaseApiError("CASE_ACCESS_DENIED", "Original picker must be an active picker", 400);
     }
-    const [setting] = await tx.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, "SHORT_PICK_HOLD_LOCATION")).limit(1);
-    const physicalLocation = typeof setting?.value === "string" && setting.value.trim() ? setting.value.trim() : "SHORT PICK / HOLD";
+    const configuration = await getCurrentConfiguration(tx);
+    if (!configuration.values.MANUAL_CASE_CREATION_ENABLED) throw new CaseApiError("CASE_ACCESS_DENIED", "Manual case creation is disabled", 403);
+    const physicalLocation = configuration.values.SHORT_PICK_HOLD_LOCATION_NAME;
     const source = auth.user.role === "ADMIN" ? "ADMIN_MANUAL" : auth.user.role === "TEAM_LEADER" ? "TL_MANUAL" : "ASSISTANT_MANUAL";
     const [record] = await tx.insert(orderCases).values({ orderNumber, phase: "STAGED", physicalState: "SHORT_PICK_HOLD", physicalLocation,
       stagedAt: new Date(), pickingUserId: input.originalPickerUserId ?? null, currentCaseResponsibleUserId: auth.user.id,
-      createdByUserId: auth.user.id, source, manualReason: input.reason }).returning({ id: orderCases.id });
+      createdByUserId: auth.user.id, source, manualReason: input.reason, configurationVersionId: configuration.id }).returning({ id: orderCases.id });
     const [line] = await tx.insert(shortPickLines).values({ caseId: record!.id, originalLocation: input.firstLine.location, sku: input.firstLine.sku,
       missingQuantity: input.firstLine.quantity, reportedByUserId: auth.user.id }).returning({ id: shortPickLines.id });
     await tx.insert(checkTasks).values({ shortPickLineId: line!.id });

@@ -71,6 +71,20 @@
       "when": 1790438865473,
       "tag": "0009_early_mimic",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790439512015,
+      "tag": "0010_safe_ben_grimm",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790440048444,
+      "tag": "0011_nebulous_quicksilver",
+      "breakpoints": true
     }
   ]
 }

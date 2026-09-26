@@ -1,13 +1,14 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { appSettings, auditLog, caseEvents, checkTasks, orderCases, shortPickLines, users } from "@/db/schema";
+import { auditLog, caseEvents, checkTasks, orderCases, shortPickLines, users } from "@/db/schema";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/cases";
 import { insertResponsibilityNotification } from "@/server/notifications";
+import { getConfigurationVersion } from "@/server/configuration";
 
-export const stageCaseSchema = z.object({ confirmedPhysicalPlacement: z.literal(true) });
+export const stageCaseSchema = z.object({ confirmedPhysicalPlacement: z.boolean().default(false) });
 export const retrievalSchema = z.object({ result: z.enum(["RETRIEVED", "FAILED"]) });
 export const assignRetrievalSchema = z.object({ userId: z.uuid() });
 
@@ -23,26 +24,31 @@ export async function listMyRetrievals(auth: AuthContext) {
     sku: row.line.sku, quantity: row.line.missingQuantity, retrievalState: row.line.retrievalState }));
 }
 
-export async function stageCase(auth: AuthContext, caseId: string) {
+export async function stageCase(auth: AuthContext, caseId: string, confirmedPhysicalPlacement = false) {
   if (!hasAuthPermission(auth, "MARK_ORDER_STAGED")) throw new CaseApiError("CASE_ACCESS_DENIED", "Cannot stage cases", 403);
   return getDb().transaction(async (tx) => {
     const [record] = await tx.select().from(orderCases).where(eq(orderCases.id, caseId)).for("update").limit(1);
     if (!record) throw new CaseApiError("CASE_NOT_FOUND", "Case not found", 404);
     if (record.phase !== "PICKING") throw new CaseApiError("CASE_NOT_OPEN", "Only a picking case can be staged", 409);
     if (record.pickingUserId !== auth.user.id && !hasAuthPermission(auth, "VIEW_ALL_OPEN_CASES")) throw new CaseApiError("CASE_ACCESS_DENIED", "This case belongs to another picker", 403);
-    const [setting] = await tx.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, "SHORT_PICK_HOLD_LOCATION")).limit(1);
-    const physicalLocation = typeof setting?.value === "string" && setting.value.trim() ? setting.value.trim() : "SHORT PICK / HOLD";
+    const configuration = await getConfigurationVersion(tx, record.configurationVersionId);
+    if (!configuration) throw new Error("Case configuration version is missing");
+    if (configuration.values.REQUIRE_STAGING_CONFIRMATION && !confirmedPhysicalPlacement) throw new CaseApiError("CASE_NOT_OPEN", "Physical staging confirmation is required", 400);
+    const physicalLocation = configuration.values.SHORT_PICK_HOLD_LOCATION_NAME;
     const now = new Date();
     await tx.update(orderCases).set({ phase: "STAGED", physicalState: "SHORT_PICK_HOLD", physicalLocation, stagedAt: now, updatedAt: now, version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
     await tx.insert(caseEvents).values({ caseId, actorUserId: auth.user.id, eventType: "ORDER_STAGED", details: { physicalLocation } });
     const pendingLines = await tx.select().from(shortPickLines).where(and(eq(shortPickLines.caseId, caseId), eq(shortPickLines.state, "FOUND")));
     for (const line of pendingLines) {
       if (line.retrievalState !== "PENDING" && line.retrievalState !== "FAILED") continue;
-      const [check] = await tx.select().from(checkTasks).where(and(eq(checkTasks.shortPickLineId, line.id), eq(checkTasks.completionCode, "FOUND")))
-        .orderBy(desc(checkTasks.completedAt)).limit(1);
-      const checkerId = check?.assignedToUserId ?? check?.claimedByUserId ?? null;
-      const [checker] = checkerId ? await tx.select().from(users).where(eq(users.id, checkerId)).limit(1) : [];
-      const responsibleUserId = checker?.status === "ACTIVE" && checker.permissions.includes("CONFIRM_RETRIEVAL") ? checker.id : null;
+      let responsibleUserId: string | null = null;
+      if (configuration.values.CHECKER_RETRIEVAL_WHEN_STAGED_ENABLED) {
+        const [check] = await tx.select().from(checkTasks).where(and(eq(checkTasks.shortPickLineId, line.id), eq(checkTasks.completionCode, "FOUND")))
+          .orderBy(desc(checkTasks.completedAt)).limit(1);
+        const checkerId = check?.assignedToUserId ?? check?.claimedByUserId ?? null;
+        const [checker] = checkerId ? await tx.select().from(users).where(eq(users.id, checkerId)).limit(1) : [];
+        responsibleUserId = checker?.status === "ACTIVE" && checker.permissions.includes("CONFIRM_RETRIEVAL") ? checker.id : null;
+      }
       if (responsibleUserId !== line.retrievalResponsibleUserId) {
         await tx.update(shortPickLines).set({ retrievalResponsibleUserId: responsibleUserId, currentResponsibleUserId: responsibleUserId, updatedAt: now, version: sql`${shortPickLines.version} + 1` }).where(eq(shortPickLines.id, line.id));
         await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType: "RETRIEVAL_ASSIGNED", details: { responsibleUserId, previousUserId: line.retrievalResponsibleUserId, casePhase: "STAGED" } });

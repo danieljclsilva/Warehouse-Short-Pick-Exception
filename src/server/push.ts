@@ -7,6 +7,7 @@ import { getDb } from "@/db";
 import { notifications, pushOutbox, pushSubscriptions } from "@/db/schema";
 import type { AuthContext } from "@/server/auth";
 import { CaseApiError } from "@/server/cases";
+import { getCurrentConfiguration } from "@/server/configuration";
 
 const MAX_ATTEMPTS = 5;
 const LEASE_MS = 2 * 60_000;
@@ -93,12 +94,15 @@ export function assertPushMutationOrigin(request: Request) {
 }
 
 export async function listPushSubscriptions(auth: AuthContext) {
+  const configuration = await getCurrentConfiguration();
   const rows = await getDb().select({ id: pushSubscriptions.id, deviceLabel: pushSubscriptions.deviceLabel, createdAt: pushSubscriptions.createdAt })
     .from(pushSubscriptions).where(and(eq(pushSubscriptions.userId, auth.user.id), isNull(pushSubscriptions.disabledAt))).orderBy(pushSubscriptions.createdAt);
-  return { ...pushStatus(), subscriptions: rows };
+  return { ...pushStatus(), enabled: isPushConfigured() && configuration.values.PUSH_ENABLED, subscriptions: rows };
 }
 
 export async function registerPushSubscription(auth: AuthContext, input: z.infer<typeof pushSubscriptionSchema>) {
+  const configuration = await getCurrentConfiguration();
+  if (!configuration.values.PUSH_ENABLED) throw new CaseApiError("CASE_ACCESS_DENIED", "Push notifications are disabled", 503);
   if (!isPushConfigured()) throw new CaseApiError("CASE_ACCESS_DENIED", "Push notifications are not configured", 503);
   const endpoint = await validatePushEndpoint(input.endpoint);
   const db = getDb();
@@ -195,6 +199,8 @@ async function finishDelivery(row: DeliveryRow, error: unknown) {
 }
 
 export async function deliverPushBatch(limit = 25) {
+  const configuration = await getCurrentConfiguration();
+  if (!configuration.values.PUSH_ENABLED) return { attempted: 0, sent: 0, retried: 0, disabled: 0, failed: 0 };
   const vapid = configuredVapid();
   if (!vapid) return { attempted: 0, sent: 0, retried: 0, disabled: 0, failed: 0 };
   webpush.setVapidDetails(vapid.subject, vapid.publicKey, vapid.privateKey);

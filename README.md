@@ -4,7 +4,7 @@ Internal web application for reporting and resolving warehouse short-pick except
 
 ## Current implementation status
 
-Phases 1–5 are complete locally. The Phase 5 verification passed 32 tests across seven files on a fresh PostgreSQL database, with migrations, database checks, type checking, linting, production build, and responsive browser checks. Notification list, read state, monitoring preferences, push availability, and the notifications deep link were exercised at mobile and tablet widths. Configuration, analytics, hardening, and Railway deployment remain pending.
+Phases 1–6 are complete locally. The Phase 6 verification passed 43 tests across eight files on a fresh PostgreSQL database with migrations `0000` through `0011`, database checks, type checking, linting, production build, and responsive browser checks. The configuration panel uses 17 versioned operational keys, preserves case configuration snapshots, shows immutable audit history, and reports stale-version conflicts. Analytics, hardening, and Railway deployment remain pending.
 
 ## Local setup
 
@@ -22,6 +22,8 @@ The application has no public self-registration. An administrator must create an
 Team Leaders, Assistants, and Admins have an operations dashboard for reviewing cases, creating manual staged cases found in Short Pick / Hold, assigning responsibility, adding operational case messages, and closing or reopening cases. These actions are permission checked on the server; timeline events are immutable, and consequential assignments, closures, and reopenings also write audit entries.
 
 The notification center provides persisted in-app responsibility and monitoring notifications, unread state, read actions, manager monitoring preferences, and optional device-specific browser push. In-app notifications remain available when push is unsupported, unavailable, or disabled. Live push delivery requires HTTPS and the VAPID variables in `.env.example`: `PUSH_PUBLIC_KEY`, `PUSH_PRIVATE_KEY`, and `PUSH_SUBJECT`.
+
+Team Leaders, Admins, and permitted Assistants can edit the versioned operational configuration from the Configuration workspace when their permissions allow it. The panel covers workflow limits, timing thresholds, invitation defaults (8-hour expiry by default), login lockout policy, warehouse location naming, resolution codes, manual case creation, Assistant configuration access, and push enablement. Each save creates a new immutable version and audit entry; new cases keep the version captured at creation, while existing cases retain their historical behavior. Login lockout settings are managed by the active database configuration version; the old environment variable names are legacy and do not control runtime behavior.
 
 Authenticated activity refreshes the persistent HTTP-only session cookie. Server sessions have no scheduled expiry, but browsers can discard cookies after extended inactivity under their own retention limits.
 
@@ -41,7 +43,7 @@ npm run db:check
 
 ## Railway deployment
 
-Create a Railway web service from this private GitHub repository and add a Railway PostgreSQL service. Set `DATABASE_URL` from the PostgreSQL service, `APP_URL` to the public HTTPS origin, the authentication policy variables, and stable Web Push variables `PUSH_PUBLIC_KEY`, `PUSH_PRIVATE_KEY`, and `PUSH_SUBJECT` described in `.env.example`. Run tracked migrations before serving traffic. Set the liveness check path to `/health`; `/api/health` separately checks database readiness.
+Create a Railway web service from this private GitHub repository and add a Railway PostgreSQL service. Set `DATABASE_URL` from the PostgreSQL service, `APP_URL` to the public HTTPS origin, and stable Web Push variables `PUSH_PUBLIC_KEY`, `PUSH_PRIVATE_KEY`, and `PUSH_SUBJECT` described in `.env.example`. Login lockout policy is stored in the versioned database configuration; do not set the legacy `LOGIN_MAX_FAILED_ATTEMPTS` or `LOGIN_LOCKOUT_MINUTES` variables. Run tracked migrations before serving traffic. Set the liveness check path to `/health`; `/api/health` separately checks database readiness.
 
 Phase 8 deployment must also provision separate periodic jobs for `npm run notifications:emit` and `npm run push:deliver`. The first emits threshold based monitoring notifications; the second delivers queued browser push notifications with retry handling. In-app notification operation does not depend on either job. Live VAPID delivery remains deployment QA until HTTPS, Railway variables, and both schedules are configured.
 

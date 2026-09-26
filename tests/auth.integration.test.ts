@@ -99,6 +99,20 @@ describeDatabase("Phase 1 authentication and administration against PostgreSQL",
     expect((await register(request("/api/auth/register", "POST", { inviteToken: exhausted.data.invite.token, displayName: "Exhausted", pin: "123456" }))).status).toBe(400);
   });
 
+  it("uses the eight-hour default expiry when omitted and preserves an explicit 1000-registration limit", async () => {
+    const admin = await makeUser("ADMIN", "invite-defaults");
+    const cookie = (await createSession(admin.id)).cookie.split(";")[0];
+    const startedAt = Date.now();
+    const response = await createInvite(request("/api/admin/invites", "POST", { defaultRole: "PICKER", maxRegistrations: 1000 }, cookie));
+    expect(response.status).toBe(201);
+    const data = await response.json() as { invite: { id: string; expiresAt: string; maxRegistrations: number } };
+    inviteIds.push(data.invite.id);
+    const expiresInMs = new Date(data.invite.expiresAt).getTime() - startedAt;
+    expect(expiresInMs).toBeGreaterThan(7.99 * 3_600_000);
+    expect(expiresInMs).toBeLessThan(8.01 * 3_600_000);
+    expect(data.invite.maxRegistrations).toBe(1000);
+  });
+
   it("enforces role hierarchy and revokes disabled users' sessions", async () => {
     const leader = await makeUser("TEAM_LEADER", "leader");
     const admin = await makeUser("ADMIN", "protected-admin");

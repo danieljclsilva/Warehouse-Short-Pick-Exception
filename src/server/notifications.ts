@@ -5,6 +5,7 @@ import { notificationPreferenceKeyEnum, notificationPreferences, notifications, 
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/cases";
+import { getCurrentConfiguration } from "@/server/configuration";
 
 export type NotificationType = typeof notifications.$inferInsert.type;
 export type PreferenceKey = typeof notificationPreferences.$inferInsert.key;
@@ -46,7 +47,8 @@ export async function insertNotification(tx: DbOperations, input: NotificationIn
     payload: input.payload ?? {},
     dedupeKey: input.dedupeKey ?? null,
   }).onConflictDoNothing().returning();
-  if (notification && process.env.PUSH_PUBLIC_KEY && process.env.PUSH_PRIVATE_KEY && process.env.PUSH_SUBJECT) {
+  const configuration = notification ? await getCurrentConfiguration(tx) : null;
+  if (notification && configuration?.values.PUSH_ENABLED && process.env.PUSH_PUBLIC_KEY && process.env.PUSH_PRIVATE_KEY && process.env.PUSH_SUBJECT) {
     const subscriptions = await tx.select({ id: pushSubscriptions.id }).from(pushSubscriptions).where(and(
       eq(pushSubscriptions.userId, input.recipientUserId), isNull(pushSubscriptions.disabledAt),
     ));
