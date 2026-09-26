@@ -3,6 +3,10 @@ import { sql } from "drizzle-orm";
 
 export const roleEnum = pgEnum("user_role", ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "ADMIN"]);
 export const userStatusEnum = pgEnum("user_status", ["ACTIVE", "DISABLED", "ARCHIVED"]);
+export const casePhaseEnum = pgEnum("case_phase", ["PICKING", "STAGED", "CLOSED"]);
+export const physicalStateEnum = pgEnum("physical_state", ["WITH_PICKER", "SHORT_PICK_HOLD", "OTHER_KNOWN_LOCATION", "UNKNOWN"]);
+export const caseSourceEnum = pgEnum("case_source", ["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "ADMIN_MANUAL"]);
+export const shortPickLineStateEnum = pgEnum("short_pick_line_state", ["OPEN", "CHECKING", "FOUND", "RETRIEVING", "RESOLVED", "CANCELLED"]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -61,3 +65,69 @@ export const appSettings = pgTable("app_settings", {
   value: jsonb("value").$type<unknown>().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const orderCases = pgTable("order_cases", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orderNumber: text("order_number").notNull(),
+  phase: casePhaseEnum("phase").notNull().default("PICKING"),
+  physicalState: physicalStateEnum("physical_state").notNull().default("WITH_PICKER"),
+  physicalLocation: text("physical_location"),
+  pickingUserId: uuid("picking_user_id").references(() => users.id),
+  currentCaseResponsibleUserId: uuid("current_case_responsible_user_id").references(() => users.id),
+  createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id),
+  source: caseSourceEnum("source").notNull().default("PICKER_REPORT"),
+  manualReason: text("manual_reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  stagedAt: timestamp("staged_at", { withTimezone: true }),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  resolvedByUserId: uuid("resolved_by_user_id").references(() => users.id),
+  reopenedAt: timestamp("reopened_at", { withTimezone: true }),
+  version: integer("version").notNull().default(1),
+}, (table) => [
+  index("order_cases_order_created_idx").on(table.orderNumber, table.createdAt),
+  index("order_cases_picking_phase_idx").on(table.pickingUserId, table.phase),
+  uniqueIndex("order_cases_one_open_per_order_uq").on(table.orderNumber).where(sql`${table.phase} <> 'CLOSED'`),
+  check("order_cases_order_number_digits_check", sql`${table.orderNumber} ~ '^[0-9]+$'`),
+  check("order_cases_version_positive_check", sql`${table.version} > 0`),
+]);
+
+export const shortPickLines = pgTable("short_pick_lines", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  caseId: uuid("case_id").notNull().references(() => orderCases.id),
+  originalLocation: text("original_location").notNull(),
+  sku: text("sku").notNull(),
+  missingQuantity: integer("missing_quantity").notNull(),
+  reportedByUserId: uuid("reported_by_user_id").notNull().references(() => users.id),
+  reportedAt: timestamp("reported_at", { withTimezone: true }).notNull().defaultNow(),
+  state: shortPickLineStateEnum("state").notNull().default("OPEN"),
+  currentResponsibleUserId: uuid("current_responsible_user_id").references(() => users.id),
+  discoveredLocation: text("discovered_location"),
+  discoveredByUserId: uuid("discovered_by_user_id").references(() => users.id),
+  discoveredAt: timestamp("discovered_at", { withTimezone: true }),
+  retrievalState: text("retrieval_state").notNull().default("NOT_REQUIRED"),
+  retrievalResponsibleUserId: uuid("retrieval_responsible_user_id").references(() => users.id),
+  retrievedByUserId: uuid("retrieved_by_user_id").references(() => users.id),
+  retrievedAt: timestamp("retrieved_at", { withTimezone: true }),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  resolutionCode: text("resolution_code"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  version: integer("version").notNull().default(1),
+}, (table) => [
+  index("short_pick_lines_case_idx").on(table.caseId, table.createdAt),
+  index("short_pick_lines_duplicate_idx").on(table.caseId, table.originalLocation, table.sku, table.state),
+  check("short_pick_lines_location_normalized_check", sql`${table.originalLocation} = upper(btrim(${table.originalLocation})) AND length(${table.originalLocation}) > 0`),
+  check("short_pick_lines_sku_normalized_check", sql`${table.sku} = upper(btrim(${table.sku})) AND length(${table.sku}) > 0`),
+  check("short_pick_lines_quantity_positive_check", sql`${table.missingQuantity} > 0`),
+  check("short_pick_lines_version_positive_check", sql`${table.version} > 0`),
+]);
+
+export const caseEvents = pgTable("case_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  caseId: uuid("case_id").notNull().references(() => orderCases.id),
+  actorUserId: uuid("actor_user_id").references(() => users.id),
+  eventType: text("event_type").notNull(),
+  details: jsonb("details").$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("case_events_case_created_idx").on(table.caseId, table.createdAt)]);

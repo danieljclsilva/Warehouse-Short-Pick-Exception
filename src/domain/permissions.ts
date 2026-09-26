@@ -5,7 +5,7 @@ export const PERMISSIONS = [
   "REPORT_SHORT_PICK", "VIEW_OWN_CASES", "VIEW_ALL_OPEN_CASES", "VIEW_AVAILABLE_CHECKS",
   "CLAIM_CHECK", "COMPLETE_CHECK", "RETRIEVE_FOR_OTHER_PICKER", "ASSIGN_CHECK", "REASSIGN_CHECK",
   "ASSIGN_TROUBLESHOOTER", "ADD_CASE_MESSAGE", "VIEW_CASE_MESSAGES", "REPORT_NEW_LOCATION",
-  "CONFIRM_RETRIEVAL", "MARK_ORDER_STAGED", "RESOLVE_CASE", "REOPEN_CASE", "CREATE_CASE_ON_BEHALF",
+  "CONFIRM_RETRIEVAL", "MARK_ORDER_STAGED", "RESOLVE_CASE", "REOPEN_CASE", "CREATE_CASE_ON_BEHALF", "OVERRIDE_DUPLICATE_SHORT_PICK_LINE",
   "CREATE_INVITES", "VIEW_ANALYTICS", "EXPORT_ANALYTICS", "VIEW_USERS", "EDIT_PICKER_PERMISSIONS",
   "EDIT_TROUBLESHOOTER_PERMISSIONS", "EDIT_ASSISTANT_PERMISSIONS", "EDIT_TL_PERMISSIONS",
   "MANAGE_CONFIGURATION", "MANAGE_TRANSLATIONS", "APPROVE_PROFILE_PHOTO", "ARCHIVE_USERS",
@@ -32,7 +32,7 @@ const userAdministrationPermissions = new Set<Permission>([
   "CREATE_INVITES", "VIEW_ANALYTICS", "EXPORT_ANALYTICS", "VIEW_USERS",
   "EDIT_PICKER_PERMISSIONS", "EDIT_TROUBLESHOOTER_PERMISSIONS", "EDIT_ASSISTANT_PERMISSIONS", "EDIT_TL_PERMISSIONS",
   "MANAGE_CONFIGURATION", "MANAGE_TRANSLATIONS", "APPROVE_PROFILE_PHOTO", "ARCHIVE_USERS", "DISABLE_USERS",
-  "RESET_USER_PIN", "REVOKE_USER_SESSIONS",
+  "RESET_USER_PIN", "REVOKE_USER_SESSIONS", "OVERRIDE_DUPLICATE_SHORT_PICK_LINE",
 ]);
 
 /** Permissions a user role may receive through an invite or another user's admin edit. */
@@ -41,7 +41,7 @@ export function permissionsAllowedForRole(role: Role, permissions: readonly stri
   if (!allKnown) return false;
   if (role === "ADMIN") return permissions.every((permission) => (PERMISSIONS as readonly string[]).includes(permission));
   if (role === "TEAM_LEADER") return permissions.every((permission) => permission !== "EDIT_TL_PERMISSIONS");
-  if (role === "ASSISTANT") return permissions.every((permission) => permission !== "EDIT_ASSISTANT_PERMISSIONS" && permission !== "EDIT_TL_PERMISSIONS");
+  if (role === "ASSISTANT") return permissions.every((permission) => permission !== "EDIT_ASSISTANT_PERMISSIONS" && permission !== "EDIT_TL_PERMISSIONS" && permission !== "OVERRIDE_DUPLICATE_SHORT_PICK_LINE");
   return permissions.every((permission) =>
     (PERMISSIONS as readonly string[]).includes(permission) && !userAdministrationPermissions.has(permission as Permission),
   );

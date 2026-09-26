@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { PickerWorkflow } from "@/components/picker-workflow";
 import {
   getMessages,
   supportedLocales,
@@ -38,6 +39,7 @@ type InviteResponse = { invites?: Invite[]; invite?: Invite & { token: string; r
 type AuthAppProps = { initialInviteToken?: string; initialView?: View };
 
 const navigation = [
+  { key: "myWork", permission: ["REPORT_SHORT_PICK", "VIEW_OWN_CASES"] },
   { key: "invitations", permission: ["CREATE_INVITES"] },
 ] as const satisfies { key: MessageKey; permission: string[] }[];
 
@@ -172,7 +174,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
           if (!cancelled && body.user) {
             setUser(body.user);
             setLocale(body.user.preferredLanguage || "en");
-            const firstSection = navigation.find((item) => item.permission.some((permission) => body.user?.permissions.includes(permission)));
+            const firstSection = navigation.find((item) => (item.key !== "myWork" || body.user?.role === "PICKER") && item.permission.some((permission) => body.user?.permissions.includes(permission)));
             setActiveSection(firstSection?.key ?? "workspace");
             setView("workspace");
           }
@@ -196,10 +198,12 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
   const allowedNavigation = useMemo(() => {
     if (!user) return [];
     const granted = new Set(user.permissions);
-    return navigation.filter((item) => item.permission.some((permission) => granted.has(permission)));
+    return navigation.filter((item) => (item.key !== "myWork" || user.role === "PICKER") && item.permission.some((permission) => granted.has(permission)));
   }, [user]);
 
   const canCreateInvites = user?.role === "ADMIN" || Boolean(user?.permissions.includes("CREATE_INVITES"));
+  const canUsePickerWorkflow = user?.role === "PICKER" && Boolean(user.permissions.some((permission) => permission === "REPORT_SHORT_PICK" || permission === "VIEW_OWN_CASES"));
+  const canOverrideDuplicateLine = Boolean(user?.permissions.includes("OVERRIDE_DUPLICATE_SHORT_PICK_LINE"));
   const assignableRoles = user ? inviteRolesByActor[user.role] ?? [] : [];
 
   const loadInvites = useCallback(async () => {
@@ -271,7 +275,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
       }
       setUser(body.user);
       setLocale(body.user.preferredLanguage || locale);
-      const firstSection = navigation.find((item) => item.permission.some((permission) => body.user?.permissions.includes(permission)));
+      const firstSection = navigation.find((item) => (item.key !== "myWork" || body.user?.role === "PICKER") && item.permission.some((permission) => body.user?.permissions.includes(permission)));
       setActiveSection(firstSection?.key ?? "workspace");
       setView("workspace");
       setPin("");
@@ -321,7 +325,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
       setInviteToken("");
       setPin("");
       setConfirmPin("");
-      const firstSection = navigation.find((item) => item.permission.some((permission) => body.user?.permissions.includes(permission)));
+      const firstSection = navigation.find((item) => (item.key !== "myWork" || body.user?.role === "PICKER") && item.permission.some((permission) => body.user?.permissions.includes(permission)));
       setActiveSection(firstSection?.key ?? "workspace");
       setView("registered");
     } catch {
@@ -460,7 +464,9 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             <div className="topbar-actions"><LanguagePicker locale={locale} label={tr("language")} onChange={setLocale} /><span className="avatar avatar-small" aria-hidden="true">{user.displayName.slice(0, 1).toUpperCase()}</span></div>
           </header>
           <main className="workspace-content">
-            {canCreateInvites && activeSection === "invitations" ? (
+            {canUsePickerWorkflow && activeSection === "myWork" ? (
+              <PickerWorkflow locale={locale} tr={tr} canReportShortPick={Boolean(user.permissions.includes("REPORT_SHORT_PICK"))} canViewOwnCases={Boolean(user.permissions.includes("VIEW_OWN_CASES"))} canOverrideDuplicateLine={canOverrideDuplicateLine} />
+            ) : canCreateInvites && activeSection === "invitations" ? (
               <>
                 <div className="content-heading"><div><h1>{tr("inviteManagementTitle")}</h1><p>{tr("inviteManagementDescription")}</p></div></div>
                 <section className="invite-create-panel" aria-labelledby="invite-create-title">

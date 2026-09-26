@@ -26,6 +26,8 @@ describe("role and permission hierarchy", () => {
     expect(permissionsAllowedForRole("PICKER", ["CREATE_INVITES"])).toBe(false);
     expect(permissionsAllowedForRole("TROUBLESHOOTER", ["VIEW_USERS"])).toBe(false);
     expect(permissionsAllowedForRole("ASSISTANT", ["CREATE_INVITES", "EDIT_TL_PERMISSIONS"])).toBe(false);
+    expect(permissionsAllowedForRole("ASSISTANT", ["OVERRIDE_DUPLICATE_SHORT_PICK_LINE"])).toBe(false);
+    expect(permissionsAllowedForRole("TEAM_LEADER", ["OVERRIDE_DUPLICATE_SHORT_PICK_LINE"])).toBe(true);
     expect(permissionsAllowedForRole("TEAM_LEADER", ["EDIT_TL_PERMISSIONS"])).toBe(false);
   });
 
