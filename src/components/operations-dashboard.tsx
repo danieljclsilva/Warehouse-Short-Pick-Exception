@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MessageKey } from "@/i18n/messages";
 import { LiveRefreshStatus } from "@/components/live-refresh-status";
+import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import styles from "./operations-dashboard.module.css";
 
@@ -336,9 +337,9 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
       <div className={styles.sectionTitle}><div><p className={styles.eyebrow}>{tr("manualCaseEyebrow")}</p><h2>{tr("createManualCase")}</h2></div><button className={styles.iconButton} type="button" aria-label={tr("closePanel")} onClick={() => setShowManual(false)}>×</button></div>
       <p>{tr("manualCaseDescription")}</p>
       <form className={styles.manualForm} onSubmit={submitManual}>
-        <label><span>{tr("orderNumber")}</span><input inputMode="numeric" required value={manualOrder} onChange={(event) => setManualOrder(event.target.value)} /></label>
-        <label><span>{tr("location")}</span><input required autoCapitalize="characters" value={manualLocation} onChange={(event) => setManualLocation(event.target.value)} /></label>
-        <label><span>{tr("sku")}</span><input required autoCapitalize="characters" value={manualSku} onChange={(event) => setManualSku(event.target.value)} /></label>
+        <label><span>{tr("orderNumber")}</span><ScanInput inputMode="numeric" required value={manualOrder} onChange={setManualOrder} tr={tr} scanKind="order" fieldLabel={tr("orderNumber")} /></label>
+        <label><span>{tr("location")}</span><ScanInput required autoCapitalize="characters" value={manualLocation} onChange={setManualLocation} tr={tr} scanKind="location" fieldLabel={tr("location")} /></label>
+        <label><span>{tr("sku")}</span><ScanInput required autoCapitalize="characters" value={manualSku} onChange={setManualSku} tr={tr} scanKind="sku" fieldLabel={tr("sku")} /></label>
         <label><span>{tr("missingQuantity")}</span><input required type="number" min="1" step="1" value={manualQuantity} onChange={(event) => setManualQuantity(event.target.value)} /></label>
         <label><span>{tr("originalPickerOptional")}</span><select value={manualPicker} onChange={(event) => setManualPicker(event.target.value)}><option value="">{tr("noPickerSelected")}</option>{workers.filter((worker) => worker.role === "PICKER").map((worker) => <option key={worker.id} value={worker.id}>{worker.displayName}</option>)}</select></label>
         <label className={styles.wide}><span>{tr("manualReasonOptional")}</span><textarea rows={2} maxLength={500} value={manualReason} onChange={(event) => setManualReason(event.target.value)} /></label>

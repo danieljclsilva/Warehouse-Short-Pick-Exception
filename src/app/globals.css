@@ -88,6 +88,22 @@ button { color: inherit; }
 .auth-form-wrap form { display: flex; flex-direction: column; gap: 19px; }
 .form-field { display: flex; flex-direction: column; gap: 7px; color: var(--ink); font-size: 13px; font-weight: 600; }
 .form-field input { width: 100%; height: 50px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: 8px; outline: none; background: #fff; color: var(--ink); font-size: 15px; font-weight: 450; transition: border-color 120ms ease, box-shadow 120ms ease; }
+.scan-field { display: grid; grid-template-columns: minmax(0, 1fr) 54px; gap: 8px; align-items: stretch; }
+.scan-field > input { width: 100%; height: 50px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: 8px; outline: none; background: #fff; color: var(--ink); font-size: 15px; font-weight: 450; }
+.scan-field > input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgb(36 116 90 / 12%); }
+.scan-button { display: inline-flex; min-width: 54px; min-height: 50px; align-items: center; justify-content: center; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--green); background: #fff; cursor: pointer; }
+.scan-button:hover { background: var(--green-wash); }
+.scan-button:focus-visible { outline: 3px solid var(--green); outline-offset: 2px; }
+.scan-dialog-backdrop { position: fixed; z-index: 90; inset: 0; display: grid; align-items: center; justify-items: center; padding: 20px; background: rgb(14 34 42 / 42%); }
+.scan-dialog { display: grid; gap: 12px; width: min(100%, 440px); max-height: min(88vh, 720px); overflow: auto; padding: 22px; border: 1px solid var(--line); border-radius: 13px; background: #fff; box-shadow: 0 24px 80px rgb(10 30 38 / 20%); }
+.scan-dialog h2 { margin: 0; color: var(--ink); font-size: 18px; font-weight: 670; }
+.scan-dialog > p { margin: 0; color: var(--ink-soft); font-size: 13px; }
+.scan-video { width: 100%; aspect-ratio: 4 / 3; border-radius: 10px; background: #0c1a16; object-fit: cover; }
+.scan-alert { margin: 0; padding: 11px 13px; border: 1px solid #efb5a8; border-radius: 8px; color: #763b2e; background: var(--coral-wash); font-size: 13px; }
+.scan-waiting { margin: 0; color: var(--ink-soft); font-size: 13px; }
+.scan-photo-label { display: grid; gap: 8px; color: var(--ink); font-size: 13px; font-weight: 600; }
+.scan-photo-label input[type="file"] { display: block; width: 100%; min-height: 48px; padding: 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; font-size: 13px; }
+.scan-close { margin: 0; }
 .form-field input::placeholder { color: #82919a; opacity: 1; }
 .form-field input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgb(36 116 90 / 12%); }
 .primary-button, .secondary-button {

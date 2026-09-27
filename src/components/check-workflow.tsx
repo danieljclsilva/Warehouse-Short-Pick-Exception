@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import type { Locale, MessageKey } from "@/i18n/messages";
 import { LiveRefreshStatus } from "@/components/live-refresh-status";
+import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 
 type Check = {
@@ -165,7 +166,7 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
           <label className="form-field"><span>{tr("completionResult")}</span><select value={completionCode} onChange={(event) => setCompletionCode(event.target.value as typeof completionCode)}>
             <option value="FOUND">{tr("foundResult")}</option><option value="NOT_FOUND">{tr("notFoundResult")}</option><option value="WRONG_LOCATION">{tr("wrongLocationResult")}</option><option value="OTHER">{tr("otherResult")}</option>
           </select></label>
-          {completionCode === "FOUND" && <label className="form-field"><span>{tr("newLocation")}</span><input required autoCapitalize="characters" value={discoveredLocation} onChange={(event) => setDiscoveredLocation(event.target.value)} /></label>}
+          {completionCode === "FOUND" && <label className="form-field"><span>{tr("newLocation")}</span><ScanInput required autoCapitalize="characters" value={discoveredLocation} onChange={setDiscoveredLocation} tr={tr} scanKind="location" fieldLabel={tr("newLocation")} /></label>}
           <div className="check-card-actions"><button type="button" className="secondary-button" onClick={() => setCompletionTaskId("")}>{tr("cancel")}</button><button type="submit" className="primary-button" disabled={Boolean(busyId)}>{tr("completeCheck")}</button></div>
         </form>
       ) : <button type="button" className="primary-button" onClick={() => { setCompletionTaskId(check.id); setCompletionCode("FOUND"); setDiscoveredLocation(""); }}>{tr("completeCheck")}</button>)}

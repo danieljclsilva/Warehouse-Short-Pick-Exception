@@ -581,6 +581,14 @@ const en = {
   roleADMIN: "Admin",
   unknownError: "Something went wrong. Please try again.",
   saveProfile: "Save profile",
+  scanButtonLabel: "Scan {field}",
+  scanTitle: "Scan barcode",
+  scanDescription: "Point the camera at the barcode, or choose a photo of it.",
+  scanNotSupported: "Camera scanning is not available in this browser. Type the value instead.",
+  scanCameraError: "Could not start the camera. Check camera permission or type the value instead.",
+  scanPhotoError: "No barcode was found in that photo. Try again or type the value.",
+  scanWaiting: "Waiting for a barcode…",
+  scanFromPhoto: "Scan from a photo",
   permission_REPORT_SHORT_PICK: "Report short picks",
   permission_VIEW_OWN_CASES: "View own cases",
   permission_VIEW_ALL_OPEN_CASES: "View all open cases",
@@ -1230,6 +1238,14 @@ const nl: typeof en = {
   permission_REVOKE_USER_SESSIONS: "Gebruikerssessies intrekken",
   saveProfile: "Profiel opslaan",
   unknownError: "Er is iets misgegaan. Probeer het opnieuw.",
+  scanButtonLabel: "{field} scannen",
+  scanTitle: "Barcode scannen",
+  scanDescription: "Richt de camera op de barcode of kies een foto ervan.",
+  scanNotSupported: "Scannen met de camera is niet beschikbaar in deze browser. Typ de waarde.",
+  scanCameraError: "De camera kon niet worden gestart. Controleer de cameratoestemming of typ de waarde.",
+  scanPhotoError: "Geen barcode gevonden op die foto. Probeer het opnieuw of typ de waarde.",
+  scanWaiting: "Wachten op een barcode…",
+  scanFromPhoto: "Scannen vanaf een foto",
 };
 
 const pl: typeof en = {
@@ -1845,6 +1861,14 @@ const pl: typeof en = {
   permission_REVOKE_USER_SESSIONS: "Unieważnianie sesji użytkowników",
   saveProfile: "Zapisz profil",
   unknownError: "Wystąpił błąd. Spróbuj ponownie.",
+  scanButtonLabel: "Zeskanuj: {field}",
+  scanTitle: "Skanuj kod kreskowy",
+  scanDescription: "Skieruj aparat na kod kreskowy albo wybierz jego zdjęcie.",
+  scanNotSupported: "Skanowanie aparatem jest niedostępne w tej przeglądarce. Wpisz wartość ręcznie.",
+  scanCameraError: "Nie można uruchomić aparatu. Sprawdź uprawnienia albo wpisz wartość ręcznie.",
+  scanPhotoError: "Nie znaleziono kodu na tym zdjęciu. Spróbuj ponownie albo wpisz wartość.",
+  scanWaiting: "Oczekiwanie na kod kreskowy…",
+  scanFromPhoto: "Skanuj ze zdjęcia",
 };
 
 const es: typeof en = {
@@ -2460,6 +2484,14 @@ const es: typeof en = {
   permission_REVOKE_USER_SESSIONS: "Revocar sesiones de usuarios",
   saveProfile: "Guardar perfil",
   unknownError: "Se produjo un error. Inténtalo de nuevo.",
+  scanButtonLabel: "Escanear {field}",
+  scanTitle: "Escanear código de barras",
+  scanDescription: "Apunta la cámara al código de barras o elige una foto.",
+  scanNotSupported: "El escaneo con cámara no está disponible en este navegador. Escribe el valor.",
+  scanCameraError: "No se pudo iniciar la cámara. Revisa el permiso o escribe el valor.",
+  scanPhotoError: "No se encontró ningún código en esa foto. Inténtalo de nuevo o escribe el valor.",
+  scanWaiting: "Esperando un código de barras…",
+  scanFromPhoto: "Escanear desde una foto",
 };
 
 const dictionaries = { en, nl, pl, es } satisfies Record<Locale, typeof en>;

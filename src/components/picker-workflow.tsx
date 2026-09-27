@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import type { Locale, MessageKey } from "@/i18n/messages";
 import { LiveRefreshStatus } from "@/components/live-refresh-status";
+import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 
 type ShortPickLine = { id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation?: string | null; retrievalState?: string; retrievalResponsibleUserId?: string | null };
@@ -333,8 +334,8 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
           {canReportShortPick && displayCase.phase === "PICKING" && (!showLineForm ? <button className="primary-button add-line-button" type="button" onClick={() => { setShowLineForm(true); setDuplicateLine(null); }}>{tr("addMissingItem")}</button> : (
             <form className="add-line-panel" onSubmit={(event) => { event.preventDefault(); void addLine(false); }}>
               <div className="add-line-heading"><h3>{tr("addMissingItem")}</h3><button className="text-button" type="button" onClick={() => { if (pendingOrder) closeDetail(); else { setShowLineForm(false); setDuplicateLine(null); } }}>{tr("cancel")}</button></div>
-              <label className="form-field"><span>{tr("location")}</span><input autoComplete="off" autoCapitalize="characters" value={location} onChange={(event) => { setLocation(event.target.value); setDuplicateLine(null); }} required /></label>
-              <label className="form-field"><span>{tr("sku")}</span><input autoComplete="off" autoCapitalize="characters" value={sku} onChange={(event) => { setSku(event.target.value); setDuplicateLine(null); }} required /></label>
+              <label className="form-field"><span>{tr("location")}</span><ScanInput autoComplete="off" autoCapitalize="characters" value={location} onChange={(value) => { setLocation(value); setDuplicateLine(null); }} onScannedExtra={() => setDuplicateLine(null)} required tr={tr} scanKind="location" fieldLabel={tr("location")} /></label>
+              <label className="form-field"><span>{tr("sku")}</span><ScanInput autoComplete="off" autoCapitalize="characters" value={sku} onChange={(value) => { setSku(value); setDuplicateLine(null); }} onScannedExtra={() => setDuplicateLine(null)} required tr={tr} scanKind="sku" fieldLabel={tr("sku")} /></label>
               <div className="quantity-field"><span>{tr("missingQuantity")}</span><div className="quantity-control">
                 <button type="button" aria-label={tr("decreaseQuantity")} onClick={() => { setQuantity((value) => Math.max(1, value - 1)); setDuplicateLine(null); }} disabled={quantity <= 1}>−</button>
                 <input type="number" inputMode="numeric" min={1} step={1} value={quantity} onChange={(event) => { setQuantity(Math.max(1, Number(event.target.value) || 1)); setDuplicateLine(null); }} aria-label={tr("missingQuantity")} />
@@ -352,7 +353,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
           {canReportShortPick && <section className="order-lookup-panel" aria-labelledby="report-short-pick-title">
             <div className="content-heading picker-heading"><div><p className="case-eyebrow">{tr("pickerWorkspace")}</p><h1 id="report-short-pick-title">{tr("reportShortPick")}</h1><p>{tr("reportShortPickDescription")}</p></div></div>
             <form className="order-lookup-form" onSubmit={submitOrder}>
-              <label className="form-field"><span>{tr("orderNumber")}</span><input type="text" inputMode="numeric" pattern="[0-9]*" autoComplete="off" value={orderNumber} onChange={(event) => setOrderNumber(event.target.value)} placeholder={tr("orderNumberPlaceholder")} required /></label>
+              <label className="form-field"><span>{tr("orderNumber")}</span><ScanInput type="text" inputMode="numeric" pattern="[0-9]*" autoComplete="off" value={orderNumber} onChange={setOrderNumber} placeholder={tr("orderNumberPlaceholder")} required tr={tr} scanKind="order" fieldLabel={tr("orderNumber")} /></label>
               <button className="primary-button" type="submit" disabled={busy}>{busy ? tr("checkingOrder") : tr("findOrder")}</button>
             </form>
             {history.length > 0 && <section className="history-warning" aria-labelledby="history-warning-title">
