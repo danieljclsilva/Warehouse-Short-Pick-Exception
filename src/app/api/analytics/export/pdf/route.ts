@@ -8,13 +8,25 @@ import { logServerError } from "@/server/logger";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(request: Request) {
+function hasExpectedOrigin(request: Request) {
+  const origin = request.headers.get("origin");
+  if (!origin) return false;
+  try {
+    const expectedOrigin = new URL(request.url).origin;
+    return new URL(origin).origin === expectedOrigin;
+  } catch {
+    return false;
+  }
+}
+
+export async function POST(request: Request) {
   let stage = "authentication";
   try {
     const auth = await authenticate(request);
     if (!auth) return jsonError("Unauthenticated", 401);
     stage = "authorization";
     if (!hasAuthPermission(auth, "EXPORT_ANALYTICS")) return jsonError("Analytics export permission required", 403);
+    if (!hasExpectedOrigin(request)) return jsonError("Same-origin analytics export required", 403);
     stage = "analytics_query";
     const filters = parseAnalyticsFilters(new URL(request.url).searchParams);
     const analytics = await getAnalyticsReportData(auth, filters);

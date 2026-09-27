@@ -197,7 +197,8 @@ async function run() {
   // Exercise the optimized Next production bundle, empty analytics state, and
   // PDFKit/font integration over the real HTTP route.
   const emptyPdf = await fetch(`${appUrl}/api/analytics/export/pdf`, {
-    headers: { cookie: admin.cookie },
+    method: "POST",
+    headers: { cookie: admin.cookie, origin: new URL(appUrl).origin },
     signal: AbortSignal.timeout(requestTimeoutMs),
   });
   assert.equal(emptyPdf.status, 200, `empty analytics PDF should render: ${emptyPdf.status}`);

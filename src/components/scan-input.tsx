@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { InputHTMLAttributes } from "react";
+import type { FocusEvent, InputHTMLAttributes, KeyboardEvent } from "react";
+import { flushSync } from "react-dom";
 import type { MessageKey } from "@/i18n/messages";
 
 export type ScanKind = "order" | "location" | "sku";
@@ -18,8 +19,11 @@ export function normalizeScannedValue(raw: string, kind: ScanKind): string {
   const trimmed = raw.trim();
   if (kind === "order") {
     const runs = trimmed.match(/\d+/g);
-    if (!runs || runs.length === 0) return trimmed;
-    return runs[runs.length - 1] ?? trimmed;
+    // A single numeric run is an unambiguous order component (for example,
+    // `NLVW341151`). Multiple runs need explicit correction instead of
+    // silently selecting one (for example, `NLVW341151-02`).
+    if (!runs || runs.length !== 1) return trimmed;
+    return runs[0] ?? trimmed;
   }
   return trimmed.toUpperCase();
 }
@@ -68,7 +72,7 @@ type ScanInputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onC
   type?: string;
 };
 
-export function ScanInput({ value, onChange, onScannedExtra, tr, scanKind, fieldLabel, id, ...inputProps }: ScanInputProps) {
+export function ScanInput({ value, onChange, onScannedExtra, tr, scanKind, fieldLabel, id, onBlur, onKeyDown, ...inputProps }: ScanInputProps) {
   const [open, setOpen] = useState(false);
   const [supported, setSupported] = useState(false);
   const [error, setError] = useState("");
@@ -95,6 +99,33 @@ export function ScanInput({ value, onChange, onScannedExtra, tr, scanKind, field
     setOpen(false);
     setError("");
     inputRef.current?.focus();
+  };
+
+  const normalizeOrderField = (raw: string) => {
+    if (scanKind !== "order") return;
+    const normalized = normalizeScannedValue(raw, "order");
+    if (normalized !== raw) onChange(normalized);
+  };
+
+  const handleBlur = (event: FocusEvent<HTMLInputElement>) => {
+    // A wedge scanner commonly appends Enter, or the user clicks the submit
+    // button after scanning. Normalize before either path validates the form.
+    normalizeOrderField(event.currentTarget.value);
+    onBlur?.(event);
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter" && scanKind === "order") {
+      const raw = event.currentTarget.value;
+      const normalized = normalizeScannedValue(raw, "order");
+      if (normalized !== raw) {
+        // Enter's native form submit follows this keydown. Commit the parent
+        // controlled value before that default action runs so onSubmit sees
+        // the normalized order number.
+        flushSync(() => onChange(normalized));
+      }
+    }
+    onKeyDown?.(event);
   };
 
   useEffect(() => {
@@ -178,7 +209,7 @@ export function ScanInput({ value, onChange, onScannedExtra, tr, scanKind, field
   return (
     <>
       <div className="scan-field">
-        <input ref={inputRef} id={id} value={value} onChange={(event) => onChange(event.target.value)} {...inputProps} />
+        <input ref={inputRef} id={id} value={value} onChange={(event) => onChange(event.target.value)} onBlur={handleBlur} onKeyDown={handleKeyDown} {...inputProps} />
         <button
           type="button"
           className="scan-button"

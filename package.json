@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
     "test": "sh scripts/with-test-env.sh vitest run",
     "db:migrate:test": "sh scripts/with-test-env.sh drizzle-kit migrate",
     "test:backup": "sh tests/backup-runner.test.sh",

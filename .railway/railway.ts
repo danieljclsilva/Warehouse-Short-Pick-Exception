@@ -19,7 +19,7 @@ export default defineRailway(() => {
     env: { DATABASE_URL: preserve(), PUSH_PRIVATE_KEY: preserve(), PUSH_PUBLIC_KEY: preserve(), PUSH_SUBJECT: preserve() },
   });
   const web = service("web", {
-    source: github("danieljclsilva/Warehouse-Short-Pick-Exception", { checkSuites: false }),
+    source: github("danieljclsilva/Warehouse-Short-Pick-Exception", { checkSuites: true }),
     start: "npm start",
     healthcheck: "/health",
     healthcheckTimeout: 300,
@@ -35,7 +35,7 @@ export default defineRailway(() => {
     env: { DATABASE_URL: preserve(), PUSH_PRIVATE_KEY: preserve(), PUSH_PUBLIC_KEY: preserve(), PUSH_SUBJECT: preserve() },
   });
   const databaseBackup = service("database-backup", {
-    source: github("danieljclsilva/Warehouse-Short-Pick-Exception", { checkSuites: false }),
+    source: github("danieljclsilva/Warehouse-Short-Pick-Exception", { checkSuites: true }),
     build: { builder: "DOCKERFILE", dockerfilePath: "backup/Dockerfile" },
     start: "sh /backup/run-backup.sh",
     replicas: { "europe-west4-drams3a": 1 },

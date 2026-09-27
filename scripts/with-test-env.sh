@@ -18,17 +18,37 @@ if [ -f "$ROOT/.env.test" ]; then
     echo "with-test-env: DATABASE_URL is not set in .env.test" >&2
     exit 1
   fi
-  case "$URL" in
-    *localhost*|*127.0.0.1*|*/tmp*|*.s.PGSQL.*) ;;
-    *) echo "with-test-env: refusing non-local DATABASE_URL" >&2; exit 1 ;;
-  esac
-  NAME="$(printf '%s' "$URL" | sed -e 's/.*\///' -e 's/[?].*//')"
-  case "$NAME" in
-    *test*|shortpick_*) ;;
-    *) echo "with-test-env: refusing database '$NAME': test DB name must contain 'test' or start with 'shortpick_'" >&2; exit 1 ;;
-  esac
+  if ! node - "$URL" <<'NODE'
+const value = process.argv[2];
+let url;
+try {
+  url = new URL(value);
+} catch {
+  console.error("with-test-env: DATABASE_URL is not a valid PostgreSQL URL");
+  process.exit(1);
+}
+
+const localHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
+if (!["postgres:", "postgresql:"].includes(url.protocol) || !localHosts.has(url.hostname.toLowerCase())) {
+  console.error("with-test-env: refusing non-local DATABASE_URL");
+  process.exit(1);
+}
+if (value.includes("?") || value.includes("#")) {
+  console.error("with-test-env: DATABASE_URL must not include query parameters or a fragment");
+  process.exit(1);
+}
+
+const name = decodeURIComponent(url.pathname.slice(1));
+if (!/^[A-Za-z0-9_]+_test$/.test(name) || /^(shortpick_restore|shortpick_fixture)_/.test(name)) {
+  console.error("with-test-env: database name must end in _test and must not be a restore or fixture database");
+  process.exit(1);
+}
+NODE
+  then
+    exit 1
+  fi
 elif [ "${CI:-}" != "true" ]; then
-  echo "with-test-env: missing $ROOT/.env.test (copy from .env.example test block)" >&2
+  echo "with-test-env: missing $ROOT/.env.test; create it with DATABASE_URL pointing to a disposable local PostgreSQL database whose name ends in _test" >&2
   exit 1
 fi
 

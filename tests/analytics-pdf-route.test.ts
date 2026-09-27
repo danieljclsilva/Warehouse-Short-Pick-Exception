@@ -16,7 +16,10 @@ vi.mock("../src/server/analytics-pdf", () => ({ renderAnalyticsPdf: mocks.render
 vi.mock("../src/server/analytics-report-storage", () => ({ persistAnalyticsReport: mocks.persistAnalyticsReport }));
 vi.mock("../src/server/logger", () => ({ logServerError: mocks.logServerError }));
 
-import { GET } from "../src/app/api/analytics/export/pdf/route";
+import * as pdfRoute from "../src/app/api/analytics/export/pdf/route";
+
+const POST = pdfRoute.POST;
+const postRequest = (url: string) => new Request(url, { method: "POST", headers: { origin: new URL(url).origin } });
 
 const context = { user: { id: "user-1", displayName: "Leader", loginIdentifier: "leader", role: "TEAM_LEADER", preferredLanguage: "en", permissions: ["EXPORT_ANALYTICS"] }, sessionId: "session-1" };
 
@@ -29,9 +32,49 @@ describe("analytics PDF route authorization", () => {
     mocks.persistAnalyticsReport.mockResolvedValue("report-1");
   });
 
+  it("does not expose PDF generation through GET", () => {
+    expect("GET" in pdfRoute).toBe(false);
+    expect(mocks.persistAnalyticsReport).not.toHaveBeenCalled();
+  });
+
+  it("rejects cross-origin POST requests before generating or retaining a report", async () => {
+    mocks.authenticate.mockResolvedValue(context);
+    mocks.hasAuthPermission.mockReturnValue(true);
+    const response = await POST(new Request("http://localhost/api/analytics/export/pdf", {
+      method: "POST",
+      headers: { origin: "https://evil.example" },
+    }));
+    expect(response.status).toBe(403);
+    expect(mocks.getAnalyticsReportData).not.toHaveBeenCalled();
+    expect(mocks.renderAnalyticsPdf).not.toHaveBeenCalled();
+    expect(mocks.persistAnalyticsReport).not.toHaveBeenCalled();
+  });
+
+  it("rejects POST requests without an Origin header before generating or retaining a report", async () => {
+    mocks.authenticate.mockResolvedValue(context);
+    mocks.hasAuthPermission.mockReturnValue(true);
+    const response = await POST(new Request("http://localhost/api/analytics/export/pdf", { method: "POST" }));
+    expect(response.status).toBe(403);
+    expect(mocks.getAnalyticsReportData).not.toHaveBeenCalled();
+    expect(mocks.renderAnalyticsPdf).not.toHaveBeenCalled();
+    expect(mocks.persistAnalyticsReport).not.toHaveBeenCalled();
+  });
+
+  it("accepts the public request origin when APP_URL names a different deployment host", async () => {
+    mocks.authenticate.mockResolvedValue(context);
+    mocks.hasAuthPermission.mockReturnValue(true);
+    const response = await POST(new Request("https://shortpickexception.nl/api/analytics/export/pdf", {
+      method: "POST",
+      headers: { origin: "https://shortpickexception.nl" },
+    }));
+    expect(response.status).toBe(200);
+    expect(mocks.getAnalyticsReportData).toHaveBeenCalledWith(context, expect.any(Object));
+    expect(mocks.persistAnalyticsReport).toHaveBeenCalled();
+  });
+
   it("rejects unauthenticated requests before reading analytics", async () => {
     mocks.authenticate.mockResolvedValue(null);
-    const response = await GET(new Request("http://localhost/api/analytics/export/pdf"));
+    const response = await POST(postRequest("http://localhost/api/analytics/export/pdf"));
     expect(response.status).toBe(401);
     expect(mocks.getAnalyticsReportData).not.toHaveBeenCalled();
   });
@@ -39,7 +82,7 @@ describe("analytics PDF route authorization", () => {
   it("requires EXPORT_ANALYTICS on the server", async () => {
     mocks.authenticate.mockResolvedValue(context);
     mocks.hasAuthPermission.mockReturnValue(false);
-    const response = await GET(new Request("http://localhost/api/analytics/export/pdf?phase=PICKING"));
+    const response = await POST(postRequest("http://localhost/api/analytics/export/pdf?phase=PICKING"));
     expect(response.status).toBe(403);
     expect(mocks.getAnalyticsReportData).not.toHaveBeenCalled();
   });
@@ -47,7 +90,7 @@ describe("analytics PDF route authorization", () => {
   it("streams a PDF after applying the shared filter parser", async () => {
     mocks.authenticate.mockResolvedValue(context);
     mocks.hasAuthPermission.mockReturnValue(true);
-    const response = await GET(new Request("http://localhost/api/analytics/export/pdf?phase=PICKING"));
+    const response = await POST(postRequest("http://localhost/api/analytics/export/pdf?phase=PICKING"));
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("application/pdf");
     expect(response.headers.get("cache-control")).toBe("private, no-store");
@@ -64,7 +107,7 @@ describe("analytics PDF route authorization", () => {
     mocks.authenticate.mockResolvedValue(context);
     mocks.hasAuthPermission.mockReturnValue(true);
     mocks.persistAnalyticsReport.mockRejectedValue(new Error("retention unavailable"));
-    const response = await GET(new Request("http://localhost/api/analytics/export/pdf?phase=PICKING"));
+    const response = await POST(postRequest("http://localhost/api/analytics/export/pdf?phase=PICKING"));
     expect(response.status).toBe(200);
     expect(response.headers.get("x-report-retention")).toBe("unavailable");
     expect(response.headers.get("x-report-id")).toBeNull();
@@ -76,7 +119,7 @@ describe("analytics PDF route authorization", () => {
     mocks.hasAuthPermission.mockReturnValue(true);
     mocks.renderAnalyticsPdf.mockRejectedValue(new Error("private renderer detail"));
 
-    const response = await GET(new Request("http://localhost/api/analytics/export/pdf"));
+    const response = await POST(postRequest("http://localhost/api/analytics/export/pdf"));
 
     expect(response.status).toBe(500);
     expect(mocks.logServerError).toHaveBeenCalledWith("report.pdf.generation_failed", expect.any(Error), {

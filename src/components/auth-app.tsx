@@ -580,8 +580,8 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             ) : activeSection === "profile" ? (
               <ProfilePanel locale={locale} tr={tr} onLanguageChange={changeLocale} />
             ) : activeSection === "users" && allowedNavigation.some((item) => item.key === "users") ? (
-              <><UserManagement actorId={user.id} actorRole={user.role} actorPermissions={user.permissions} tr={tr} />
-                {user.permissions.includes("APPROVE_PROFILE_PHOTO") || user.role === "ADMIN" ? <PhotoApproval tr={tr} onQueueChange={setPendingPhotoCount} /> : null}</>
+              <>{user.permissions.includes("VIEW_USERS") || user.role === "ADMIN" ? <UserManagement actorId={user.id} actorRole={user.role} actorPermissions={user.permissions} tr={tr} /> : null}
+                {user.permissions.includes("APPROVE_PROFILE_PHOTO") || user.role === "ADMIN" ? <PhotoApproval locale={locale} tr={tr} onQueueChange={setPendingPhotoCount} /> : null}</>
             ) : activeSection === "openCases" && allowedNavigation.some((item) => item.key === "openCases") ? (
               <OperationsDashboard
                 tr={tr}

@@ -297,7 +297,7 @@ export function AnalyticsDashboard({ tr, locale, canExport }: Props) {
     if (exporting) return;
     setExporting("pdf");
     try {
-      const response = await fetch(`/api/analytics/export/pdf${query ? `?${query}` : ""}`, { credentials: "same-origin" });
+      const response = await fetch(`/api/analytics/export/pdf${query ? `?${query}` : ""}`, { method: "POST", credentials: "same-origin" });
       if (!response.ok) throw new Error(tr("analyticsExportError"));
       const reportId = response.headers.get("x-report-id");
       const retention = response.headers.get("x-report-retention");
