@@ -137,18 +137,20 @@ export function ProfilePanel({ locale, tr, onLanguageChange }: Props) {
       </section>
       <section className="profile-card" aria-labelledby="profile-security-title">
         <h2 id="profile-security-title">{tr("securityTitle")}</h2><p>{tr("securityDescription")}</p>
-        <p>{tr("credentialCurrent", { type: tr(`credentialType${profile.credentialType}` as MessageKey) })}</p>
-        <div className="profile-credential-switch" role="group" aria-label={tr("securityTitle")}>
-          <button className="secondary-button" type="button" disabled={targetType === "PIN"} onClick={() => { setTargetType("PIN"); setNextSecret(""); setConfirmSecret(""); }}>{tr("switchToPin")}</button>
-          <button className="secondary-button" type="button" disabled={targetType === "PASSWORD"} onClick={() => { setTargetType("PASSWORD"); setNextSecret(""); setConfirmSecret(""); }}>{tr("switchToPassword")}</button>
-        </div>
+        <p className="profile-credential-status"><span className="profile-credential-label">{tr("credentialCurrentLabel")}</span><span className={`credential-badge credential-badge-${profile.credentialType}`}>{tr(`credentialType${profile.credentialType}` as MessageKey)}</span></p>
         <form className="profile-form" onSubmit={changeCredential}>
-          <label className="form-field"><span>{tr("currentCredential")}</span><input type="password" autoComplete="current-password" value={current} onChange={(event) => setCurrent(event.target.value)} required /></label>
+          <fieldset className="credential-choice">
+            <legend>{tr("credentialChoiceLegend")}</legend>
+            <label className="credential-option"><input type="radio" name="credential-type" value="PIN" checked={targetType === "PIN"} onChange={() => { setTargetType("PIN"); setNextSecret(""); setConfirmSecret(""); }} /><span>{tr("credentialTypePIN")}</span><small>{tr("credentialHintPIN")}</small></label>
+            <label className="credential-option"><input type="radio" name="credential-type" value="PASSWORD" checked={targetType === "PASSWORD"} onChange={() => { setTargetType("PASSWORD"); setNextSecret(""); setConfirmSecret(""); }} /><span>{tr("credentialTypePASSWORD")}</span><small>{tr("credentialHintPASSWORD")}</small></label>
+          </fieldset>
+          <label className="form-field"><span>{tr(`currentCredential${profile.credentialType}` as MessageKey)}</span><input type="password" autoComplete="current-password" value={current} onChange={(event) => setCurrent(event.target.value)} required /></label>
           {targetType === "PIN"
-            ? <label className="form-field"><span>{tr("pin")}</span><input type="password" autoComplete="new-password" inputMode="numeric" value={nextSecret} onChange={(event) => setNextSecret(event.target.value.replace(/\D/g, ""))} placeholder={tr("pinPlaceholder")} minLength={6} required /></label>
-            : <label className="form-field"><span>{tr("newPassword")}</span><input type="password" autoComplete="new-password" value={nextSecret} onChange={(event) => setNextSecret(event.target.value)} minLength={8} maxLength={200} required /></label>}
-          <label className="form-field"><span>{tr("confirmCredential")}</span><input type="password" autoComplete="new-password" value={confirmSecret} onChange={(event) => setConfirmSecret(event.target.value)} required /></label>
-          <button className="primary-button" type="submit" disabled={busy}>{busy ? tr("saving") : tr("saveCredential")}</button>
+            ? <label className="form-field"><span>{tr("newCredentialPIN")}</span><input type="password" autoComplete="new-password" inputMode="numeric" value={nextSecret} onChange={(event) => setNextSecret(event.target.value.replace(/\D/g, ""))} placeholder={tr("pinPlaceholder")} minLength={6} required aria-describedby="credential-save-note" /></label>
+            : <label className="form-field"><span>{tr("newCredentialPASSWORD")}</span><input type="password" autoComplete="new-password" value={nextSecret} onChange={(event) => setNextSecret(event.target.value)} minLength={8} maxLength={200} required aria-describedby="credential-save-note" /></label>}
+          <label className="form-field"><span>{tr(`confirmCredential${targetType}` as MessageKey)}</span><input type="password" autoComplete="new-password" value={confirmSecret} onChange={(event) => setConfirmSecret(event.target.value)} required aria-describedby="credential-save-note" /></label>
+          <p className="credential-note" id="credential-save-note">{tr("credentialSignOutNote")}</p>
+          <button className="primary-button" type="submit" disabled={busy}>{busy ? tr("saving") : tr(`credentialSave${targetType}` as MessageKey)}</button>
         </form>
       </section>
       <section className="profile-card" aria-labelledby="profile-photo-title">
@@ -157,7 +159,7 @@ export function ProfilePanel({ locale, tr, onLanguageChange }: Props) {
           <label className="form-field"><span>{tr("choosePhoto")}</span><input id="profile-photo-file" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setPhoto(event.target.files?.[0] || null)} /></label>
           <button className="secondary-button" type="submit" disabled={busy || !photo}>{busy ? tr("uploadingPhoto") : tr("uploadPhoto")}</button>
         </form>
-        {profile.profilePhotoStatus !== "NONE" && <button className="secondary-button" type="button" disabled={busy} onClick={() => void removePhoto()}>{tr("removePhoto")}</button>}
+        {profile.profilePhotoStatus !== "NONE" && <button className="secondary-button profile-photo-remove" type="button" disabled={busy} onClick={() => void removePhoto()}>{tr("removePhoto")}</button>}
       </section>
     </>}
   </div>;

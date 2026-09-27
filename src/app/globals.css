@@ -414,13 +414,26 @@ button { color: inherit; }
 .profile-photo-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, .45fr); align-items: end; gap: 16px; margin-top: 18px; }
 .profile-photo-form input[type="file"] { display: block; width: 100%; min-height: 50px; padding: 11px; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; font-size: 13px; }
 .profile-photo-form .secondary-button { margin: 0; }
+.profile-photo-remove { width: auto; margin: 16px 0 0; }
 .profile-message, .profile-empty { margin: 0 0 16px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 9px; background: #fff; font-size: 13px; }
 .profile-error { border-color: #efb5a8; color: #763b2e; background: var(--coral-wash); }
 .profile-success { border-color: #b5d6c7; color: #245c48; background: var(--green-wash); }
 .profile-warning { border-color: #e7c873; color: #62490f; background: #fdf3d7; }
 .profile-warning p { margin: 0 0 8px; }
 .profile-warning .secondary-button { margin: 4px 0 0; }
-.profile-credential-switch { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 16px; }
+.profile-credential-status { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; }
+.profile-credential-label { color: var(--muted); font-size: 12px; font-weight: 600; }
+.credential-badge { display: inline-flex; min-height: 30px; align-items: center; padding: 3px 12px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+.credential-badge-PIN { color: #205d4a; background: #dbece3; }
+.credential-badge-PASSWORD { color: #22486b; background: #dde9f5; }
+.credential-choice { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 16px 0 0; padding: 0; border: 0; }
+.credential-choice legend { margin-bottom: 8px; padding: 0; color: var(--ink); font-size: 13px; font-weight: 650; }
+.credential-option { display: grid; align-content: start; gap: 2px; min-height: 76px; padding: 11px 13px; border: 1px solid var(--line-strong); border-radius: 9px; color: var(--ink); background: #fff; font-size: 13px; cursor: pointer; }
+.credential-option:has(input:checked) { border-color: var(--green); background: var(--green-wash); box-shadow: 0 0 0 1px var(--green); }
+.credential-option input { width: 17px; height: 17px; accent-color: var(--green); }
+.credential-option span { font-weight: 700; }
+.credential-option small { color: var(--muted); font-size: 12px; font-weight: 450; }
+.credential-note { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; }
 .profile-empty { color: var(--muted); text-align: center; }
 .users-list { display: grid; gap: 12px; }
 .user-card { padding: 17px 19px; border: 1px solid var(--line); border-radius: 11px; background: #fff; }
@@ -456,6 +469,7 @@ button { color: inherit; }
   .profile-card { padding: 19px 16px; }
   .profile-form, .profile-photo-form { grid-template-columns: 1fr; gap: 13px; }
   .profile-form > .primary-button, .profile-photo-form .secondary-button { width: 100%; }
+  .credential-choice { grid-template-columns: 1fr; }
   .user-card { padding: 15px 13px; }
   .user-facts { gap: 10px 22px; }
   .user-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
