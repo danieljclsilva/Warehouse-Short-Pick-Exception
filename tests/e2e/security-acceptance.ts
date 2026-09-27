@@ -129,7 +129,8 @@ async function setupDatabase() {
 }
 
 async function startApp() {
-  const env = { ...process.env, DATABASE_URL: databaseUrl, APP_URL: appUrl, NODE_ENV: "test" as const };
+  const env = { ...process.env, DATABASE_URL: databaseUrl, APP_URL: appUrl, NODE_ENV: "test" as const,
+    STORAGE_ENDPOINT: "", STORAGE_BUCKET: "", STORAGE_ACCESS_KEY_ID: "", STORAGE_SECRET_ACCESS_KEY: "" };
   const nextBin = `${process.cwd()}/node_modules/next/dist/bin/next`;
   const child = spawn(process.execPath, [nextBin, "start", "--hostname", appHost, "--port", String(port)], { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"] });
   appProcess = child;
@@ -192,6 +193,18 @@ async function run() {
   const revokedTarget = await login(await createUser("revoked-target", "PICKER"));
   const lockoutTarget = await createUser("lockout-target", "PICKER");
   const db = drizzle(databaseClient!, { schema });
+
+  // Exercise the optimized Next production bundle, empty analytics state, and
+  // PDFKit/font integration over the real HTTP route.
+  const emptyPdf = await fetch(`${appUrl}/api/analytics/export/pdf`, {
+    headers: { cookie: admin.cookie },
+    signal: AbortSignal.timeout(requestTimeoutMs),
+  });
+  assert.equal(emptyPdf.status, 200, `empty analytics PDF should render: ${emptyPdf.status}`);
+  assert.equal(emptyPdf.headers.get("content-type"), "application/pdf");
+  assert.equal(emptyPdf.headers.get("x-report-retention"), "unavailable");
+  const pdfPrefix = Buffer.from(await emptyPdf.arrayBuffer()).subarray(0, 5).toString("ascii");
+  assert.equal(pdfPrefix, "%PDF-");
 
   // Session cookies are persistent and explicitly HTTP-only; auth payloads omit PIN hashes.
   const loginResponse = await request<JsonRecord>("/api/auth/login", { method: "POST", body: { identifier: picker.identifier, pin } });
