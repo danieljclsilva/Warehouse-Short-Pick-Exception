@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:backup": "sh tests/backup-runner.test.sh",
     "test:e2e": "npm run build && npm run test:e2e:critical && npm run test:e2e:security",
     "test:e2e:critical": "tsx tests/e2e/critical-workflows.ts",
     "test:e2e:security": "tsx tests/e2e/security-acceptance.ts",

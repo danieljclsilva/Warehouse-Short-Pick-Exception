@@ -39,6 +39,8 @@ jobs:
       - run: npm run db:check
       - run: npm run db:migrate
       - run: npm test
+      - run: npm run test:backup
+      - run: sh tests/backup-restore.test.sh
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run build

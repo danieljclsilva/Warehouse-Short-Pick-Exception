@@ -1,4 +1,4 @@
-import { bucket, defineRailway, github, postgres, preserve, project, service, volume } from "railway/iac";
+import { bucket, defineRailway, github, postgres, preserve, project, ref, service, volume } from "railway/iac";
 
 export default defineRailway(() => {
   const Postgres = postgres("Postgres", { region: "sfo" });
@@ -7,6 +7,7 @@ export default defineRailway(() => {
   const postgresVolume = volume("postgres-volume", { alerts: { usage: { "100": {}, "80": {}, "95": {} } }, allowOnlineResize: true, region: "sfo", sizeMB: 5000 });
   const profilePhotosAndReports = bucket("profile-photos-and-reports", { region: "ams" });
   const PostgresPITR = bucket("Postgres-PITR", { region: "sjc" });
+  const databaseBackups = bucket("database-backups", { region: "sjc" });
   const notificationsEmitter = service("notifications-emitter", {
     start: "npm run notifications:emit",
     replicas: { "sfo": 1 },
@@ -29,8 +30,25 @@ export default defineRailway(() => {
     deploy: { cronSchedule: "*/5 * * * *", restartPolicyType: "NEVER" },
     env: { DATABASE_URL: preserve(), PUSH_PRIVATE_KEY: preserve(), PUSH_PUBLIC_KEY: preserve(), PUSH_SUBJECT: preserve() },
   });
+  const databaseBackup = service("database-backup", {
+    source: github("danieljclsilva/Warehouse-Short-Pick-Exception", { checkSuites: false }),
+    build: { builder: "DOCKERFILE", dockerfilePath: "backup/Dockerfile" },
+    start: "sh /backup/run-backup.sh",
+    replicas: { "sfo": 1 },
+    deploy: { cronSchedule: "15 2 * * *", restartPolicyType: "NEVER" },
+    env: {
+      DATABASE_URL: Postgres.env.DATABASE_URL,
+      BACKUP_AGE_RECIPIENT: preserve(),
+      S3_BUCKET: ref(databaseBackups, "BUCKET"),
+      S3_ENDPOINT_URL: ref(databaseBackups, "ENDPOINT"),
+      AWS_REGION: ref(databaseBackups, "REGION"),
+      AWS_ACCESS_KEY_ID: ref(databaseBackups, "ACCESS_KEY_ID"),
+      AWS_SECRET_ACCESS_KEY: ref(databaseBackups, "SECRET_ACCESS_KEY"),
+      S3_ADDRESSING_STYLE: "virtual",
+    },
+  });
 
   return project("warehouse-short-pick-exception", {
-    resources: [notificationsEmitter, Postgres, web, pushDelivery, postgres202609271224UTC, postgresVolume, profilePhotosAndReports, PostgresPITR],
+    resources: [notificationsEmitter, Postgres, web, pushDelivery, databaseBackup, postgres202609271224UTC, postgresVolume, profilePhotosAndReports, PostgresPITR, databaseBackups],
   });
 });
