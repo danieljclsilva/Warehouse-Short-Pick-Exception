@@ -2,6 +2,7 @@ import { and, eq, isNull, ne } from "drizzle-orm";
 import { getDb } from "@/db";
 import { auditLog, sessions, users } from "@/db/schema";
 import type { Permission, Role } from "@/domain/permissions";
+import { getCurrentConfiguration } from "@/server/configuration";
 import { digestToken, hashCredential, persistentSessionCookie, readCookie, SESSION_COOKIE, SESSION_COOKIE_OPTIONS } from "./security";
 
 export type AuthUser = {
@@ -87,12 +88,46 @@ export async function changePin(userId: string, pin: string, actorUserId: string
   await setCredential(userId, "PIN", pin, actorUserId, action, "pin_reset");
 }
 
-export async function changePassword(userId: string, password: string, actorUserId: string | null, action = "PIN_RESET") {
-  await setCredential(userId, "PASSWORD", password, actorUserId, action, "pin_reset");
+export async function changePassword(userId: string, password: string, actorUserId: string | null, action = "PASSWORD_RESET") {
+  await setCredential(userId, "PASSWORD", password, actorUserId, action, "password_reset");
 }
 
-export async function changeOwnCredential(userId: string, sessionId: string, type: CredentialType, secret: string) {
-  await setCredential(userId, type, secret, userId, "CREDENTIAL_CHANGED", "credential_changed", sessionId);
+export type ChangeOwnCredentialResult = "UPDATED" | "INVALID_CREDENTIAL" | "LOCKED" | "SESSION_REVOKED";
+
+export async function changeOwnCredential(userId: string, sessionId: string, currentSecret: string, type: CredentialType, secret: string): Promise<ChangeOwnCredentialResult> {
+  return getDb().transaction(async (tx) => {
+    const [user] = await tx.select({ pinHash: users.pinHash, passwordHash: users.passwordHash, status: users.status,
+      failedLoginAttempts: users.failedLoginAttempts, lockedUntil: users.lockedUntil })
+      .from(users).where(eq(users.id, userId)).for("update").limit(1);
+    if (!user || user.status !== "ACTIVE") return "SESSION_REVOKED";
+    const now = new Date();
+    if (user.lockedUntil && user.lockedUntil > now) return "LOCKED";
+
+    const [activeSession] = await tx.select({ id: sessions.id }).from(sessions)
+      .where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId), isNull(sessions.revokedAt)))
+      .for("update").limit(1);
+    if (!activeSession) return "SESSION_REVOKED";
+
+    if (!(await verifyCredential(user, currentSecret))) {
+      const { values } = await getCurrentConfiguration(tx);
+      const attempts = user.lockedUntil && user.lockedUntil <= now ? 1 : user.failedLoginAttempts + 1;
+      const locked = attempts >= values.LOGIN_MAX_FAILED_ATTEMPTS;
+      await tx.update(users).set({ failedLoginAttempts: attempts,
+        lockedUntil: locked ? new Date(now.getTime() + values.LOGIN_LOCKOUT_MINUTES * 60_000) : null })
+        .where(eq(users.id, userId));
+      return locked ? "LOCKED" : "INVALID_CREDENTIAL";
+    }
+
+    const hash = await hashCredential(secret);
+    await tx.update(users).set(type === "PIN"
+      ? { pinHash: hash, passwordHash: null, updatedAt: now, failedLoginAttempts: 0, lockedUntil: null }
+      : { pinHash: null, passwordHash: hash, updatedAt: now, failedLoginAttempts: 0, lockedUntil: null })
+      .where(eq(users.id, userId));
+    await tx.update(sessions).set({ revokedAt: now, revokedReason: "credential_changed" })
+      .where(and(eq(sessions.userId, userId), isNull(sessions.revokedAt), ne(sessions.id, sessionId)));
+    await tx.insert(auditLog).values({ actorUserId: userId, targetUserId: userId, action: "CREDENTIAL_CHANGED", details: { credentialType: type } });
+    return "UPDATED";
+  });
 }
 
 export function hasAuthPermission(context: AuthContext, permission: Permission): boolean {

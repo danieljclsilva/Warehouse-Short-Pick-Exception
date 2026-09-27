@@ -3,7 +3,7 @@ import { z } from "zod";
 import { getDb } from "@/db";
 import { auditLog, invites, sessions, users } from "@/db/schema";
 import { ROLES } from "@/domain/permissions";
-import { hashPin } from "@/server/security";
+import { hashPin, isPinFormat } from "@/server/security";
 import { createToken, digestToken, persistentSessionCookie } from "@/server/security";
 import { handleRouteError, jsonError, parseJson } from "@/server/http";
 import { canManageConfigurationForUser, getCurrentConfiguration } from "@/server/configuration";
@@ -11,7 +11,7 @@ import { canManageConfigurationForUser, getCurrentConfiguration } from "@/server
 const schema = z.object({
   inviteToken: z.string().min(20).max(200),
   displayName: z.string().trim().min(1).max(100),
-  pin: z.string().regex(/^\d{6,}$/, "PIN must contain at least 6 digits"),
+  pin: z.string().max(200, "PIN must contain 6-200 digits").refine(isPinFormat, "PIN must contain 6-200 digits"),
   preferredLanguage: z.enum(["en", "nl", "pl", "es"]).default("en"),
 });
 

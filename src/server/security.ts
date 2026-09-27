@@ -32,7 +32,7 @@ export async function hashPassword(password: string): Promise<string> {
 }
 
 export function isPinFormat(value: string): boolean {
-  return /^\d{6,}$/.test(value);
+  return /^\d{6,200}$/.test(value);
 }
 
 export function isPasswordFormat(value: string): boolean {

@@ -53,11 +53,11 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (input.action === "resetPin" || input.action === "resetPassword") {
       if (!hasAuthPermission(auth, "RESET_USER_PIN")) return jsonError("Forbidden", 403);
       if (input.action === "resetPin") {
-        if (!isPinFormat(input.pin)) return jsonError("PIN must contain at least 6 digits", 400);
+        if (!isPinFormat(input.pin)) return jsonError("PIN must contain 6-200 digits", 400);
         await changePin(id, input.pin, auth.user.id);
       } else {
         if (!isPasswordFormat(input.password)) return jsonError("Password must be 8-200 characters", 400);
-        await changePassword(id, input.password, auth.user.id);
+        await changePassword(id, input.password, auth.user.id, "PASSWORD_RESET");
       }
       return Response.json({ ok: true });
     }

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
-import { and, asc, desc, eq, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, or, isNull } from "drizzle-orm";
 import { getDb } from "@/db";
-import { auditLog, profilePhotos, users } from "@/db/schema";
+import { auditLog, notifications, profilePhotos, pushOutbox, users } from "@/db/schema";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/cases";
@@ -130,6 +130,18 @@ export async function removeProfilePhoto(auth: AuthContext) {
     if (rows.length) {
       await tx.update(profilePhotos).set({ status: "SUPERSEDED" })
         .where(and(eq(profilePhotos.userId, auth.user.id), ne(profilePhotos.status, "SUPERSEDED")));
+      const photoIds = new Set(rows.map((row) => row.id));
+      const pendingApprovalNotifications = await tx.select({ id: notifications.id, payload: notifications.payload })
+        .from(notifications).where(eq(notifications.type, "PROFILE_PHOTO_APPROVAL_REQUIRED"));
+      const notificationIds = pendingApprovalNotifications
+        .filter((notification) => typeof notification.payload.photoId === "string" && photoIds.has(notification.payload.photoId))
+        .map((notification) => notification.id);
+      if (notificationIds.length) {
+        const now = new Date();
+        await tx.update(notifications).set({ readAt: now }).where(and(inArray(notifications.id, notificationIds), isNull(notifications.readAt)));
+        await tx.update(pushOutbox).set({ status: "DISABLED", leaseUntil: null })
+          .where(and(inArray(pushOutbox.notificationId, notificationIds), or(eq(pushOutbox.status, "QUEUED"), eq(pushOutbox.status, "RETRY"))));
+      }
     }
     await tx.update(users).set({ profilePhotoStatus: "NONE", updatedAt: new Date() }).where(eq(users.id, auth.user.id));
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, targetUserId: auth.user.id,
@@ -169,4 +181,3 @@ export async function reviewProfilePhoto(auth: AuthContext, photoId: string, dec
     return { profile: user ? { ...user, photoUrl: decision === "APPROVED" ? `/api/profile/photo?userId=${user.id}` : null } : null };
   });
 }
-

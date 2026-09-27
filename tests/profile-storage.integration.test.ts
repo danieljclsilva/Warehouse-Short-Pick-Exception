@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import { closeDb, getDb } from "../src/db";
 import { analyticsReports, auditLog, notifications, profilePhotos, sessions, users } from "../src/db/schema";
 import { defaultPermissions, type Role } from "../src/domain/permissions";
 import { deleteAnalyticsReport, getAnalyticsReport, listAnalyticsReports, persistAnalyticsReport } from "../src/server/analytics-report-storage";
-import { reviewProfilePhoto, uploadProfilePhoto } from "../src/server/profile-photos";
+import { removeProfilePhoto, reviewProfilePhoto, uploadProfilePhoto } from "../src/server/profile-photos";
 import { setStorageForTests, resetStorageConfigurationForTests, type ObjectStorage } from "../src/server/storage";
 
 const describeDatabase = process.env.DATABASE_URL ? describe : describe.skip;
@@ -45,7 +45,8 @@ describeDatabase("profile photo revisions and durable object compensation", () =
   afterAll(async () => {
     const db = getDb();
     if (reportIds.length) await db.delete(analyticsReports).where(inArray(analyticsReports.id, reportIds));
-    if (photoIds.length) await db.delete(profilePhotos).where(inArray(profilePhotos.id, photoIds));
+    if (userIds.length) await db.delete(profilePhotos).where(inArray(profilePhotos.userId, userIds));
+    else if (photoIds.length) await db.delete(profilePhotos).where(inArray(profilePhotos.id, photoIds));
     if (notificationsIds.length) await db.delete(notifications).where(inArray(notifications.id, notificationsIds));
     if (userIds.length) await db.delete(auditLog).where(inArray(auditLog.targetUserId, userIds));
     if (userIds.length) await db.delete(auditLog).where(inArray(auditLog.actorUserId, userIds));
@@ -84,6 +85,33 @@ describeDatabase("profile photo revisions and durable object compensation", () =
     notificationsIds.push(...routed.map((row) => row.id));
     expect(routed).toHaveLength(2);
     expect(new Set(routed.map((row) => row.dedupeKey)).size).toBe(2);
+  });
+
+  it("removes the owner's photo, closes pending approval notifications, retains audit history, and does not require an operational permission", async () => {
+    await uploadProfilePhoto(picker!.auth, await imageFile());
+    const [photo] = await getDb().select().from(profilePhotos)
+      .where(eq(profilePhotos.userId, picker!.id)).orderBy(desc(profilePhotos.revision)).limit(1);
+    photoIds.push(photo!.id);
+    const notificationRows = await getDb().select({ id: notifications.id, payload: notifications.payload })
+      .from(notifications).where(and(eq(notifications.recipientUserId, approver!.id), eq(notifications.type, "PROFILE_PHOTO_APPROVAL_REQUIRED")));
+    const approval = notificationRows.find((row) => row.payload.photoId === photo!.id);
+    expect(approval).toBeDefined();
+    notificationsIds.push(approval!.id);
+
+    const noOperationalPermissions = { ...picker!.auth, user: { ...picker!.auth.user, permissions: [] as string[] } };
+    await expect(removeProfilePhoto(noOperationalPermissions)).resolves.toBeUndefined();
+
+    const [removedPhoto] = await getDb().select().from(profilePhotos).where(eq(profilePhotos.id, photo!.id));
+    const [owner] = await getDb().select({ profilePhotoStatus: users.profilePhotoStatus }).from(users).where(eq(users.id, picker!.id));
+    const [closedNotification] = await getDb().select({ readAt: notifications.readAt }).from(notifications).where(eq(notifications.id, approval!.id));
+    expect(removedPhoto!.status).toBe("SUPERSEDED");
+    expect(owner!.profilePhotoStatus).toBe("NONE");
+    expect(closedNotification!.readAt).toBeInstanceOf(Date);
+    expect(objects.has(photo!.objectKey)).toBe(false);
+
+    const removals = await getDb().select().from(auditLog).where(and(eq(auditLog.action, "PROFILE_PHOTO_REMOVED"), eq(auditLog.actorUserId, picker!.id)));
+    expect(removals.some((entry) => Array.isArray(entry.details.photoIds) && entry.details.photoIds.includes(photo!.id))).toBe(true);
+    await expect(reviewProfilePhoto(approver!.auth, photo!.id, "APPROVED")).rejects.toMatchObject({ code: "CASE_NOT_FOUND" });
   });
 
   it("deletes profile and report objects when their database metadata writes fail", async () => {
