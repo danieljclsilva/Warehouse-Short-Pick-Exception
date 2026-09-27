@@ -15,11 +15,11 @@ The [product requirements](./Warehouse_Short_Pick_Exception%20_System.md) are th
 
 ## Current validation status — 2026-09-28
 
-- Earlier HEAD `128464a` failed GitHub CI because the package typecheck script was removed (runs `36355710351`, `36356063807`, `36356251344`). The package script fix is in place; CI for the current changes is pending.
-- Current local validation passes all 101 tests, type checking, linting, production build, and `db:check`. The backup runner passes 6/6 checks, and restore safety checks pass.
+- Earlier HEAD `128464a` failed GitHub CI because the package typecheck script was removed (runs `36355710351`, `36356063807`, `36356251344`). Commit `ab1f769` failed CI run `36357661910` only on the security E2E PDF 403 check. Railway production `web` and backup deployments for that commit were skipped by Wait for CI. Test `web` deployed `ab1f769` before its gate; Wait for CI is now enabled there as well.
+- Current local validation passes all 102 tests, type checking, linting, production build, and `db:check`. The backup runner passes 6/6 checks, and restore safety checks pass.
 - Railway test environment web pre-deploy `npm run db:migrate` was configured through the dashboard. Deployment `e85da1d9…` succeeded, its logs show migrations ran, and the service is healthy. Custom-domain DNS/TLS is valid and HTTPS health passed with certificate verification.
 - Manual encrypted backup and restore are proven. Scheduled backup cron execution, retention aging, and private-key escrow recovery remain unproven; Railway native scheduled volume backups are Pro-gated.
-- Railway IaC `checkSuites: true` has been applied to production `web` and `database-backup`, and the subsequent config plan is clean. The PDF export flow now uses POST with a strict same-request-origin guard; the custom-domain CSRF regression test passes locally. CI is pending. Phase 8 remains in progress.
+- Railway IaC `checkSuites: true` has been applied to production `web` and `database-backup`, and the subsequent config plan is clean. The local follow-up uses POST and validates the request Host/Origin against trusted `APP_URL` protocol, ignoring forwarded headers. Real HTTP security E2E passed against local PostgreSQL on port 5432 (11 security checks plus PDF); independent Sol review found no actionable issues; CI is pending. Phase 8 remains in progress.
 
 ## Architecture decisions
 

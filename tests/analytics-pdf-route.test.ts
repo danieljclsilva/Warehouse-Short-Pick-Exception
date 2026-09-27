@@ -19,7 +19,7 @@ vi.mock("../src/server/logger", () => ({ logServerError: mocks.logServerError })
 import * as pdfRoute from "../src/app/api/analytics/export/pdf/route";
 
 const POST = pdfRoute.POST;
-const postRequest = (url: string) => new Request(url, { method: "POST", headers: { origin: new URL(url).origin } });
+const postRequest = (url: string) => new Request(url, { method: "POST", headers: { origin: new URL(url).origin, host: new URL(url).host } });
 
 const context = { user: { id: "user-1", displayName: "Leader", loginIdentifier: "leader", role: "TEAM_LEADER", preferredLanguage: "en", permissions: ["EXPORT_ANALYTICS"] }, sessionId: "session-1" };
 
@@ -42,7 +42,7 @@ describe("analytics PDF route authorization", () => {
     mocks.hasAuthPermission.mockReturnValue(true);
     const response = await POST(new Request("http://localhost/api/analytics/export/pdf", {
       method: "POST",
-      headers: { origin: "https://evil.example" },
+      headers: { origin: "https://evil.example", host: "localhost", "x-forwarded-host": "evil.example", "x-forwarded-proto": "https" },
     }));
     expect(response.status).toBe(403);
     expect(mocks.getAnalyticsReportData).not.toHaveBeenCalled();
@@ -50,10 +50,22 @@ describe("analytics PDF route authorization", () => {
     expect(mocks.persistAnalyticsReport).not.toHaveBeenCalled();
   });
 
+  it("rejects forged forwarded headers when Host is missing", async () => {
+    mocks.authenticate.mockResolvedValue(context);
+    mocks.hasAuthPermission.mockReturnValue(true);
+    const response = await POST(new Request("http://localhost/api/analytics/export/pdf", {
+      method: "POST",
+      headers: { origin: "https://evil.example", "x-forwarded-host": "evil.example", "x-forwarded-proto": "https" },
+    }));
+    expect(response.status).toBe(403);
+    expect(mocks.getAnalyticsReportData).not.toHaveBeenCalled();
+    expect(mocks.persistAnalyticsReport).not.toHaveBeenCalled();
+  });
+
   it("rejects POST requests without an Origin header before generating or retaining a report", async () => {
     mocks.authenticate.mockResolvedValue(context);
     mocks.hasAuthPermission.mockReturnValue(true);
-    const response = await POST(new Request("http://localhost/api/analytics/export/pdf", { method: "POST" }));
+    const response = await POST(new Request("http://localhost/api/analytics/export/pdf", { method: "POST", headers: { host: "localhost" } }));
     expect(response.status).toBe(403);
     expect(mocks.getAnalyticsReportData).not.toHaveBeenCalled();
     expect(mocks.renderAnalyticsPdf).not.toHaveBeenCalled();
@@ -63,13 +75,20 @@ describe("analytics PDF route authorization", () => {
   it("accepts the public request origin when APP_URL names a different deployment host", async () => {
     mocks.authenticate.mockResolvedValue(context);
     mocks.hasAuthPermission.mockReturnValue(true);
-    const response = await POST(new Request("https://shortpickexception.nl/api/analytics/export/pdf", {
-      method: "POST",
-      headers: { origin: "https://shortpickexception.nl" },
-    }));
-    expect(response.status).toBe(200);
-    expect(mocks.getAnalyticsReportData).toHaveBeenCalledWith(context, expect.any(Object));
-    expect(mocks.persistAnalyticsReport).toHaveBeenCalled();
+    const priorAppUrl = process.env.APP_URL;
+    process.env.APP_URL = "https://railway.example";
+    try {
+      const response = await POST(new Request("http://localhost:3000/api/analytics/export/pdf", {
+        method: "POST",
+        headers: { origin: "https://shortpickexception.nl", host: "shortpickexception.nl", "x-forwarded-proto": "http", "x-forwarded-host": "attacker.example" },
+      }));
+      expect(response.status).toBe(200);
+      expect(mocks.getAnalyticsReportData).toHaveBeenCalledWith(context, expect.any(Object));
+      expect(mocks.persistAnalyticsReport).toHaveBeenCalled();
+    } finally {
+      if (priorAppUrl === undefined) delete process.env.APP_URL;
+      else process.env.APP_URL = priorAppUrl;
+    }
   });
 
   it("rejects unauthenticated requests before reading analytics", async () => {

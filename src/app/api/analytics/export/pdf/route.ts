@@ -10,10 +10,15 @@ export const runtime = "nodejs";
 
 function hasExpectedOrigin(request: Request) {
   const origin = request.headers.get("origin");
-  if (!origin) return false;
+  const host = request.headers.get("host");
+  if (!origin || !host) return false;
   try {
-    const expectedOrigin = new URL(request.url).origin;
-    return new URL(origin).origin === expectedOrigin;
+    const originUrl = new URL(origin);
+    const expectedProtocol = new URL(process.env.APP_URL || request.url).protocol;
+    if (originUrl.username || originUrl.password || originUrl.pathname !== "/" || originUrl.search || originUrl.hash) return false;
+    const hostUrl = new URL(`${expectedProtocol}//${host}`);
+    if (hostUrl.username || hostUrl.password || hostUrl.pathname !== "/" || hostUrl.search || hostUrl.hash) return false;
+    return originUrl.protocol === expectedProtocol && originUrl.host === hostUrl.host;
   } catch {
     return false;
   }
