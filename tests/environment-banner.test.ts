@@ -1,17 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { shouldShowTestBanner } from "@/components/environment-banner";
+import { getAppEnvironment } from "@/server/environment";
 
-describe("shouldShowTestBanner", () => {
-  it("shows the banner for the test environment", () => {
-    expect(shouldShowTestBanner({ NEXT_PUBLIC_APP_ENV: "test" })).toBe(true);
+describe("getAppEnvironment", () => {
+  it("treats Railway production as production", () => {
+    expect(getAppEnvironment({ RAILWAY_ENVIRONMENT_NAME: "production", NODE_ENV: "production" } as NodeJS.ProcessEnv)).toBe("production");
   });
 
-  it("hides the banner when the marker is unset (production build)", () => {
-    expect(shouldShowTestBanner({})).toBe(false);
+  it("treats any other Railway environment as test", () => {
+    expect(getAppEnvironment({ RAILWAY_ENVIRONMENT_NAME: "test", NODE_ENV: "production" } as NodeJS.ProcessEnv)).toBe("test");
   });
 
-  it("hides the banner for any other value", () => {
-    expect(shouldShowTestBanner({ NEXT_PUBLIC_APP_ENV: "production" })).toBe(false);
-    expect(shouldShowTestBanner({ NEXT_PUBLIC_APP_ENV: "development" })).toBe(false);
+  it("respects an explicit APP_ENV override", () => {
+    expect(getAppEnvironment({ APP_ENV: "test", RAILWAY_ENVIRONMENT_NAME: "production", NODE_ENV: "production" } as NodeJS.ProcessEnv)).toBe("test");
+  });
+
+  it("falls back to NODE_ENV without Railway variables", () => {
+    expect(getAppEnvironment({ NODE_ENV: "production" } as NodeJS.ProcessEnv)).toBe("production");
+    expect(getAppEnvironment({ NODE_ENV: "development" } as NodeJS.ProcessEnv)).toBe("development");
   });
 });
