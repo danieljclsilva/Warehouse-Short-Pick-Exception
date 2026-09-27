@@ -4,15 +4,14 @@ export default defineRailway(() => {
   const Postgres = postgres("Postgres", { region: "europe-west4-drams3a" });
   Postgres.networking = { privateNetworkEndpoint: "postgres" };
   const postgres202609271224UTC = volume("postgres-2026-09-27 12:24 UTC", { alerts: { usage: { "100": {}, "80": {}, "95": {} } }, allowOnlineResize: true, region: "europe-west4-drams3a", sizeMB: 5000 });
-  // Legacy detached US volume (sfo, 471MB). Kept until EU backups verified, then delete via dashboard.
-  const postgresVolume = volume("postgres-volume", { alerts: { usage: { "100": {}, "80": {}, "95": {} } }, allowOnlineResize: true, region: "sfo", sizeMB: 5000 });
   const profilePhotosAndReports = bucket("profile-photos-and-reports", { region: "ams" });
-  // Bucket regions are immutable after creation, so US buckets stay declared until
-  // their objects are migrated and the new EU buckets are verified. Never remove
-  // an old bucket from this file before its objects are copied and confirmed.
-  const PostgresPITR = bucket("Postgres-PITR", { region: "sjc" });
-  const databaseBackups = bucket("database-backups", { region: "sjc" });
+  // EU backup bucket (ams). The old sjc backup buckets were deleted via dashboard
+  // after byte-identical migration.
   const databaseBackupsEu = bucket("database-backups-eu", { region: "ams" });
+  // Railway-managed PITR archive bucket (auto-named by `railway postgres pitr enable`,
+  // ams). Must stay declared: whole-project IaC deletes undeclared live resources.
+  // Never remove this stanza unless PITR is disabled via dashboard first.
+  const pitrArchive = bucket("tidy-shelf-yyW1", { region: "ams" });
   const notificationsEmitter = service("notifications-emitter", {
     start: "npm run notifications:emit",
     replicas: { "europe-west4-drams3a": 1 },
@@ -54,6 +53,6 @@ export default defineRailway(() => {
   });
 
   return project("warehouse-short-pick-exception", {
-    resources: [notificationsEmitter, Postgres, web, pushDelivery, databaseBackup, postgres202609271224UTC, postgresVolume, profilePhotosAndReports, PostgresPITR, databaseBackups, databaseBackupsEu],
+    resources: [notificationsEmitter, Postgres, web, pushDelivery, databaseBackup, postgres202609271224UTC, profilePhotosAndReports, databaseBackupsEu, pitrArchive],
   });
 });
