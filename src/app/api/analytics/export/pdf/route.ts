@@ -9,17 +9,22 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
+  let stage = "authentication";
   try {
     const auth = await authenticate(request);
     if (!auth) return jsonError("Unauthenticated", 401);
+    stage = "authorization";
     if (!hasAuthPermission(auth, "EXPORT_ANALYTICS")) return jsonError("Analytics export permission required", 403);
+    stage = "analytics_query";
     const filters = parseAnalyticsFilters(new URL(request.url).searchParams);
     const analytics = await getAnalyticsReportData(auth, filters);
+    stage = "pdf_render";
     // AnalyticsData keeps rich row interfaces and Date values; the renderer
     // intentionally accepts a serializable, field-tolerant view of the same
     // response so it can remain independent of query implementation details.
     const pdf = await renderAnalyticsPdf(analytics as unknown as AnalyticsReportData, { language: auth.user.preferredLanguage });
     const filename = `short-pick-analytics-${new Date().toISOString().slice(0, 10)}.pdf`;
+    stage = "report_retention";
     let reportId: string | null = null;
     try {
       reportId = await persistAnalyticsReport(auth, filename, filters, pdf);
@@ -27,6 +32,7 @@ export async function GET(request: Request) {
       logServerError("report.pdf.retention_failed", retentionError, { area: "reports", route: "/api/analytics/export/pdf", userId: auth.user.id, reason: "retained copy unavailable; streaming generated PDF" });
       reportId = null;
     }
+    stage = "response_construction";
     return new Response(pdf as BodyInit, {
       status: 200,
       headers: {
@@ -39,7 +45,7 @@ export async function GET(request: Request) {
       },
     });
   } catch (error) {
-    logServerError("report.pdf.generation_failed", error, { area: "reports", route: "/api/analytics/export/pdf" });
+    logServerError("report.pdf.generation_failed", error, { area: "reports", route: "/api/analytics/export/pdf", reason: `stage_${stage}` });
     return handleRouteError(error);
   }
 }

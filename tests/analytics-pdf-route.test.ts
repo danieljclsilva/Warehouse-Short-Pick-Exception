@@ -7,12 +7,14 @@ const mocks = vi.hoisted(() => ({
   getAnalyticsReportData: vi.fn(),
   renderAnalyticsPdf: vi.fn(),
   persistAnalyticsReport: vi.fn(),
+  logServerError: vi.fn(),
 }));
 
 vi.mock("../src/server/auth", () => ({ authenticate: mocks.authenticate, hasAuthPermission: mocks.hasAuthPermission }));
 vi.mock("../src/server/analytics", () => ({ parseAnalyticsFilters: mocks.parseAnalyticsFilters, getAnalyticsReportData: mocks.getAnalyticsReportData }));
 vi.mock("../src/server/analytics-pdf", () => ({ renderAnalyticsPdf: mocks.renderAnalyticsPdf }));
 vi.mock("../src/server/analytics-report-storage", () => ({ persistAnalyticsReport: mocks.persistAnalyticsReport }));
+vi.mock("../src/server/logger", () => ({ logServerError: mocks.logServerError }));
 
 import { GET } from "../src/app/api/analytics/export/pdf/route";
 
@@ -67,5 +69,21 @@ describe("analytics PDF route authorization", () => {
     expect(response.headers.get("x-report-retention")).toBe("unavailable");
     expect(response.headers.get("x-report-id")).toBeNull();
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([37, 80, 68, 70]));
+  });
+
+  it("logs only the failing stage when PDF rendering throws", async () => {
+    mocks.authenticate.mockResolvedValue(context);
+    mocks.hasAuthPermission.mockReturnValue(true);
+    mocks.renderAnalyticsPdf.mockRejectedValue(new Error("private renderer detail"));
+
+    const response = await GET(new Request("http://localhost/api/analytics/export/pdf"));
+
+    expect(response.status).toBe(500);
+    expect(mocks.logServerError).toHaveBeenCalledWith("report.pdf.generation_failed", expect.any(Error), {
+      area: "reports",
+      route: "/api/analytics/export/pdf",
+      reason: "stage_pdf_render",
+    });
+    expect(JSON.stringify(mocks.logServerError.mock.calls)).not.toContain("private renderer detail");
   });
 });
