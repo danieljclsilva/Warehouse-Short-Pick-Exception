@@ -22,7 +22,6 @@ next-env.d.ts
 .idea/
 .vscode/
 .vercel/
-.railway/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

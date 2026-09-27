@@ -24,6 +24,7 @@ import { POST as claimRoute } from "../src/app/api/checks/[id]/claim/route";
 import { POST as completeRoute } from "../src/app/api/checks/[id]/complete/route";
 import { POST as stageRoute } from "../src/app/api/cases/[id]/stage/route";
 import { GET as dashboardRoute } from "../src/app/api/operations/dashboard/route";
+import { normalizeConfigurationValues } from "../src/server/configuration";
 
 const describeDatabase = process.env.DATABASE_URL ? describe : describe.skip;
 const request = (path: string, method: string, body?: unknown, cookie?: string) => new Request(`http://localhost${path}`, {
@@ -192,7 +193,7 @@ describeDatabase("Phase 6 configuration versioning and snapshots against Postgre
     expect(after).toMatchObject({ version: before.version + 1, values: { SHORT_PICK_HOLD_LOCATION_NAME: `CFG-HOLD-${suffix}` }, changedValues: { SHORT_PICK_HOLD_LOCATION_NAME: `CFG-HOLD-${suffix}` }, changedBy: { id: expect.any(String) } });
 
     const [oldVersion] = await getDb().select().from(configurationVersions).where(eq(configurationVersions.id, before.versionId));
-    expect(oldVersion!.values).toMatchObject(before.values);
+    expect(normalizeConfigurationValues(oldVersion!.values)).toMatchObject(before.values);
     const [audit] = await getDb().select().from(configurationAudits).where(eq(configurationAudits.newVersionId, after.versionId));
     expect(audit).toMatchObject({ previousVersionId: before.versionId, newVersionId: after.versionId, changedByUserId: expect.any(String), changedValues: { SHORT_PICK_HOLD_LOCATION_NAME: `CFG-HOLD-${suffix}` } });
     const [log] = await getDb().select().from(auditLog).where(and(eq(auditLog.action, "CONFIGURATION_CHANGED"), eq(auditLog.actorUserId, audit!.changedByUserId!))).orderBy(desc(auditLog.createdAt)).limit(1);

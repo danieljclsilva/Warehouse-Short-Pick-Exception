@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 
 export const roleEnum = pgEnum("user_role", ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "ADMIN"]);
 export const userStatusEnum = pgEnum("user_status", ["ACTIVE", "DISABLED", "ARCHIVED"]);
+export const profilePhotoStatusEnum = pgEnum("profile_photo_status", ["NONE", "PENDING", "APPROVED", "REJECTED", "SUPERSEDED"]);
 export const casePhaseEnum = pgEnum("case_phase", ["PICKING", "STAGED", "CLOSED"]);
 export const physicalStateEnum = pgEnum("physical_state", ["WITH_PICKER", "SHORT_PICK_HOLD", "OTHER_KNOWN_LOCATION", "UNKNOWN"]);
 export const caseSourceEnum = pgEnum("case_source", ["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "ADMIN_MANUAL"]);
@@ -13,7 +14,7 @@ export const notificationTypeEnum = pgEnum("notification_type", [
   "RESPONSIBILITY_CASE_ASSIGNED", "RESPONSIBILITY_CHECK_ASSIGNED", "RESPONSIBILITY_RETRIEVAL_ASSIGNED",
   "RESPONSIBILITY_NEW_LOCATION", "RESPONSIBILITY_CASE_REOPENED",
   "NEW_SHORT_PICK", "CHECK_CLAIMED", "NEW_LOCATION", "TROUBLESHOOTER_MESSAGE",
-  "UNRESOLVED_OVER_THRESHOLD", "CASE_RESOLVED",
+  "UNRESOLVED_OVER_THRESHOLD", "CASE_RESOLVED", "PROFILE_PHOTO_APPROVAL_REQUIRED",
 ]);
 export const notificationPreferenceKeyEnum = pgEnum("notification_preference_key", [
   "NEW_SHORT_PICK", "CHECK_CLAIMED", "NEW_LOCATION", "TROUBLESHOOTER_MESSAGE",
@@ -45,6 +46,7 @@ export const users = pgTable("users", {
   pinHash: text("pin_hash").notNull(),
   role: roleEnum("role").notNull().default("PICKER"),
   status: userStatusEnum("status").notNull().default("ACTIVE"),
+  profilePhotoStatus: profilePhotoStatusEnum("profile_photo_status").notNull().default("NONE"),
   preferredLanguage: text("preferred_language").notNull().default("en"),
   permissions: jsonb("permissions").$type<string[]>().notNull().default([]),
   failedLoginAttempts: integer("failed_login_attempts").notNull().default(0),
@@ -54,6 +56,35 @@ export const users = pgTable("users", {
   disabledAt: timestamp("disabled_at", { withTimezone: true }),
   archivedAt: timestamp("archived_at", { withTimezone: true }),
 }, (table) => [uniqueIndex("users_identifier_uq").on(table.identifier), index("users_status_idx").on(table.status)]);
+
+export const profilePhotos = pgTable("profile_photos", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  revision: integer("revision").notNull(),
+  objectKey: text("object_key").notNull(),
+  contentType: text("content_type").notNull().default("image/jpeg"),
+  byteSize: integer("byte_size").notNull(),
+  status: profilePhotoStatusEnum("status").notNull().default("PENDING"),
+  reviewedByUserId: uuid("reviewed_by_user_id").references(() => users.id),
+  reviewReason: text("review_reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+}, (table) => [
+  uniqueIndex("profile_photos_user_revision_uq").on(table.userId, table.revision),
+  index("profile_photos_status_created_idx").on(table.status, table.createdAt),
+  check("profile_photos_revision_positive_check", sql`${table.revision} > 0`),
+  check("profile_photos_byte_size_positive_check", sql`${table.byteSize} > 0`),
+]);
+
+export const analyticsReports = pgTable("analytics_reports", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  generatedByUserId: uuid("generated_by_user_id").notNull().references(() => users.id),
+  objectKey: text("object_key").notNull().unique(),
+  filename: text("filename").notNull(),
+  filters: jsonb("filters").$type<Record<string, unknown>>().notNull().default({}),
+  byteSize: integer("byte_size").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("analytics_reports_user_created_idx").on(table.generatedByUserId, table.createdAt)]);
 
 export const sessions = pgTable("sessions", {
   id: uuid("id").primaryKey().defaultRandom(),

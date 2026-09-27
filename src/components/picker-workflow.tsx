@@ -1,7 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import type { Locale, MessageKey } from "@/i18n/messages";
+import { LiveRefreshStatus } from "@/components/live-refresh-status";
+import { useLiveRefresh } from "@/components/use-live-refresh";
 
 type ShortPickLine = { id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation?: string | null; retrievalState?: string; retrievalResponsibleUserId?: string | null };
 type OrderCase = {
@@ -95,21 +97,23 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
     }
   }, [canViewOwnCases, tr]);
 
-  useEffect(() => {
-    if (!canViewOwnCases) return;
-    let cancelled = false;
-    fetch("/api/picker/cases", { credentials: "same-origin", cache: "no-store" })
-      .then(async (response) => {
-        const body = await readBody(response);
-        if (!response.ok) throw new Error(tr("caseLoadError"));
-        if (!cancelled) setCases(body.cases || []);
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : tr("caseLoadError"));
-      })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [canViewOwnCases, tr]);
+  const activeCaseId = activeCase?.id;
+  const refreshLiveData = useCallback(async () => {
+    if (canViewOwnCases) {
+      const response = await fetch("/api/picker/cases", { credentials: "same-origin", cache: "no-store" });
+      const body = await readBody(response);
+      if (!response.ok) throw new Error(tr("caseLoadError"));
+      setCases(body.cases || []);
+      setLoading(false);
+    }
+    if (activeCaseId) {
+      const response = await fetch(`/api/cases/${encodeURIComponent(activeCaseId)}`, { credentials: "same-origin", cache: "no-store" });
+      const body = await readBody(response);
+      if (!response.ok || !body.case) throw new Error(tr("caseLoadError"));
+      setActiveCase(body.case);
+    }
+  }, [activeCaseId, canViewOwnCases, tr]);
+  const liveState = useLiveRefresh(refreshLiveData, 5_000, canViewOwnCases || Boolean(activeCase));
 
   const prepareCase = (number: string, historicalIds: string[], preserveDraft = false) => {
     if (!preserveDraft) { setLocation(""); setSku(""); setQuantity(1); }
@@ -358,7 +362,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
             </section>}
           </section>}
           {canViewOwnCases && <section className="my-cases-section" aria-labelledby="my-cases-title">
-            <div className="invite-list-heading"><h2 id="my-cases-title">{tr("myShortPickOrders")}</h2><button className="refresh-cases-button" type="button" onClick={() => void loadCases()} disabled={loading}>{tr("refresh")}</button></div>
+            <div className="invite-list-heading"><h2 id="my-cases-title">{tr("myShortPickOrders")}</h2><div className="live-refresh-controls"><LiveRefreshStatus state={liveState} tr={tr} /><button className="refresh-cases-button" type="button" onClick={() => void loadCases()} disabled={loading}>{tr("refresh")}</button></div></div>
             {loading ? <p className="case-list-empty" aria-live="polite">{tr("loadingCases")}</p> : cases.length === 0 ? <p className="case-list-empty">{tr("noActiveCases")}</p> : <div className="picker-case-list">{cases.map((item) => {
               const lines = item.lines || [];
               const missing = item.missingCount ?? lines.reduce((sum, line) => sum + (line.state.toUpperCase() === "OPEN" || line.state.toUpperCase() === "CHECKING" ? line.quantity : 0), 0);

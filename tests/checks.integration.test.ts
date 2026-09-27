@@ -18,6 +18,7 @@ import { PUT as setCapacityRoute } from "../src/app/api/admin/check-capacity/rou
 import { GET as listChecksRoute } from "../src/app/api/checks/route";
 import { GET as caseDetailRoute } from "../src/app/api/cases/[id]/route";
 import { POST as messageRoute } from "../src/app/api/cases/[id]/messages/route";
+import { getCurrentConfiguration } from "../src/server/configuration";
 
 const describeDatabase = process.env.DATABASE_URL ? describe : describe.skip;
 const request = (path: string, method: string, body?: unknown, cookie?: string) => new Request(`http://localhost${path}`, {
@@ -38,6 +39,7 @@ describeDatabase("Phase 3 checking, responsibility and staging against PostgreSQ
   let checkerTwoCookie = "";
   let leaderCookie = "";
   let assistantCookie = "";
+  let originalCheckCapacity: number | null = 1;
 
   async function makeUser(role: Role, name: string) {
     const [user] = await getDb().insert(users).values({ identifier: `check-${suffix}-${name}`, displayName: name,
@@ -74,6 +76,9 @@ describeDatabase("Phase 3 checking, responsibility and staging against PostgreSQ
     checkerTwoCookie = (await createSession(checkerTwo.id)).cookie.split(";")[0]!;
     leaderCookie = (await createSession(leader.id)).cookie.split(";")[0]!;
     assistantCookie = (await createSession(assistant.id)).cookie.split(";")[0]!;
+    originalCheckCapacity = (await getCurrentConfiguration()).values.MAX_SIMULTANEOUS_CHECKS_PER_CASE;
+    const resetCapacity = await setCapacityRoute(request("/api/admin/check-capacity", "PUT", { maxSimultaneousChecksPerCase: 1 }, leaderCookie));
+    expect(resetCapacity.status).toBe(200);
   });
 
   afterAll(async () => {
@@ -85,6 +90,12 @@ describeDatabase("Phase 3 checking, responsibility and staging against PostgreSQ
       if (lineIds.length) await db.delete(checkTasks).where(inArray(checkTasks.shortPickLineId, lineIds));
       await db.delete(shortPickLines).where(inArray(shortPickLines.caseId, caseIds));
       await db.delete(orderCases).where(inArray(orderCases.id, caseIds));
+    }
+    if (leaderCookie) {
+      const currentCapacity = (await getCurrentConfiguration()).values.MAX_SIMULTANEOUS_CHECKS_PER_CASE;
+      if (currentCapacity !== originalCheckCapacity) {
+        await setCapacityRoute(request("/api/admin/check-capacity", "PUT", { maxSimultaneousChecksPerCase: originalCheckCapacity }, leaderCookie));
+      }
     }
     if (userIds.length) {
       const db = getDb();

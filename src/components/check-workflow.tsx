@@ -1,7 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import type { Locale, MessageKey } from "@/i18n/messages";
+import { LiveRefreshStatus } from "@/components/live-refresh-status";
+import { useLiveRefresh } from "@/components/use-live-refresh";
 
 type Check = {
   id: string;
@@ -91,17 +93,24 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
         if (kind === "users") setWorkers((body.users || []).filter((user) => user.status === "ACTIVE" && user.permissions.includes("COMPLETE_CHECK")));
       }
       setError("");
+      return true;
     } catch {
-      setError(tr("checkActionFailed"));
+      return false;
     } finally {
       setLoading(false);
     }
   }, [canViewAvailable, canComplete, canReassign, canRetrieve, canAssign, tr]);
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => { void load(); }, 0);
-    return () => window.clearTimeout(timer);
-  }, [load]);
+  const refreshLiveData = useCallback(async () => {
+    if (!await load()) throw new Error("refresh failed");
+    if (detail) {
+      const response = await fetch(`/api/cases/${encodeURIComponent(detail.id)}`, { cache: "no-store" });
+      const body = await readJson(response);
+      if (!response.ok || !body.case) throw new Error("refresh failed");
+      setDetail(body.case);
+    }
+  }, [detail, load]);
+  const liveState = useLiveRefresh(refreshLiveData);
 
   const openDetails = async (caseId: string) => {
     setError("");
@@ -164,7 +173,7 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
   );
 
   return <div className="check-workflow">
-    <div className="content-heading"><div><h1>{tr("checks")}</h1></div><button type="button" className="refresh-cases-button" onClick={() => void load()}>{tr("refresh")}</button></div>
+    <div className="content-heading"><div><h1>{tr("checks")}</h1></div><div className="live-refresh-controls"><LiveRefreshStatus state={liveState} tr={tr} /><button type="button" className="refresh-cases-button" onClick={() => void load()}>{tr("refresh")}</button></div></div>
     {error && <p className="case-alert" role="alert">{error}</p>}
     {notice && <p className="check-notice" role="status">{notice}</p>}
     {canComplete && <section className="check-section"><h2>{tr("myAssignedChecks")}</h2>{loading ? <p>{tr("loading")}</p> : mine.length ? <div className="check-card-grid">{mine.map((check) => checkCard(check, "mine"))}</div> : <p className="check-empty">{tr("noAssignedChecks")}</p>}</section>}

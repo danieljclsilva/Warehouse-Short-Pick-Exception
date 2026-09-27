@@ -48,13 +48,18 @@ const defaults: ConfigValues = {
   MANUAL_CASE_CREATION_ENABLED: true,
   ASSISTANT_CAN_MANAGE_CONFIGURATION: false,
   PUSH_ENABLED: true,
+  PROFILE_PHOTO_MAX_UPLOAD_BYTES: 5 * 1024 * 1024,
 };
+
+const MEBIBYTE_BYTES = 1024 * 1024;
+const PROFILE_PHOTO_MIN_UPLOAD_BYTES = 64 * 1024;
+const PROFILE_PHOTO_MAX_UPLOAD_BYTES = 25 * MEBIBYTE_BYTES;
 
 type Definition = {
   key: string;
   label: MessageKey;
   description: MessageKey;
-  kind: "number" | "boolean" | "text" | "codes";
+  kind: "number" | "boolean" | "text" | "codes" | "uploadSize";
   min?: number;
   max?: number;
 };
@@ -92,6 +97,7 @@ const definitions: Array<{ title: MessageKey; description: MessageKey; settings:
       { key: "LOGIN_LOCKOUT_MINUTES", label: "configurationLoginLockout", description: "configurationLoginLockoutDescription", kind: "number", min: 1, max: 1440 },
       { key: "ASSISTANT_CAN_MANAGE_CONFIGURATION", label: "configurationAssistantAccess", description: "configurationAssistantAccessDescription", kind: "boolean" },
       { key: "PUSH_ENABLED", label: "configurationPushEnabled", description: "configurationPushEnabledDescription", kind: "boolean" },
+      { key: "PROFILE_PHOTO_MAX_UPLOAD_BYTES", label: "configurationUploadLimit", description: "configurationUploadLimitDescription", kind: "uploadSize", min: PROFILE_PHOTO_MIN_UPLOAD_BYTES, max: PROFILE_PHOTO_MAX_UPLOAD_BYTES },
     ],
   },
   {
@@ -134,6 +140,19 @@ function formatDate(value: string | undefined, locale: string) {
   return new Intl.DateTimeFormat(locale === "nl" ? "nl-NL" : locale === "pl" ? "pl-PL" : locale === "es" ? "es-ES" : "en-GB", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
+function bytesToMebibytes(value: number) {
+  const rounded = Number((value / MEBIBYTE_BYTES).toFixed(7));
+  return String(rounded);
+}
+
+function mebibytesToBytes(value: string): number | null {
+  if (!value.trim()) return null;
+  const mebibytes = Number(value);
+  if (!Number.isFinite(mebibytes)) return null;
+  const bytes = Math.round(mebibytes * MEBIBYTE_BYTES);
+  return Number.isSafeInteger(bytes) ? bytes : null;
+}
+
 function actorName(actor: HistoryRecord["changedBy"]) {
   if (typeof actor === "string") return actor;
   return actor?.displayName || "—";
@@ -151,6 +170,7 @@ export function ConfigurationPanel({ tr, locale, role }: Props) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [conflict, setConflict] = useState(false);
+  const [uploadSizeInput, setUploadSizeInput] = useState(bytesToMebibytes(Number(defaults.PROFILE_PHOTO_MAX_UPLOAD_BYTES)));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -165,6 +185,7 @@ export function ConfigurationPanel({ tr, locale, role }: Props) {
       const loadedValues = { ...catalogDefaults, ...recordValues(record, body) };
       setValues(loadedValues);
       setBaseline(loadedValues);
+      setUploadSizeInput(bytesToMebibytes(Number(loadedValues.PROFILE_PHOTO_MAX_UPLOAD_BYTES)));
       setVersion(versionFrom(record, body));
       setVersionId(record.versionId ?? "");
       setHistory(body.history ?? body.versions ?? []);
@@ -189,13 +210,19 @@ export function ConfigurationPanel({ tr, locale, role }: Props) {
 
   const save = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const uploadLimitBytes = mebibytesToBytes(uploadSizeInput);
+    if (uploadLimitBytes === null || uploadLimitBytes < PROFILE_PHOTO_MIN_UPLOAD_BYTES || uploadLimitBytes > PROFILE_PHOTO_MAX_UPLOAD_BYTES) {
+      setError(tr("configurationUploadLimitInvalid"));
+      return;
+    }
     setSaving(true);
     setError("");
     setNotice("");
     try {
-      const changedValues = Object.keys(values).reduce<Record<string, ConfigValue>>((result, key) => {
+      const valuesToSave: ConfigValues = { ...values, PROFILE_PHOTO_MAX_UPLOAD_BYTES: uploadLimitBytes };
+      const changedValues = Object.keys(valuesToSave).reduce<Record<string, ConfigValue>>((result, key) => {
         if (role === "ASSISTANT" && key === "ASSISTANT_CAN_MANAGE_CONFIGURATION") return result;
-        if (JSON.stringify(values[key]) !== JSON.stringify(baseline[key])) result[key] = values[key];
+        if (JSON.stringify(valuesToSave[key]) !== JSON.stringify(baseline[key])) result[key] = valuesToSave[key];
         return result;
       }, {});
       const response = await fetch("/api/admin/configuration", {
@@ -250,11 +277,20 @@ export function ConfigurationPanel({ tr, locale, role }: Props) {
               {group.settings.filter((setting) => role !== "ASSISTANT" || setting.key !== "ASSISTANT_CAN_MANAGE_CONFIGURATION").map((definition) => {
                 const value = values[definition.key];
                 const fallback = serverDefaults[definition.key] ?? defaults[definition.key];
+                const formattedDefault = definition.kind === "uploadSize" && typeof fallback === "number"
+                  ? `${bytesToMebibytes(fallback)} ${tr("configurationUnitMiB")}`
+                  : Array.isArray(fallback) ? fallback.join(", ") : String(fallback);
                 return <div className={styles.setting} key={definition.key}>
-                  <div><h3>{tr(definition.label)}</h3><p>{tr(definition.description)}</p><small className={styles.default}>{tr("configurationDefault", { value: Array.isArray(fallback) ? fallback.join(", ") : String(fallback) })}</small></div>
+                  <div><h3>{tr(definition.label)}</h3><p>{tr(definition.description)}</p><small className={styles.default}>{tr("configurationDefault", { value: formattedDefault })}</small></div>
                   <div className={styles.control}>
                     {definition.kind === "boolean" && <label className={styles.toggle}><input type="checkbox" checked={Boolean(value)} onChange={(event) => updateValue(definition.key, event.target.checked)} /><span>{value ? tr("configurationEnabled") : tr("configurationDisabled")}</span></label>}
                     {definition.kind === "number" && definition.key === "MAX_SIMULTANEOUS_CHECKS_PER_CASE" ? <div className={styles.numberWithUnlimited}><label className={styles.toggle}><input type="checkbox" checked={value === null} onChange={(event) => updateValue(definition.key, event.target.checked ? null : 1)} /><span>{tr("configurationUnlimited")}</span></label>{value !== null && <input type="number" min={definition.min} max={definition.max} step={1} value={typeof value === "number" ? value : 1} onChange={(event) => updateValue(definition.key, Number(event.target.value))} aria-label={tr(definition.label)} />}</div> : definition.kind === "number" && <input type="number" min={definition.min} max={definition.max} step={1} value={typeof value === "number" ? value : ""} onChange={(event) => updateValue(definition.key, Number(event.target.value))} aria-label={tr(definition.label)} />}
+                    {definition.kind === "uploadSize" && <div className={styles.uploadLimit}><input type="number" min={PROFILE_PHOTO_MIN_UPLOAD_BYTES / MEBIBYTE_BYTES} max={PROFILE_PHOTO_MAX_UPLOAD_BYTES / MEBIBYTE_BYTES} step="any" value={uploadSizeInput} onChange={(event) => {
+                      const nextInput = event.target.value;
+                      setUploadSizeInput(nextInput);
+                      const nextBytes = mebibytesToBytes(nextInput);
+                      if (nextBytes !== null && nextBytes >= PROFILE_PHOTO_MIN_UPLOAD_BYTES && nextBytes <= PROFILE_PHOTO_MAX_UPLOAD_BYTES) updateValue(definition.key, nextBytes);
+                    }} aria-label={`${tr(definition.label)} (${tr("configurationUnitMiB")})`} /><span className={styles.uploadUnit} aria-hidden="true">{tr("configurationUnitMiB")}</span></div>}
                     {definition.kind === "text" && <input type="text" value={typeof value === "string" ? value : ""} onChange={(event) => updateValue(definition.key, event.target.value)} aria-label={tr(definition.label)} />}
                     {definition.kind === "codes" && <textarea value={Array.isArray(value) ? value.join(", ") : ""} onChange={(event) => updateValue(definition.key, event.target.value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean))} aria-label={tr(definition.label)} />}
                   </div>

@@ -9,6 +9,9 @@ import { OperationsDashboard } from "@/components/operations-dashboard";
 import { NotificationCenter } from "@/components/notification-center";
 import { ConfigurationPanel } from "@/components/configuration-panel";
 import { AnalyticsDashboard } from "@/components/analytics-dashboard";
+import { ProfilePanel } from "@/components/profile-panel";
+import { UserManagement } from "@/components/user-management";
+import { PhotoApproval } from "@/components/photo-approval";
 import {
   getMessages,
   supportedLocales,
@@ -52,10 +55,13 @@ const navigation = [
   { key: "notifications", permission: [] },
   { key: "invitations", permission: ["CREATE_INVITES"] },
   { key: "configuration", permission: ["MANAGE_CONFIGURATION"] },
+  { key: "users", permission: ["VIEW_USERS"] },
+  { key: "photoApproval", permission: ["APPROVE_PROFILE_PHOTO"] },
+  { key: "profile", permission: [] },
 ] as const satisfies { key: MessageKey; permission: string[] }[];
 
 function navigationFor(user: AuthUser) {
-  return navigation.filter((item) => item.key === "notifications" || (item.key === "configuration" && user.canManageConfiguration === true) || ((item.key !== "myWork" || user.role === "PICKER") && item.permission.some((permission) => user.permissions.includes(permission))));
+  return navigation.filter((item) => item.key === "notifications" || item.key === "profile" || (item.key === "configuration" && user.canManageConfiguration === true) || ((item.key !== "myWork" || user.role === "PICKER") && item.permission.some((permission) => user.permissions.includes(permission))));
 }
 
 const roleKeys: Record<InviteRole | "ADMIN", MessageKey> = {
@@ -129,6 +135,12 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
   }
   if (name === "team") {
     return <svg {...common}><circle cx="9" cy="8" r="3" /><path d="M3.5 19v-1.5A4.5 4.5 0 0 1 8 13h2a4.5 4.5 0 0 1 4.5 4.5V19M16 5.5a3 3 0 0 1 0 5.8M17 14h.5a3.5 3.5 0 0 1 3 3.5V19" /></svg>;
+  }
+  if (name === "users" || name === "photoApproval") {
+    return <svg {...common}><circle cx="9" cy="8" r="3" /><path d="M3.5 19v-1.5A4.5 4.5 0 0 1 8 13h2a4.5 4.5 0 0 1 4.5 4.5V19M16 5.5a3 3 0 0 1 0 5.8M17 14h.5a3.5 3.5 0 0 1 3 3.5V19" /></svg>;
+  }
+  if (name === "profile") {
+    return <svg {...common}><circle cx="12" cy="8" r="3.5" /><path d="M4.5 20v-1.5A5.5 5.5 0 0 1 10 13h4a5.5 5.5 0 0 1 5.5 5.5V20" /></svg>;
   }
   if (name === "reports") {
     return <svg {...common}><path d="M4 19V5M4 19h16M8 16v-5M12 16V8M16 16v-8M20 16V4" /></svg>;
@@ -493,6 +505,12 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
           <main className="workspace-content">
             {activeSection === "configuration" && allowedNavigation.some((item) => item.key === "configuration") ? (
               <ConfigurationPanel tr={tr} locale={locale} role={user.role} />
+            ) : activeSection === "profile" ? (
+              <ProfilePanel locale={locale} tr={tr} onLanguageChange={setLocale} />
+            ) : activeSection === "users" && allowedNavigation.some((item) => item.key === "users") ? (
+              <UserManagement actorId={user.id} actorRole={user.role} actorPermissions={user.permissions} tr={tr} />
+            ) : activeSection === "photoApproval" && allowedNavigation.some((item) => item.key === "photoApproval") ? (
+              <PhotoApproval tr={tr} />
             ) : activeSection === "openCases" && allowedNavigation.some((item) => item.key === "openCases") ? (
               <OperationsDashboard
                 tr={tr}

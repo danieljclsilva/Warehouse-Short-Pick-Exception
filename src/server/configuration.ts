@@ -26,6 +26,7 @@ export const CONFIGURATION_DEFAULTS = {
   MANUAL_CASE_CREATION_ENABLED: true,
   ASSISTANT_CAN_MANAGE_CONFIGURATION: false,
   PUSH_ENABLED: true,
+  PROFILE_PHOTO_MAX_UPLOAD_BYTES: 5 * 1024 * 1024,
 } as const;
 
 export type ConfigurationValues = {
@@ -46,6 +47,7 @@ export type ConfigurationValues = {
   MANUAL_CASE_CREATION_ENABLED: boolean;
   ASSISTANT_CAN_MANAGE_CONFIGURATION: boolean;
   PUSH_ENABLED: boolean;
+  PROFILE_PHOTO_MAX_UPLOAD_BYTES: number;
 };
 
 const integer = (min: number, max: number) => z.number().int().min(min).max(max);
@@ -68,6 +70,7 @@ const configurationShape = z.object({
   MANUAL_CASE_CREATION_ENABLED: z.boolean(),
   ASSISTANT_CAN_MANAGE_CONFIGURATION: z.boolean(),
   PUSH_ENABLED: z.boolean(),
+  PROFILE_PHOTO_MAX_UPLOAD_BYTES: integer(64 * 1024, 25 * 1024 * 1024),
 }).strict();
 const configurationSchema = configurationShape.superRefine((values, ctx) => {
   if (values.WARNING_THRESHOLD_MINUTES > values.ATTENTION_THRESHOLD_MINUTES) ctx.addIssue({ code: "custom", path: ["WARNING_THRESHOLD_MINUTES"], message: "Warning threshold cannot exceed attention threshold" });

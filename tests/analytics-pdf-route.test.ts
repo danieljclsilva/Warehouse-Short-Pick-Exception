@@ -6,11 +6,13 @@ const mocks = vi.hoisted(() => ({
   parseAnalyticsFilters: vi.fn(),
   getAnalyticsReportData: vi.fn(),
   renderAnalyticsPdf: vi.fn(),
+  persistAnalyticsReport: vi.fn(),
 }));
 
 vi.mock("../src/server/auth", () => ({ authenticate: mocks.authenticate, hasAuthPermission: mocks.hasAuthPermission }));
 vi.mock("../src/server/analytics", () => ({ parseAnalyticsFilters: mocks.parseAnalyticsFilters, getAnalyticsReportData: mocks.getAnalyticsReportData }));
 vi.mock("../src/server/analytics-pdf", () => ({ renderAnalyticsPdf: mocks.renderAnalyticsPdf }));
+vi.mock("../src/server/analytics-report-storage", () => ({ persistAnalyticsReport: mocks.persistAnalyticsReport }));
 
 import { GET } from "../src/app/api/analytics/export/pdf/route";
 
@@ -22,6 +24,7 @@ describe("analytics PDF route authorization", () => {
     mocks.parseAnalyticsFilters.mockReturnValue({ from: new Date("2026-09-01"), to: new Date("2026-10-01") });
     mocks.getAnalyticsReportData.mockResolvedValue({ kpis: {}, rows: { cases: [], lines: [] }, duplicates: {}, filters: {}, limits: {} });
     mocks.renderAnalyticsPdf.mockResolvedValue(new Uint8Array([37, 80, 68, 70]));
+    mocks.persistAnalyticsReport.mockResolvedValue("report-1");
   });
 
   it("rejects unauthenticated requests before reading analytics", async () => {
@@ -50,6 +53,7 @@ describe("analytics PDF route authorization", () => {
     expect(mocks.parseAnalyticsFilters).toHaveBeenCalledWith(expect.any(URLSearchParams));
     expect(mocks.getAnalyticsReportData).toHaveBeenCalledWith(context, expect.any(Object));
     expect(mocks.renderAnalyticsPdf).toHaveBeenCalledWith(expect.any(Object), { language: "en" });
+    expect(mocks.persistAnalyticsReport).toHaveBeenCalledWith(context, expect.stringMatching(/\.pdf$/), expect.any(Object), expect.any(Uint8Array));
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([37, 80, 68, 70]));
   });
 });

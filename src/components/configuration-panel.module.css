@@ -79,6 +79,9 @@
 .default { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
 
 .control { display: flex; min-width: 0; justify-content: flex-end; }
+.uploadLimit { display: flex; width: 100%; align-items: center; gap: 9px; }
+.uploadLimit input { flex: 1; min-width: 0; }
+.uploadUnit { flex: 0 0 auto; color: var(--muted); font-size: 13px; font-weight: 650; }
 .numberWithUnlimited { display: grid; width: 100%; gap: 8px; }
 .control input[type="number"], .control input[type="text"], .control select, .control textarea {
   width: 100%;

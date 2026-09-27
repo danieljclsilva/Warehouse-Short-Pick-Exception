@@ -8,6 +8,7 @@ import { notifications, pushOutbox, pushSubscriptions } from "@/db/schema";
 import type { AuthContext } from "@/server/auth";
 import { CaseApiError } from "@/server/cases";
 import { getCurrentConfiguration } from "@/server/configuration";
+import { logServerEvent } from "@/server/logger";
 
 const MAX_ATTEMPTS = 5;
 const LEASE_MS = 2 * 60_000;
@@ -214,9 +215,16 @@ export async function deliverPushBatch(limit = 25) {
     } catch (caught) { error = caught; }
     await finishDelivery(row, error);
     if (!error) result.sent += 1;
-    else if (pushErrorStatus(error) === 404 || pushErrorStatus(error) === 410) result.disabled += 1;
-    else if (row.outbox.attempts < MAX_ATTEMPTS && (pushErrorStatus(error) === null || [408, 425, 429].includes(pushErrorStatus(error)!) || pushErrorStatus(error)! >= 500)) result.retried += 1;
-    else result.failed += 1;
+    else if (pushErrorStatus(error) === 404 || pushErrorStatus(error) === 410) {
+      result.disabled += 1;
+      logServerEvent("warn", "notification.push.delivery_failed", { area: "notifications", outcome: "subscription_disabled", status: pushErrorStatus(error)!, outboxId: row.outbox.id, notificationId: row.notification.id });
+    } else if (row.outbox.attempts < MAX_ATTEMPTS && (pushErrorStatus(error) === null || [408, 425, 429].includes(pushErrorStatus(error)!) || pushErrorStatus(error)! >= 500)) {
+      result.retried += 1;
+      logServerEvent("warn", "notification.push.delivery_failed", { area: "notifications", outcome: "retry_scheduled", ...(pushErrorStatus(error) === null ? {} : { status: pushErrorStatus(error)! }), outboxId: row.outbox.id, notificationId: row.notification.id });
+    } else {
+      result.failed += 1;
+      logServerEvent("error", "notification.push.delivery_failed", { area: "notifications", outcome: "permanent_failure", ...(pushErrorStatus(error) === null ? {} : { status: pushErrorStatus(error)! }), outboxId: row.outbox.id, notificationId: row.notification.id });
+    }
   }
   return result;
 }

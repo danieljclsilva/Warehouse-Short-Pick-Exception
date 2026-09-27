@@ -1,6 +1,7 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import { Geist, Geist_Mono } from "next/font/google";
+import { PwaServiceWorker } from "@/components/pwa-service-worker";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -16,7 +17,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Short Pick · Warehouse exceptions",
   description: "Report and manage warehouse short-pick exceptions.",
+  applicationName: "Short Pick",
+  appleWebApp: { capable: true, title: "Short Pick", statusBarStyle: "default" },
 };
+
+export const viewport: Viewport = { themeColor: "#24765d" };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
@@ -24,7 +29,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col"><PwaServiceWorker />{children}</body>
     </html>
   );
 }

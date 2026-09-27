@@ -24,6 +24,11 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/short_pick_exception
       APP_URL: http://localhost:3000
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -37,3 +42,5 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run build
+      - run: npm run test:e2e:critical
+      - run: npm run test:e2e:security

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MessageKey } from "@/i18n/messages";
+import { LiveRefreshStatus } from "@/components/live-refresh-status";
+import { useLiveRefresh } from "@/components/use-live-refresh";
 import styles from "./operations-dashboard.module.css";
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
@@ -162,7 +164,7 @@ export function OperationsDashboard({ tr, canCreateManual, canMessage, canAssign
   const [clockNow, setClockNow] = useState<number | null>(null);
 
   const fetchDashboard = useCallback(async () => {
-    if (dashboardRequestInFlight.current) return;
+    if (dashboardRequestInFlight.current) return true;
     dashboardRequestInFlight.current = true;
     try {
       const response = await fetch("/api/operations/dashboard", { cache: "no-store" });
@@ -174,13 +176,27 @@ export function OperationsDashboard({ tr, canCreateManual, canMessage, canAssign
       setCases(body.cases || []);
       setRecentClosedCases(body.recentClosedCases || []);
       setError("");
+      return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : tr("operationsLoadFailed"));
+      return false;
     } finally {
       dashboardRequestInFlight.current = false;
       setLoading(false);
     }
   }, [tr]);
+
+  const selectedCaseId = selected?.id;
+  const refreshLiveData = useCallback(async () => {
+    if (!await fetchDashboard()) throw new Error("refresh failed");
+    if (selectedCaseId) {
+      const response = await fetch(`/api/cases/${encodeURIComponent(selectedCaseId)}`, { cache: "no-store" });
+      const body = await readBody<CaseResponse>(response);
+      if (!response.ok || !body.case) throw new Error("refresh failed");
+      setSelected((current) => current?.id === selectedCaseId ? body.case ?? current : current);
+    }
+  }, [fetchDashboard, selectedCaseId]);
+  const liveState = useLiveRefresh(refreshLiveData);
 
   const fetchWorkers = useCallback(async () => {
     try {
@@ -197,14 +213,12 @@ export function OperationsDashboard({ tr, canCreateManual, canMessage, canAssign
       const stored = window.localStorage.getItem("short-pick-language");
       if (stored) setLocale(stored);
       setClockNow(Date.now());
-      void fetchDashboard();
     }, 0);
-    const refreshTimer = window.setInterval(() => {
+    const clockTimer = window.setInterval(() => {
       setClockNow(Date.now());
-      void fetchDashboard();
     }, 5_000);
-    return () => { window.clearTimeout(timer); window.clearInterval(refreshTimer); };
-  }, [fetchDashboard]);
+    return () => { window.clearTimeout(timer); window.clearInterval(clockTimer); };
+  }, []);
 
   useEffect(() => {
     if (!canCreateManual && !canAssign && !canReopen) return;
@@ -316,7 +330,7 @@ export function OperationsDashboard({ tr, canCreateManual, canMessage, canAssign
   return <main className={styles.dashboard}>
     <header className={styles.heading}>
       <div><p className={styles.eyebrow}>{tr("operationsEyebrow")}</p><h1>{tr("operationsDashboard")}</h1><p>{tr("operationsDescription")}</p></div>
-      <div className={styles.headingActions}><button type="button" className={styles.refresh} onClick={() => void refreshSelected()} disabled={loading || busy}>{tr("refresh")}</button>{canCreateManual && <button type="button" className={styles.primary} onClick={() => { setShowManual((open) => !open); setError(""); }}>{showManual ? tr("cancel") : tr("createManualCase")}</button>}</div>
+      <div className={styles.headingActions}><LiveRefreshStatus state={liveState} tr={tr} /><button type="button" className={styles.refresh} onClick={() => void refreshSelected()} disabled={loading || busy}>{tr("refresh")}</button>{canCreateManual && <button type="button" className={styles.primary} onClick={() => { setShowManual((open) => !open); setError(""); }}>{showManual ? tr("cancel") : tr("createManualCase")}</button>}</div>
     </header>
     {error && <p className={styles.alert} role="alert">{error}</p>}{notice && <p className={styles.notice} role="status">{notice}</p>}
     <section className={styles.metrics} aria-label={tr("operationsMetrics")}>

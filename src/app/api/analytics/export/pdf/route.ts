@@ -2,16 +2,12 @@ import { authenticate, hasAuthPermission } from "@/server/auth";
 import { handleRouteError, jsonError } from "@/server/http";
 import { getAnalyticsReportData, parseAnalyticsFilters } from "@/server/analytics";
 import { renderAnalyticsPdf, type AnalyticsReportData } from "@/server/analytics-pdf";
+import { persistAnalyticsReport } from "@/server/analytics-report-storage";
+import { logServerError } from "@/server/logger";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-/**
- * Generate an analytics report on demand. The route intentionally streams the
- * bytes in the response and does not write to the application filesystem.
- * Railway instances have ephemeral disks; durable report storage belongs in a
- * future storage adapter once the object storage choice is made.
- */
 export async function GET(request: Request) {
   try {
     const auth = await authenticate(request);
@@ -24,6 +20,7 @@ export async function GET(request: Request) {
     // response so it can remain independent of query implementation details.
     const pdf = await renderAnalyticsPdf(analytics as unknown as AnalyticsReportData, { language: auth.user.preferredLanguage });
     const filename = `short-pick-analytics-${new Date().toISOString().slice(0, 10)}.pdf`;
+    const reportId = await persistAnalyticsReport(auth, filename, filters, pdf);
     return new Response(pdf as BodyInit, {
       status: 200,
       headers: {
@@ -31,9 +28,11 @@ export async function GET(request: Request) {
         "content-disposition": `attachment; filename="${filename}"`,
         "cache-control": "private, no-store",
         "content-length": String(pdf.byteLength),
+        ...(reportId ? { "x-report-id": reportId } : {}),
       },
     });
   } catch (error) {
+    logServerError("report.pdf.generation_failed", error, { area: "reports", route: "/api/analytics/export/pdf" });
     return handleRouteError(error);
   }
 }

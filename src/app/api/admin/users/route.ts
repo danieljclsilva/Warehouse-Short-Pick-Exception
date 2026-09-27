@@ -9,5 +9,7 @@ export async function GET(request: Request) {
   if (!auth) return jsonError("Unauthenticated", 401);
   if (!hasAuthPermission(auth, "VIEW_USERS")) return jsonError("Forbidden", 403);
   const rows = await getDb().select().from(users).orderBy(asc(users.displayName)).limit(500);
-  return Response.json({ users: rows.map((row) => ({ ...toPublicUser(row), status: row.status })) });
+  return Response.json({ users: rows.map((row) => ({ ...toPublicUser(row), status: row.status,
+    profilePhotoStatus: row.profilePhotoStatus,
+    photoUrl: row.profilePhotoStatus === "APPROVED" ? `/api/profile/photo?userId=${row.id}` : null })) }, { headers: { "cache-control": "private, no-store" } });
 }
