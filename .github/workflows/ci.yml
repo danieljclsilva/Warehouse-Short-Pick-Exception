@@ -42,5 +42,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run build
-      - run: npm run test:e2e:critical
-      - run: npm run test:e2e:security
+      - name: Run critical E2E suite
+        run: timeout --signal=TERM --kill-after=15s 5m npm run test:e2e:critical
+      - name: Run security E2E suite
+        run: timeout --signal=TERM --kill-after=15s 5m npm run test:e2e:security

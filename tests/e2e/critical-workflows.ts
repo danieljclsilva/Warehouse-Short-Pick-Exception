@@ -29,6 +29,8 @@ const databaseAuthority = `${encodeURIComponent(databaseAdminUser)}${databaseAdm
 const databaseUrl = `postgresql://${databaseAuthority}/${databaseName}`;
 const appUrl = `http://${appHost}:${port}`;
 const postgresCliEnv = { ...process.env, ...(databaseAdminPassword ? { PGPASSWORD: databaseAdminPassword } : {}) };
+const requestTimeoutMs = Number(process.env.E2E_REQUEST_TIMEOUT_MS ?? 15_000);
+const cliTimeoutMs = Number(process.env.E2E_CLI_TIMEOUT_MS ?? 120_000);
 
 type JsonRecord = Record<string, unknown>;
 type ApiResult<T = JsonRecord> = { status: number; body: T; headers: Headers };
@@ -45,14 +47,21 @@ function record(value: unknown): JsonRecord {
 }
 
 async function request<T = JsonRecord>(path: string, options: { method?: string; cookie?: string; body?: unknown } = {}): Promise<ApiResult<T>> {
-  const response = await fetch(`${appUrl}${path}`, {
-    method: options.method ?? "GET",
-    headers: {
-      ...(options.body === undefined ? {} : { "content-type": "application/json" }),
-      ...(options.cookie ? { cookie: options.cookie } : {}),
-    },
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-  });
+  const method = options.method ?? "GET";
+  let response: Response;
+  try {
+    response = await fetch(`${appUrl}${path}`, {
+      method,
+      headers: {
+        ...(options.body === undefined ? {} : { "content-type": "application/json" }),
+        ...(options.cookie ? { cookie: options.cookie } : {}),
+      },
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: AbortSignal.timeout(requestTimeoutMs),
+    });
+  } catch (error) {
+    throw new Error(`E2E request failed: ${method} ${path}`, { cause: error });
+  }
   const text = await response.text();
   let body: unknown = {};
   if (text) {
@@ -120,15 +129,16 @@ async function findLine(casePayload: CasePayload, index = 0) {
 }
 
 async function setupDatabase() {
-  execFileSync("createdb", ["-h", databaseHost, "-p", databasePort, "-U", databaseAdminUser, "--maintenance-db", databaseAdminDatabase, databaseName], { env: postgresCliEnv, stdio: "inherit" });
+  execFileSync("createdb", ["-h", databaseHost, "-p", databasePort, "-U", databaseAdminUser, "--maintenance-db", databaseAdminDatabase, databaseName], { env: postgresCliEnv, stdio: "inherit", timeout: cliTimeoutMs });
   const env = { ...postgresCliEnv, DATABASE_URL: databaseUrl };
-  execFileSync("npm", ["run", "db:migrate"], { cwd: process.cwd(), env, stdio: "inherit" });
+  execFileSync("npm", ["run", "db:migrate"], { cwd: process.cwd(), env, stdio: "inherit", timeout: cliTimeoutMs });
   databaseClient = postgres(databaseUrl, { max: 8, prepare: false });
 }
 
 async function startApp() {
   const env = { ...process.env, DATABASE_URL: databaseUrl, APP_URL: appUrl, NODE_ENV: "test" as const };
-  const child = spawn("npm", ["run", "start", "--", "--hostname", appHost, "--port", String(port)], { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"] });
+  const nextBin = `${process.cwd()}/node_modules/next/dist/bin/next`;
+  const child = spawn(process.execPath, [nextBin, "start", "--hostname", appHost, "--port", String(port)], { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"] });
   appProcess = child;
   child.stdout?.on("data", (chunk: Buffer) => { appOutput += chunk.toString(); });
   child.stderr?.on("data", (chunk: Buffer) => { appOutput += chunk.toString(); });
@@ -145,15 +155,21 @@ async function startApp() {
 
 async function stopApp() {
   if (!appProcess || appProcess.exitCode !== null) return;
-  appProcess.kill("SIGTERM");
-  await Promise.race([new Promise<void>((resolve) => appProcess?.once("exit", () => resolve())), delay(5_000)]);
-  if (appProcess.exitCode === null) appProcess.kill("SIGKILL");
+  const child = appProcess;
+  child.kill("SIGTERM");
+  await Promise.race([new Promise<void>((resolve) => child.once("exit", () => resolve())), delay(5_000)]);
+  if (child.exitCode === null) {
+    child.kill("SIGKILL");
+    await Promise.race([new Promise<void>((resolve) => child.once("exit", () => resolve())), delay(1_000)]);
+  }
+  child.stdout?.destroy();
+  child.stderr?.destroy();
 }
 
 async function closeDatabase() {
   if (databaseClient) await databaseClient.end({ timeout: 5 });
   databaseClient = undefined;
-  execFileSync("dropdb", ["-h", databaseHost, "-p", databasePort, "-U", databaseAdminUser, "--maintenance-db", databaseAdminDatabase, "--if-exists", databaseName], { env: postgresCliEnv, stdio: "inherit" });
+  execFileSync("dropdb", ["-h", databaseHost, "-p", databasePort, "-U", databaseAdminUser, "--maintenance-db", databaseAdminDatabase, "--if-exists", databaseName], { env: postgresCliEnv, stdio: "inherit", timeout: cliTimeoutMs });
 }
 
 function cleanup() {
@@ -171,7 +187,9 @@ function installSignalCleanup() {
 }
 
 async function run() {
+  console.log("[e2e] setting up disposable database");
   await setupDatabase();
+  console.log("[e2e] starting Next server");
   await startApp();
   const suffix = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
   const picker = await login(await createUser("picker", "PICKER"));
@@ -179,6 +197,7 @@ async function run() {
   const checkerTwo = await login(await createUser("checker-two", "TROUBLESHOOTER"));
   const leader = await login(await createUser("leader", "TEAM_LEADER"));
 
+  console.log("[e2e] running flow A");
   // A. Simple picker report, location found, retrieval, and closure.
   const simple = await createCase(picker, `${suffix}01`);
   assert.equal(simple.phase, "PICKING");
@@ -197,6 +216,7 @@ async function run() {
   expectStatus(await request(`/api/cases/${simple.id}/close`, { method: "POST", cookie: picker.cookie, body: {} }), 200, "picker closes simple case");
   assert.equal((await readCase(picker, simple.id)).phase, "CLOSED");
 
+  console.log("[e2e] running flow B");
   // B. Checker claims a check and records an alternate location.
   const foundCase = await createCase(picker, `${suffix}02`, "A-02", "SKU-ALT");
   const foundCheck = await findAvailableCheck(checker, foundCase.id);
@@ -214,6 +234,7 @@ async function run() {
   expectStatus(await request(`/api/cases/${foundCase.id}/lines/${String(foundLine.id)}/retrieve`, { method: "POST", cookie: picker.cookie, body: { result: "RETRIEVED" } }), 200, "picker retrieves alternate-location case");
   assert.equal((await readCase(picker, foundCase.id)).lines[0]?.state, "RESOLVED");
 
+  console.log("[e2e] running flow C");
   // C. A failed check is retried after staging and routes retrieval to an assigned troubleshooter.
   const staged = await createCase(picker, `${suffix}03`, "A-03", "SKU-STAGED");
   const stagedLine = await findLine(staged);
@@ -237,6 +258,7 @@ async function run() {
   expectStatus(await request(`/api/cases/${staged.id}/close`, { method: "POST", cookie: picker.cookie, body: {} }), 200, "picker closes staged case");
   assert.equal((await readCase(picker, staged.id)).phase, "CLOSED");
 
+  console.log("[e2e] running flow D");
   // D. A checker claims line A, the picker adds line B, and A resolves while B stays open.
   const multi = await createCase(picker, `${suffix}04`, "A-04", "SKU-MULTI-ONE");
   const multiLineA = await findLine(multi);
@@ -254,6 +276,7 @@ async function run() {
   assert.equal(multiAfterResolve.lines.find((line) => line.id === multiLineA.id)?.state, "RESOLVED");
   assert.equal(multiAfterResolve.lines.find((line) => line.id !== multiLineA.id)?.state, "OPEN");
 
+  console.log("[e2e] running flow E");
   // E. Closed history triggers a duplicate warning; confirmation creates a new occurrence.
   const historical = await createCase(picker, `${suffix}05`, "A-06", "SKU-HISTORY");
   const closeHistorical = await request(`/api/cases/${historical.id}/close`, { method: "POST", cookie: leader.cookie, body: { administrativeResolutionReason: "Historical E2E fixture closed by team leader" } });
@@ -270,6 +293,7 @@ async function run() {
   expectStatus(confirmedCreate, 201, "create confirmed historical occurrence");
   assert.ok(confirmedCreate.body.case);
 
+  console.log("[e2e] running flow F");
   // F. Two real HTTP claims against one task produce exactly one winner.
   const concurrent = await createCase(picker, `${suffix}06`, "A-07", "SKU-CONCURRENT");
   const concurrentCheck = await findAvailableCheck(checker, concurrent.id);
@@ -294,6 +318,7 @@ async function main() {
   try {
     await run();
   } finally {
+    console.log("[e2e] cleaning up app and database");
     await cleanup();
   }
 }

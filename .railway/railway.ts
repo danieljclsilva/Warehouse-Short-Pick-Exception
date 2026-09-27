@@ -32,10 +32,6 @@ export default defineRailway(() => {
       STORAGE_FORCE_PATH_STYLE: preserve(),
       STORAGE_REGION: preserve(),
       STORAGE_SECRET_ACCESS_KEY: preserve(),
-      // TODO: Remove these three temporary bootstrap variables after seed:admin succeeds.
-      ADMIN_DISPLAY_NAME: preserve(),
-      ADMIN_IDENTIFIER: preserve(),
-      ADMIN_PIN: preserve(),
     },
   });
   const pushDelivery = service("push-delivery", {
