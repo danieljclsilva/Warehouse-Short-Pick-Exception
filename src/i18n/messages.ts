@@ -4,6 +4,7 @@ export type Locale = (typeof supportedLocales)[number];
 
 const en = {
   brand: "Short Pick",
+  testEnvironmentBanner: "Test environment — actions here do not affect production",
   tagline: "Exception handling for a smoother flow",
   loginTitle: "Sign in",
   loginDescription: "Enter your login ID and PIN or password to continue.",
@@ -627,6 +628,7 @@ const en = {
 
 const nl: typeof en = {
   brand: "Short Pick",
+  testEnvironmentBanner: "Testomgeving — acties hier hebben geen effect op productie",
   tagline: "Tekorten afhandelen voor een soepelere workflow",
   loginTitle: "Inloggen",
   loginDescription: "Vul je inlog-ID en pincode of wachtwoord in om verder te gaan.",
@@ -1250,6 +1252,7 @@ const nl: typeof en = {
 
 const pl: typeof en = {
   brand: "Short Pick",
+  testEnvironmentBanner: "Środowisko testowe — działania tutaj nie wpływają na produkcję",
   tagline: "Obsługa wyjątków dla płynniejszej pracy",
   loginTitle: "Zaloguj się",
   loginDescription: "Wpisz ID logowania oraz PIN lub hasło, aby kontynuować.",
@@ -1873,6 +1876,7 @@ const pl: typeof en = {
 
 const es: typeof en = {
   brand: "Short Pick",
+  testEnvironmentBanner: "Entorno de pruebas — las acciones aquí no afectan a producción",
   tagline: "Gestión de excepciones para un flujo más ágil",
   loginTitle: "Iniciar sesión",
   loginDescription: "Introduce tu ID de acceso y PIN o contraseña para continuar.",

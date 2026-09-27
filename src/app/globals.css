@@ -44,6 +44,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 button { color: inherit; }
 
+.environment-banner { position: sticky; top: 0; z-index: 60; padding: 8px 16px; background: #8a4b00; color: #fff; font-size: 13px; font-weight: 700; letter-spacing: .02em; text-align: center; }
+
 .auth-page {
   min-height: 100vh;
   display: grid;

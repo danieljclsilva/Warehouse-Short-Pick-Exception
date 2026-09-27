@@ -12,6 +12,7 @@ import { AnalyticsDashboard } from "@/components/analytics-dashboard";
 import { ProfilePanel } from "@/components/profile-panel";
 import { UserManagement } from "@/components/user-management";
 import { PhotoApproval } from "@/components/photo-approval";
+import { EnvironmentBanner } from "@/components/environment-banner";
 import {
   getMessages,
   supportedLocales,
@@ -533,6 +534,8 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
 
   if (view === "workspace" && user) {
     return (
+      <>
+        <EnvironmentBanner tr={tr} />
       <div className="app-shell">
         {mobileNavOpen && <button className="nav-scrim" aria-label={tr("closeMenu")} onClick={() => setMobileNavOpen(false)} />}
         <aside className={`sidebar${mobileNavOpen ? " sidebar-open" : ""}`}>
@@ -656,11 +659,14 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             )}
           </main>
         </div>
-      </div>
+        </div>
+      </>
     );
   }
 
   return (
+      <>
+      <EnvironmentBanner tr={tr} />
     <main className="auth-page">
       <section className="auth-intro" aria-label={tr("brand")}>
         <Link className="auth-brand" href="/" onClick={() => switchView("login")}>
@@ -723,5 +729,6 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
         <div className="auth-panel-footer"><span>{tr("brand")}</span></div>
       </section>
     </main>
+      </>
   );
 }
