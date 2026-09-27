@@ -1,9 +1,9 @@
-import { bucket, defineRailway, postgres, preserve, project, service, volume } from "railway/iac";
+import { bucket, defineRailway, github, postgres, preserve, project, service, volume } from "railway/iac";
 
 export default defineRailway(() => {
   const Postgres = postgres("Postgres", { region: "sfo" });
   Postgres.networking = { privateNetworkEndpoint: "postgres" };
-  const postgresVolume = volume("postgres-volume", { alerts: { usage: { "100": {}, "80": {}, "95": {} } }, allowOnlineResize: true, region: "sfo", sizeMB: 500 });
+  const postgresVolume = volume("postgres-volume", { alerts: { usage: { "100": {}, "80": {}, "95": {} } }, allowOnlineResize: true, region: "sfo", sizeMB: 5000 });
   const profilePhotosAndReports = bucket("profile-photos-and-reports", { region: "ams" });
   const PostgresPITR = bucket("Postgres-PITR", { region: "sjc" });
   const notificationsEmitter = service("notifications-emitter", {
@@ -14,6 +14,7 @@ export default defineRailway(() => {
     env: { DATABASE_URL: preserve(), PUSH_PRIVATE_KEY: preserve(), PUSH_PUBLIC_KEY: preserve(), PUSH_SUBJECT: preserve() },
   });
   const web = service("web", {
+    source: github("danieljclsilva/Warehouse-Short-Pick-Exception", { branch: "main" }),
     build: { builder: "RAILPACK" },
     start: "npm start",
     preDeploy: "npm run db:migrate",
