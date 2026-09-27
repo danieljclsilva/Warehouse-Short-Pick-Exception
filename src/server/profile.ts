@@ -13,10 +13,14 @@ export const profileUpdateSchema = z.object({
 export async function getSelfProfile(auth: AuthContext) {
   const db = getDb();
   const [user] = await db.select({ id: users.id, displayName: users.displayName, role: users.role,
-    status: users.status, preferredLanguage: users.preferredLanguage, profilePhotoStatus: users.profilePhotoStatus })
+    status: users.status, preferredLanguage: users.preferredLanguage, profilePhotoStatus: users.profilePhotoStatus,
+    permissions: users.permissions, pinHash: users.pinHash, passwordHash: users.passwordHash })
     .from(users).where(eq(users.id, auth.user.id)).limit(1);
   if (!user) throw new CaseApiError("CASE_NOT_FOUND", "Profile not found", 404);
-  return { ...user, photoUrl: user.profilePhotoStatus === "APPROVED" ? `/api/profile/photo?userId=${user.id}` : null };
+  const { pinHash: _pinHash, passwordHash: _passwordHash, ...rest } = user;
+  void _pinHash; void _passwordHash;
+  return { ...rest, credentialType: user.passwordHash ? "PASSWORD" as const : "PIN" as const,
+    photoUrl: user.profilePhotoStatus === "APPROVED" ? `/api/profile/photo?userId=${user.id}` : null };
 }
 
 export async function updateSelfProfile(auth: AuthContext, input: z.infer<typeof profileUpdateSchema>) {

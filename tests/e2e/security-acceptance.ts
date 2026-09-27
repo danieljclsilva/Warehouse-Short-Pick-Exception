@@ -35,7 +35,7 @@ const cliTimeoutMs = Number(process.env.E2E_CLI_TIMEOUT_MS ?? 120_000);
 
 type JsonRecord = Record<string, unknown>;
 type ApiResult<T = JsonRecord> = { status: number; body: T; headers: Headers };
-type FixtureUser = { id: string; identifier: string; pinHash: string };
+type FixtureUser = { id: string; identifier: string; pinHash: string | null };
 type Session = FixtureUser & { cookie: string };
 
 let databaseClient: ReturnType<typeof postgres> | undefined;
@@ -213,7 +213,7 @@ async function run() {
   assert.match(setCookie, /(?:^|;\s*)spx_session=/);
   assert.match(setCookie, /HttpOnly/i);
   assert.doesNotMatch(JSON.stringify(loginResponse.body), /pinHash/i);
-  assert.ok(!JSON.stringify(loginResponse.body).includes(lockoutTarget.pinHash), "login response exposed a PIN hash");
+  assert.ok(!lockoutTarget.pinHash || !JSON.stringify(loginResponse.body).includes(lockoutTarget.pinHash), "login response exposed a PIN hash");
   const adminUsers = await request<{ users?: Array<JsonRecord> }>("/api/admin/users", { cookie: admin.cookie });
   expectStatus(adminUsers, 200, "admin user list");
   assert.doesNotMatch(JSON.stringify(adminUsers.body), /pinHash/i);

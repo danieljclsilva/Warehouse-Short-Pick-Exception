@@ -18,6 +18,7 @@ export function UserManagement({ actorId, actorRole, actorPermissions, tr }: Pro
   const [notice, setNotice] = useState("");
   const [pinTarget, setPinTarget] = useState("");
   const [pin, setPin] = useState("");
+  const [credentialAction, setCredentialAction] = useState<"resetPin" | "resetPassword">("resetPin");
   const [permissionTarget, setPermissionTarget] = useState("");
   const [permissions, setPermissions] = useState<string[]>([]);
 
@@ -59,7 +60,9 @@ export function UserManagement({ actorId, actorRole, actorPermissions, tr }: Pro
     event.preventDefault();
     const target = users.find((candidate) => candidate.id === pinTarget);
     if (!target) return;
-    await mutate(target, { action: "resetPin", pin }, tr("pinResetDone")); setPin(""); setPinTarget("");
+    if (credentialAction === "resetPin") await mutate(target, { action: "resetPin", pin }, tr("pinResetDone"));
+    else await mutate(target, { action: "resetPassword", password: pin }, tr("passwordResetDone"));
+    setPin(""); setPinTarget("");
   };
   const savePermissions = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -88,12 +91,13 @@ export function UserManagement({ actorId, actorRole, actorPermissions, tr }: Pro
           {actorPermissions.includes("DISABLE_USERS") && target.status !== "ARCHIVED" && <button className="text-button" type="button" disabled={busyId === target.id} onClick={() => void mutate(target, { action: "status", status: target.status === "ACTIVE" ? "DISABLED" : "ACTIVE" }, tr("userStatusSaved"))}>{target.status === "ACTIVE" ? tr("disableUser") : tr("enableUser")}</button>}
           {actorPermissions.includes("ARCHIVE_USERS") && target.status !== "ARCHIVED" && <button className="revoke-button" type="button" disabled={busyId === target.id} onClick={() => void mutate(target, { action: "status", status: "ARCHIVED" }, tr("userStatusSaved"))}>{tr("archiveUser")}</button>}
           {actorPermissions.includes("ARCHIVE_USERS") && target.status === "ARCHIVED" && <button className="text-button" type="button" disabled={busyId === target.id} onClick={() => void mutate(target, { action: "status", status: "ACTIVE" }, tr("userStatusSaved"))}>{tr("restoreUser")}</button>}
-          {actorPermissions.includes("RESET_USER_PIN") && <button className="text-button" type="button" onClick={() => setPinTarget(target.id)}>{tr("resetPin")}</button>}
+          {actorPermissions.includes("RESET_USER_PIN") && <button className="text-button" type="button" onClick={() => { setCredentialAction("resetPin"); setPinTarget(target.id); }}>{tr("resetPin")}</button>}
+          {actorPermissions.includes("RESET_USER_PIN") && <button className="text-button" type="button" onClick={() => { setCredentialAction("resetPassword"); setPinTarget(target.id); }}>{tr("resetPassword")}</button>}
           {actorPermissions.includes("REVOKE_USER_SESSIONS") && <button className="text-button" type="button" disabled={busyId === target.id} onClick={() => void mutate(target, { action: "revokeSessions" }, tr("sessionsRevoked"))}>{tr("revokeSessions")}</button>}
         </div>}
       </article>;
     })}</div>}
-    {pinTarget && <div className="profile-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPinTarget(""); }}><section className="profile-dialog" role="dialog" aria-modal="true" aria-labelledby="pin-dialog-title"><h2 id="pin-dialog-title">{tr("resetPin")}</h2><form className="profile-form" onSubmit={savePin}><label className="form-field"><span>{tr("newPin")}</span><input type="password" inputMode="numeric" pattern="[0-9]{6,}" minLength={6} autoComplete="new-password" required value={pin} onChange={(event) => setPin(event.target.value)} /></label><div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setPinTarget("")}>{tr("cancel")}</button><button className="primary-button" type="submit" disabled={busyId === pinTarget}>{tr("savePin")}</button></div></form></section></div>}
+    {pinTarget && <div className="profile-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPinTarget(""); }}><section className="profile-dialog" role="dialog" aria-modal="true" aria-labelledby="pin-dialog-title"><h2 id="pin-dialog-title">{tr(credentialAction === "resetPin" ? "resetPin" : "resetPassword")}</h2><form className="profile-form" onSubmit={savePin}>{credentialAction === "resetPin" ? <label className="form-field"><span>{tr("newPin")}</span><input type="password" inputMode="numeric" pattern="[0-9]{6,}" minLength={6} autoComplete="new-password" required value={pin} onChange={(event) => setPin(event.target.value)} /></label> : <label className="form-field"><span>{tr("newPassword")}</span><input type="password" minLength={8} maxLength={200} autoComplete="new-password" required value={pin} onChange={(event) => setPin(event.target.value)} /></label>}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setPinTarget("")}>{tr("cancel")}</button><button className="primary-button" type="submit" disabled={busyId === pinTarget}>{tr("savePin")}</button></div></form></section></div>}
     {permissionTarget && users.find((target) => target.id === permissionTarget) && <div className="profile-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPermissionTarget(""); }}><section className="profile-dialog permission-dialog" role="dialog" aria-modal="true" aria-labelledby="permission-dialog-title"><h2 id="permission-dialog-title">{tr("editPermissions")}</h2><p>{users.find((target) => target.id === permissionTarget)?.displayName}</p><form onSubmit={savePermissions}><div className="permission-list">{PERMISSIONS.filter((permission) => editablePermission(users.find((target) => target.id === permissionTarget)!, permission)).map((permission) => <label key={permission} className="permission-option"><input type="checkbox" checked={permissions.includes(permission)} onChange={(event) => setPermissions((current) => event.target.checked ? [...current, permission] : current.filter((item) => item !== permission))} /><span>{tr(`permission_${permission}` as MessageKey)}</span></label>)}</div><div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setPermissionTarget("")}>{tr("cancel")}</button><button className="primary-button" type="submit" disabled={busyId === permissionTarget}>{tr("savePermissions")}</button></div></form></section></div>}
   </div>;
 }

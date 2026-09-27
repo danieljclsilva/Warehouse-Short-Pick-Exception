@@ -608,7 +608,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             {(formError || sessionError) && <div className="form-alert" role="alert"><strong>{tr("errorHeading")}</strong><span>{formError || sessionError}</span></div>}
             <form onSubmit={handleLogin} noValidate>
               <label className="form-field"><span>{tr("identifier")}</span><input autoComplete="username" name="identifier" value={identifier} onChange={(event) => setIdentifier(event.target.value)} placeholder={tr("identifierPlaceholder")} required autoCapitalize="none" /></label>
-              <label className="form-field"><span>{tr("pin")}</span><input autoComplete="current-password" name="pin" type="password" inputMode="numeric" pattern="[0-9]*" value={pin} onChange={(event) => setPin(event.target.value.replace(/\D/g, ""))} placeholder={tr("pinPlaceholder")} required /></label>
+              <label className="form-field"><span>{tr("loginCredential")}</span><input autoComplete="current-password" name="pin" type="password" value={pin} onChange={(event) => setPin(event.target.value)} placeholder={tr("loginCredentialPlaceholder")} required /></label>
               <button className="primary-button" type="submit" disabled={busy}>{busy ? tr("signingIn") : tr("signIn")}</button>
             </form>
             <p className="auth-switch">{tr("invitePrompt")} <Link href="/register">{tr("registerLink")}</Link></p>

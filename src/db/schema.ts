@@ -43,7 +43,8 @@ export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   identifier: text("identifier").notNull(),
   displayName: text("display_name").notNull(),
-  pinHash: text("pin_hash").notNull(),
+  pinHash: text("pin_hash"),
+  passwordHash: text("password_hash"),
   role: roleEnum("role").notNull().default("PICKER"),
   status: userStatusEnum("status").notNull().default("ACTIVE"),
   profilePhotoStatus: profilePhotoStatusEnum("profile_photo_status").notNull().default("NONE"),
@@ -55,7 +56,8 @@ export const users = pgTable("users", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   disabledAt: timestamp("disabled_at", { withTimezone: true }),
   archivedAt: timestamp("archived_at", { withTimezone: true }),
-}, (table) => [uniqueIndex("users_identifier_uq").on(table.identifier), index("users_status_idx").on(table.status)]);
+}, (table) => [uniqueIndex("users_identifier_uq").on(table.identifier), index("users_status_idx").on(table.status),
+  check("users_credential_exactly_one_check", sql`(${table.pinHash} IS NULL) <> (${table.passwordHash} IS NULL)`)]);
 
 export const profilePhotos = pgTable("profile_photos", {
   id: uuid("id").primaryKey().defaultRandom(),

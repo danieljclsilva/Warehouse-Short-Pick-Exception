@@ -3,13 +3,15 @@ import { z } from "zod";
 import { getDb } from "@/db";
 import { auditLog, sessions, users } from "@/db/schema";
 import { canManageUser, permissionsAllowedForRole, PERMISSIONS } from "@/domain/permissions";
-import { authenticate, changePin, hasAuthPermission } from "@/server/auth";
+import { authenticate, changePassword, changePin, hasAuthPermission } from "@/server/auth";
 import { handleRouteError, jsonError, parseJson } from "@/server/http";
+import { isPasswordFormat, isPinFormat } from "@/server/security";
 
 const schema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("permissions"), permissions: z.array(z.enum(PERMISSIONS)).max(PERMISSIONS.length) }),
   z.object({ action: z.literal("status"), status: z.enum(["ACTIVE", "DISABLED", "ARCHIVED"]) }),
-  z.object({ action: z.literal("resetPin"), pin: z.string().regex(/^\d{6,}$/, "PIN must contain at least 6 digits") }),
+  z.object({ action: z.literal("resetPin"), pin: z.string().min(1).max(200) }),
+  z.object({ action: z.literal("resetPassword"), password: z.string().min(1).max(200) }),
   z.object({ action: z.literal("revokeSessions") }),
 ]);
 
@@ -48,9 +50,15 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       return Response.json({ ok: true });
     }
 
-    if (input.action === "resetPin") {
+    if (input.action === "resetPin" || input.action === "resetPassword") {
       if (!hasAuthPermission(auth, "RESET_USER_PIN")) return jsonError("Forbidden", 403);
-      await changePin(id, input.pin, auth.user.id);
+      if (input.action === "resetPin") {
+        if (!isPinFormat(input.pin)) return jsonError("PIN must contain at least 6 digits", 400);
+        await changePin(id, input.pin, auth.user.id);
+      } else {
+        if (!isPasswordFormat(input.password)) return jsonError("Password must be 8-200 characters", 400);
+        await changePassword(id, input.password, auth.user.id);
+      }
       return Response.json({ ok: true });
     }
 

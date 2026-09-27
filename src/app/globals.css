@@ -417,6 +417,10 @@ button { color: inherit; }
 .profile-message, .profile-empty { margin: 0 0 16px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 9px; background: #fff; font-size: 13px; }
 .profile-error { border-color: #efb5a8; color: #763b2e; background: var(--coral-wash); }
 .profile-success { border-color: #b5d6c7; color: #245c48; background: var(--green-wash); }
+.profile-warning { border-color: #e7c873; color: #62490f; background: #fdf3d7; }
+.profile-warning p { margin: 0 0 8px; }
+.profile-warning .secondary-button { margin: 4px 0 0; }
+.profile-credential-switch { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 16px; }
 .profile-empty { color: var(--muted); text-align: center; }
 .users-list { display: grid; gap: 12px; }
 .user-card { padding: 17px 19px; border: 1px solid var(--line); border-radius: 11px; background: #fff; }

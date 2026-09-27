@@ -119,6 +119,32 @@ export async function listPendingProfilePhotos(auth: AuthContext) {
   return { photos: rows.map((row) => ({ ...row, photoUrl: `/api/profile/photo?userId=${row.userId}` })) };
 }
 
+export async function removeProfilePhoto(auth: AuthContext) {
+  const db = getDb();
+  const keys = await db.transaction(async (tx) => {
+    const [owner] = await tx.select({ id: users.id, profilePhotoStatus: users.profilePhotoStatus }).from(users).where(eq(users.id, auth.user.id)).limit(1).for("update");
+    if (!owner) throw new CaseApiError("CASE_NOT_FOUND", "Profile not found", 404);
+    if (owner.profilePhotoStatus === "NONE") return [] as string[];
+    const rows = await tx.select({ id: profilePhotos.id, objectKey: profilePhotos.objectKey }).from(profilePhotos)
+      .where(and(eq(profilePhotos.userId, auth.user.id), ne(profilePhotos.status, "SUPERSEDED"))).for("update");
+    if (rows.length) {
+      await tx.update(profilePhotos).set({ status: "SUPERSEDED" })
+        .where(and(eq(profilePhotos.userId, auth.user.id), ne(profilePhotos.status, "SUPERSEDED")));
+    }
+    await tx.update(users).set({ profilePhotoStatus: "NONE", updatedAt: new Date() }).where(eq(users.id, auth.user.id));
+    await tx.insert(auditLog).values({ actorUserId: auth.user.id, targetUserId: auth.user.id,
+      action: "PROFILE_PHOTO_REMOVED", details: { photoIds: rows.map((row) => row.id), revisionCount: rows.length } });
+    return rows.map((row) => row.objectKey);
+  });
+  const storage = getStorage();
+  if (storage && keys.length) {
+    await Promise.all(keys.map(async (key) => {
+      try { await storage.delete(key); }
+      catch (error) { logServerError("profile_photo.remove_compensation_failed", error, { area: "profile_photo", userId: auth.user.id, reason: "removed object could not be deleted from storage" }); }
+    }));
+  }
+}
+
 export async function reviewProfilePhoto(auth: AuthContext, photoId: string, decision: "APPROVED" | "REJECTED", reason?: string) {
   requirePhotoApprover(auth);
   const db = getDb();
@@ -143,3 +169,4 @@ export async function reviewProfilePhoto(auth: AuthContext, photoId: string, dec
     return { profile: user ? { ...user, photoUrl: decision === "APPROVED" ? `/api/profile/photo?userId=${user.id}` : null } : null };
   });
 }
+

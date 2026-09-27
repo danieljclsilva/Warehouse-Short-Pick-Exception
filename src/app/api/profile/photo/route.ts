@@ -1,6 +1,6 @@
 import { authenticate } from "@/server/auth";
 import { handleRouteError, jsonError } from "@/server/http";
-import { uploadProfilePhoto, getProfilePhoto, parseBoundedMultipartFormData, MULTIPART_OVERHEAD_LIMIT_BYTES } from "@/server/profile-photos";
+import { removeProfilePhoto, uploadProfilePhoto, getProfilePhoto, parseBoundedMultipartFormData, MULTIPART_OVERHEAD_LIMIT_BYTES } from "@/server/profile-photos";
 import { getSelfProfile } from "@/server/profile";
 import { getCurrentConfiguration } from "@/server/configuration";
 
@@ -32,5 +32,14 @@ export async function GET(request: Request) {
     const userId = new URL(request.url).searchParams.get("userId") || auth.user.id;
     const photo = await getProfilePhoto(auth, userId);
     return new Response(photo.body as BodyInit, { headers: { "content-type": photo.contentType, "cache-control": "private, no-store", "x-content-type-options": "nosniff" } });
+  } catch (error) { return handleRouteError(error); }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const auth = await authenticate(request);
+    if (!auth) return jsonError("Unauthenticated", 401);
+    await removeProfilePhoto(auth);
+    return Response.json({ profile: await getSelfProfile(auth) }, { headers: { "cache-control": "private, no-store" } });
   } catch (error) { return handleRouteError(error); }
 }

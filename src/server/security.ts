@@ -19,8 +19,24 @@ export function createToken(bytes = 32): string {
   return randomBytes(bytes).toString("base64url");
 }
 
+export async function hashCredential(secret: string): Promise<string> {
+  return hash(secret, { algorithm: 2, memoryCost: 19456, timeCost: 2, parallelism: 1 });
+}
+
 export async function hashPin(pin: string): Promise<string> {
-  return hash(pin, { algorithm: 2, memoryCost: 19456, timeCost: 2, parallelism: 1 });
+  return hashCredential(pin);
+}
+
+export async function hashPassword(password: string): Promise<string> {
+  return hashCredential(password);
+}
+
+export function isPinFormat(value: string): boolean {
+  return /^\d{6,}$/.test(value);
+}
+
+export function isPasswordFormat(value: string): boolean {
+  return value.length >= 8 && value.length <= 200;
 }
 
 export function readCookie(request: Request, name: string): string | undefined {

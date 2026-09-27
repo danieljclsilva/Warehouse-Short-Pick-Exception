@@ -72,3 +72,12 @@ export function canManageUser(actorRole: Role, actorPermissions: readonly string
 export function hasPermission(permissions: readonly string[], required: Permission): boolean {
   return permissions.includes(required);
 }
+
+/**
+ * Whether the account holds elevated access (manager/admin roles or any user-administration
+ * permission). Used to recommend a password over a PIN for these accounts.
+ */
+export function hasHighPrivilegeAccess(role: Role, permissions: readonly string[]): boolean {
+  if (role === "ADMIN" || role === "TEAM_LEADER") return true;
+  return permissions.some((permission) => userAdministrationPermissions.has(permission as Permission));
+}

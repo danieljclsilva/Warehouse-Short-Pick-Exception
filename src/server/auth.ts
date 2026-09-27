@@ -1,8 +1,8 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import { getDb } from "@/db";
 import { auditLog, sessions, users } from "@/db/schema";
 import type { Permission, Role } from "@/domain/permissions";
-import { digestToken, hashPin, persistentSessionCookie, readCookie, SESSION_COOKIE, SESSION_COOKIE_OPTIONS } from "./security";
+import { digestToken, hashCredential, persistentSessionCookie, readCookie, SESSION_COOKIE, SESSION_COOKIE_OPTIONS } from "./security";
 
 export type AuthUser = {
   id: string;
@@ -60,13 +60,39 @@ export async function recordAudit(actorUserId: string | null, action: string, ta
   await getDb().insert(auditLog).values({ actorUserId, targetUserId, action, details });
 }
 
-export async function changePin(userId: string, pin: string, actorUserId: string | null, action = "PIN_RESET") {
-  const pinHash = await hashPin(pin);
+export type CredentialType = "PIN" | "PASSWORD";
+
+export function credentialTypeOf(row: { pinHash: string | null; passwordHash: string | null }): CredentialType {
+  return row.passwordHash ? "PASSWORD" : "PIN";
+}
+
+export async function verifyCredential(row: { pinHash: string | null; passwordHash: string | null }, secret: string): Promise<boolean> {
+  const { verify } = await import("@node-rs/argon2");
+  const hash = row.passwordHash ?? row.pinHash;
+  if (!hash) return false;
+  return verify(hash, secret).catch(() => false);
+}
+
+async function setCredential(userId: string, type: CredentialType, secret: string, actorUserId: string | null, action: string, revokeReason: string, keepSessionId?: string) {
+  const hash = await hashCredential(secret);
   await getDb().transaction(async (tx) => {
-    await tx.update(users).set({ pinHash, updatedAt: new Date(), failedLoginAttempts: 0, lockedUntil: null }).where(eq(users.id, userId));
-    await tx.update(sessions).set({ revokedAt: new Date(), revokedReason: "pin_reset" }).where(and(eq(sessions.userId, userId), isNull(sessions.revokedAt)));
-    await tx.insert(auditLog).values({ actorUserId, targetUserId: userId, action, details: {} });
+    await tx.update(users).set(type === "PIN" ? { pinHash: hash, passwordHash: null, updatedAt: new Date(), failedLoginAttempts: 0, lockedUntil: null } : { pinHash: null, passwordHash: hash, updatedAt: new Date(), failedLoginAttempts: 0, lockedUntil: null }).where(eq(users.id, userId));
+    if (keepSessionId) await tx.update(sessions).set({ revokedAt: new Date(), revokedReason: revokeReason }).where(and(eq(sessions.userId, userId), isNull(sessions.revokedAt), ne(sessions.id, keepSessionId)));
+    else await tx.update(sessions).set({ revokedAt: new Date(), revokedReason: revokeReason }).where(and(eq(sessions.userId, userId), isNull(sessions.revokedAt)));
+    await tx.insert(auditLog).values({ actorUserId, targetUserId: userId, action, details: { credentialType: type } });
   });
+}
+
+export async function changePin(userId: string, pin: string, actorUserId: string | null, action = "PIN_RESET") {
+  await setCredential(userId, "PIN", pin, actorUserId, action, "pin_reset");
+}
+
+export async function changePassword(userId: string, password: string, actorUserId: string | null, action = "PIN_RESET") {
+  await setCredential(userId, "PASSWORD", password, actorUserId, action, "pin_reset");
+}
+
+export async function changeOwnCredential(userId: string, sessionId: string, type: CredentialType, secret: string) {
+  await setCredential(userId, type, secret, userId, "CREDENTIAL_CHANGED", "credential_changed", sessionId);
 }
 
 export function hasAuthPermission(context: AuthContext, permission: Permission): boolean {
