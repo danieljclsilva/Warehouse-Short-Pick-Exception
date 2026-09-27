@@ -61,6 +61,7 @@ type HistoricalCase = { id: string; createdAt: string; phase: string };
 type CaseResponse = { case?: CaseSummary; history?: HistoricalCase[]; code?: string; users?: Worker[] };
 type Props = {
   tr: Translator;
+  locale: string;
   canCreateManual: boolean;
   canMessage: boolean;
   canAssign: boolean;
@@ -131,7 +132,7 @@ function attentionLabel(level: CaseSummary["attentionLevel"], tr: Translator) {
   return tr(keys[level ?? "NORMAL"]);
 }
 
-export function OperationsDashboard({ tr, canCreateManual, canMessage, canAssign, canClose, canReopen }: Props) {
+export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, canAssign, canClose, canReopen }: Props) {
   const dashboardRequestInFlight = useRef(false);
   const [metrics, setMetrics] = useState<Metrics>(EMPTY_METRICS);
   const [attentionThresholdMinutes, setAttentionThresholdMinutes] = useState(15);
@@ -160,7 +161,6 @@ export function OperationsDashboard({ tr, canCreateManual, canMessage, canAssign
   const [adminResolution, setAdminResolution] = useState("");
   const [reopenPhase, setReopenPhase] = useState<"PICKING" | "STAGED">("PICKING");
   const [reopenResponsible, setReopenResponsible] = useState("");
-  const [locale, setLocale] = useState("en");
   const [clockNow, setClockNow] = useState<number | null>(null);
 
   const fetchDashboard = useCallback(async () => {
@@ -209,11 +209,7 @@ export function OperationsDashboard({ tr, canCreateManual, canMessage, canAssign
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const stored = window.localStorage.getItem("short-pick-language");
-      if (stored) setLocale(stored);
-      setClockNow(Date.now());
-    }, 0);
+    const timer = window.setTimeout(() => setClockNow(Date.now()), 0);
     const clockTimer = window.setInterval(() => {
       setClockNow(Date.now());
     }, 5_000);

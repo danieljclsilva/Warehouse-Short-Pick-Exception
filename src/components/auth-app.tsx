@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PickerWorkflow } from "@/components/picker-workflow";
 import { CheckWorkflow } from "@/components/check-workflow";
 import { OperationsDashboard } from "@/components/operations-dashboard";
@@ -188,6 +188,22 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
   const [pendingPhotoCount, setPendingPhotoCount] = useState(0);
   const { messages: t } = getMessages(locale);
   const tr = useCallback((key: MessageKey, values?: Record<string, string>) => translate(t, key, values), [t]);
+  const localeRef = useRef<Locale>(locale);
+  const userRef = useRef<AuthUser | null>(null);
+  const localeTouched = useRef(false);
+  const trRef = useRef(tr);
+  useEffect(() => { trRef.current = tr; }, [tr]);
+  const pushLocaleToServer = useCallback(async (next: Locale) => {
+    try {
+      const response = await fetch("/api/profile", { method: "PATCH", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ preferredLanguage: next }) });
+      if (response.ok) setUser((current) => (current ? { ...current, preferredLanguage: next } : current));
+    } catch { /* Local selection stands; a later change or profile save syncs it. */ }
+  }, []);
+  const changeLocale = useCallback((next: Locale) => {
+    localeTouched.current = true;
+    setLocale(next);
+    if (userRef.current) void pushLocaleToServer(next);
+  }, [pushLocaleToServer]);
 
   useEffect(() => {
     if (!initialInviteToken) return;
@@ -196,6 +212,12 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
 
   useEffect(() => {
     let cancelled = false;
+    const storedLocale = typeof window === "undefined" ? null : window.localStorage.getItem("short-pick-language");
+    const initialLocale = storedLocale && supportedLocales.includes(storedLocale as Locale) ? (storedLocale as Locale) : null;
+    if (initialLocale) {
+      localeRef.current = initialLocale;
+      queueMicrotask(() => { if (!cancelled) setLocale(initialLocale); });
+    }
     const readSession = async () => {
       try {
         const response = await fetch("/api/auth/session", { credentials: "same-origin", cache: "no-store" });
@@ -203,7 +225,14 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
           const body = (await response.json()) as AuthResponse;
           if (!cancelled && body.user) {
             setUser(body.user);
-            setLocale(body.user.preferredLanguage || "en");
+            const serverLocale = body.user.preferredLanguage || "en";
+            if (localeTouched.current) {
+              if (localeRef.current !== serverLocale) void pushLocaleToServer(localeRef.current);
+              localeTouched.current = false;
+            } else {
+              setLocale(serverLocale);
+              localeRef.current = serverLocale;
+            }
             const firstSection = navigationFor(body.user).at(0);
             const requestedSection = window.location.pathname === "/"
               && new URLSearchParams(window.location.search).get("section") === "notifications";
@@ -212,21 +241,23 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             if (requestedSection) router.replace("/", { scroll: false });
           }
         } else if (response.status !== 401 && !cancelled) {
-          setSessionError(tr("sessionError"));
+          setSessionError(trRef.current("sessionError"));
         }
       } catch {
-        if (!cancelled) setSessionError(tr("sessionError"));
+        if (!cancelled) setSessionError(trRef.current("sessionError"));
       } finally {
         if (!cancelled) setIsCheckingSession(false);
       }
     };
     void readSession();
     return () => { cancelled = true; };
-  }, [router, tr]);
+  }, [router, pushLocaleToServer]);
 
   useEffect(() => {
+    localeRef.current = locale;
+    userRef.current = user;
     if (typeof window !== "undefined") window.localStorage.setItem("short-pick-language", locale);
-  }, [locale]);
+  }, [locale, user]);
 
   const allowedNavigation = useMemo(() => {
     if (!user) return [];
@@ -340,7 +371,13 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
         return;
       }
       setUser(body.user);
-      setLocale(body.user.preferredLanguage || locale);
+      if (localeTouched.current && locale !== body.user.preferredLanguage) {
+        void pushLocaleToServer(locale);
+        localeTouched.current = false;
+      } else {
+        setLocale(body.user.preferredLanguage || locale);
+        localeRef.current = body.user.preferredLanguage || locale;
+      }
       const firstSection = navigationFor(body.user);
       setActiveSection(firstSection.at(0)?.key ?? "workspace");
       setView("workspace");
@@ -388,6 +425,8 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
       setUser(body.user);
       setCreatedIdentifier(body.loginIdentifier || body.user.loginIdentifier);
       setLocale(body.user.preferredLanguage || locale);
+      localeRef.current = body.user.preferredLanguage || locale;
+      localeTouched.current = false;
       setInviteToken("");
       setPin("");
       setConfirmPin("");
@@ -478,6 +517,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
       setUser(null);
       setIdentifier("");
       setPin("");
+      localeTouched.current = false;
       router.replace("/");
       switchView("login");
     } catch {
@@ -529,19 +569,20 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
               <span /><span /><span />
             </button>
             <div className="breadcrumb"><span>{tr("workspace")}</span><span className="breadcrumb-divider">/</span><strong>{tr(activeSection)}</strong></div>
-            <div className="topbar-actions"><LanguagePicker locale={locale} label={tr("language")} onChange={setLocale} /><span className="avatar avatar-small" aria-hidden="true">{user.displayName.slice(0, 1).toUpperCase()}</span></div>
+            <div className="topbar-actions"><LanguagePicker locale={locale} label={tr("language")} onChange={changeLocale} /><span className="avatar avatar-small" aria-hidden="true">{user.displayName.slice(0, 1).toUpperCase()}</span></div>
           </header>
           <main className="workspace-content">
             {activeSection === "configuration" && allowedNavigation.some((item) => item.key === "configuration") ? (
               <ConfigurationPanel tr={tr} locale={locale} role={user.role} />
             ) : activeSection === "profile" ? (
-              <ProfilePanel locale={locale} tr={tr} onLanguageChange={setLocale} />
+              <ProfilePanel locale={locale} tr={tr} onLanguageChange={changeLocale} />
             ) : activeSection === "users" && allowedNavigation.some((item) => item.key === "users") ? (
               <><UserManagement actorId={user.id} actorRole={user.role} actorPermissions={user.permissions} tr={tr} />
                 {user.permissions.includes("APPROVE_PROFILE_PHOTO") || user.role === "ADMIN" ? <PhotoApproval tr={tr} onQueueChange={setPendingPhotoCount} /> : null}</>
             ) : activeSection === "openCases" && allowedNavigation.some((item) => item.key === "openCases") ? (
               <OperationsDashboard
                 tr={tr}
+                locale={locale}
                 canCreateManual={user.permissions.includes("CREATE_CASE_ON_BEHALF")}
                 canMessage={user.permissions.includes("ADD_CASE_MESSAGE")}
                 canAssign={user.permissions.includes("ASSIGN_TROUBLESHOOTER")}
@@ -631,7 +672,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
       </section>
 
       <section className="auth-panel">
-        <div className="auth-panel-top"><span className="brand-mark brand-mark-small"><Icon name="brand" size={25} /></span><LanguagePicker locale={locale} label={tr("language")} onChange={setLocale} /></div>
+        <div className="auth-panel-top"><span className="brand-mark brand-mark-small"><Icon name="brand" size={25} /></span><LanguagePicker locale={locale} label={tr("language")} onChange={changeLocale} /></div>
         {view === "login" && (
           <div className="auth-form-wrap">
             <div className="auth-heading"><h1>{tr("loginTitle")}</h1><p>{tr("loginDescription")}</p></div>
