@@ -20,7 +20,13 @@ export async function GET(request: Request) {
     // response so it can remain independent of query implementation details.
     const pdf = await renderAnalyticsPdf(analytics as unknown as AnalyticsReportData, { language: auth.user.preferredLanguage });
     const filename = `short-pick-analytics-${new Date().toISOString().slice(0, 10)}.pdf`;
-    const reportId = await persistAnalyticsReport(auth, filename, filters, pdf);
+    let reportId: string | null = null;
+    try {
+      reportId = await persistAnalyticsReport(auth, filename, filters, pdf);
+    } catch (retentionError) {
+      logServerError("report.pdf.retention_failed", retentionError, { area: "reports", route: "/api/analytics/export/pdf", userId: auth.user.id, reason: "retained copy unavailable; streaming generated PDF" });
+      reportId = null;
+    }
     return new Response(pdf as BodyInit, {
       status: 200,
       headers: {
@@ -28,6 +34,7 @@ export async function GET(request: Request) {
         "content-disposition": `attachment; filename="${filename}"`,
         "cache-control": "private, no-store",
         "content-length": String(pdf.byteLength),
+        "x-report-retention": reportId ? "retained" : "unavailable",
         ...(reportId ? { "x-report-id": reportId } : {}),
       },
     });

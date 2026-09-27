@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Locale, MessageKey } from "@/i18n/messages";
 import styles from "./analytics-dashboard.module.css";
 
@@ -22,6 +22,12 @@ export type AnalyticsDuplicate = {
   orderNumber: string;
   occurrences: number;
   cases: Array<{ caseId: string; createdAt: string }>;
+};
+export type RetainedAnalyticsReport = {
+  id: string;
+  filename: string;
+  createdAt: string;
+  byteSize: number;
 };
 
 export type AnalyticsResponse = {
@@ -135,6 +141,20 @@ function normalizeDimension(value: unknown): AnalyticsDimension | null {
   return { label, count: number(row.count ?? row.lines ?? row.cases ?? row.value) };
 }
 
+function normalizeRetainedReports(value: unknown): { reports: RetainedAnalyticsReport[]; nextCursor: string | null } {
+  const root = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const reports = Array.isArray(root.reports) ? root.reports.map((value) => {
+    if (!value || typeof value !== "object") return null;
+    const row = value as Record<string, unknown>;
+    const id = String(row.id ?? "");
+    const filename = String(row.filename ?? "short-pick-analytics.pdf");
+    if (!id) return null;
+    return { id, filename, createdAt: String(row.createdAt ?? ""), byteSize: number(row.byteSize) };
+  }).filter((report): report is RetainedAnalyticsReport => report !== null) : [];
+  const nextCursor = typeof root.nextCursor === "string" && root.nextCursor ? root.nextCursor : null;
+  return { reports, nextCursor };
+}
+
 function normalizeResponse(value: unknown): AnalyticsResponse {
   const root = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
   const rawKpis = (root.kpis && typeof root.kpis === "object" ? root.kpis : {}) as Record<string, unknown>;
@@ -178,6 +198,12 @@ function dateLabel(value: string, locale: Locale) {
   return new Intl.DateTimeFormat({ en: "en-GB", nl: "nl-NL", pl: "pl-PL", es: "es-ES" }[locale], { dateStyle: "medium" }).format(parsed);
 }
 
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function ChartBars({ data, emptyLabel }: { data: AnalyticsBucket[] | AnalyticsDimension[]; emptyLabel: string }) {
   const max = Math.max(...data.map((item) => item.count), 0);
   if (!data.length) return <p className={styles.empty}>{emptyLabel}</p>;
@@ -213,12 +239,43 @@ export function AnalyticsDashboard({ tr, locale, canExport }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [exporting, setExporting] = useState("");
+  const [retainedReports, setRetainedReports] = useState<RetainedAnalyticsReport[]>([]);
+  const [retainedReportsLoading, setRetainedReportsLoading] = useState(false);
+  const [retainedReportsNextCursor, setRetainedReportsNextCursor] = useState<string | null>(null);
+  const [retentionWarning, setRetentionWarning] = useState(false);
+  const retainedReportsMutation = useRef(0);
   const query = useMemo(() => {
     const params = new URLSearchParams();
     Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value); });
     return params.toString();
   }, [filters]);
   const update = useCallback((key: keyof FilterState, value: string) => setFilters((current) => ({ ...current, [key]: value })), []);
+
+  const loadRetainedReports = useCallback(async (signal?: AbortSignal, cursor?: string, append = false) => {
+    if (!canExport) {
+      setRetainedReports([]);
+      setRetainedReportsNextCursor(null);
+      setRetainedReportsLoading(false);
+      return;
+    }
+    setRetainedReportsLoading(true);
+    const mutationAtStart = retainedReportsMutation.current;
+    try {
+      const url = cursor ? `/api/analytics/reports?cursor=${encodeURIComponent(cursor)}` : "/api/analytics/reports";
+      const response = await fetch(url, { credentials: "same-origin", cache: "no-store", signal });
+      const body: unknown = await response.json();
+      if (!response.ok) throw new Error((body as { error?: string }).error || tr("analyticsRetainedReportsLoadError"));
+      const page = normalizeRetainedReports(body);
+      if (mutationAtStart !== retainedReportsMutation.current) return;
+      setRetainedReports((current) => append ? [...current, ...page.reports.filter((report) => !current.some((existing) => existing.id === report.id))] : page.reports);
+      setRetainedReportsNextCursor(page.nextCursor);
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") return;
+      setError(cause instanceof Error ? cause.message : tr("analyticsRetainedReportsLoadError"));
+    } finally {
+      if (!signal?.aborted) setRetainedReportsLoading(false);
+    }
+  }, [canExport, tr]);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -237,20 +294,43 @@ export function AnalyticsDashboard({ tr, locale, canExport }: Props) {
   }, [query, tr]);
 
   const downloadPdf = useCallback(async () => {
+    if (exporting) return;
     setExporting("pdf");
     try {
       const response = await fetch(`/api/analytics/export/pdf${query ? `?${query}` : ""}`, { credentials: "same-origin" });
       if (!response.ok) throw new Error(tr("analyticsExportError"));
+      const reportId = response.headers.get("x-report-id");
+      const retention = response.headers.get("x-report-retention");
+      const disposition = response.headers.get("content-disposition") ?? "";
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? "short-pick-analytics.pdf";
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = "short-pick-analytics.pdf";
+      anchor.download = filename;
       anchor.click();
       URL.revokeObjectURL(url);
+      if (retention === "unavailable") setRetentionWarning(true);
+      if (reportId) {
+        setRetentionWarning(false);
+        retainedReportsMutation.current += 1;
+        setRetainedReports((current) => [{ id: reportId, filename, createdAt: new Date().toISOString(), byteSize: blob.size }, ...current.filter((report) => report.id !== reportId)]);
+      }
     } catch (cause) { setError(cause instanceof Error ? cause.message : tr("analyticsExportError")); }
     finally { setExporting(""); }
-  }, [query, tr]);
+  }, [exporting, query, tr]);
+
+  const removeRetainedReport = useCallback(async (reportId: string) => {
+    if (exporting || retainedReportsLoading) return;
+    setExporting("retained-delete");
+    try {
+      const response = await fetch(`/api/analytics/reports/${reportId}`, { method: "DELETE", credentials: "same-origin" });
+      if (!response.ok) throw new Error(tr("analyticsExportError"));
+      retainedReportsMutation.current += 1;
+      setRetainedReports((current) => current.filter((report) => report.id !== reportId));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : tr("analyticsExportError")); }
+    finally { setExporting(""); }
+  }, [exporting, retainedReportsLoading, tr]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -258,7 +338,14 @@ export function AnalyticsDashboard({ tr, locale, canExport }: Props) {
     return () => controller.abort();
   }, [load]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    queueMicrotask(() => { if (!controller.signal.aborted) void loadRetainedReports(controller.signal); });
+    return () => controller.abort();
+  }, [loadRetainedReports]);
+
   const download = useCallback(async (dataset: "case" | "line" | "event") => {
+    if (exporting) return;
     setExporting(dataset);
     try {
       const response = await fetch(`/api/analytics/export/csv?dataset=${dataset}${query ? `&${query}` : ""}`, { credentials: "same-origin" });
@@ -272,7 +359,7 @@ export function AnalyticsDashboard({ tr, locale, canExport }: Props) {
       URL.revokeObjectURL(url);
     } catch (cause) { setError(cause instanceof Error ? cause.message : tr("analyticsExportError")); }
     finally { setExporting(""); }
-  }, [query, tr]);
+  }, [exporting, query, tr]);
 
   const options = data?.filters;
   const kpis = data?.kpis ?? EMPTY_KPIS;
@@ -298,7 +385,9 @@ export function AnalyticsDashboard({ tr, locale, canExport }: Props) {
       <label className={styles.field}><span>{tr("analyticsFrom")}</span><input type="date" value={filters.from} onChange={(event) => update("from", event.target.value)} /></label><label className={styles.field}><span>{tr("analyticsTo")}</span><input type="date" value={filters.to} onChange={(event) => update("to", event.target.value)} /></label><label className={styles.field}><span>{tr("orderNumber")}</span><input inputMode="numeric" value={filters.orderNumber} onChange={(event) => update("orderNumber", event.target.value)} placeholder={tr("orderNumberPlaceholder")} /></label><label className={styles.field}><span>{tr("location")}</span><input value={filters.location} onChange={(event) => update("location", event.target.value.toUpperCase())} /></label><label className={styles.field}><span>{tr("sku")}</span><input value={filters.sku} onChange={(event) => update("sku", event.target.value.toUpperCase())} /></label><SelectFilter label={tr("analyticsPhase")} value={filters.phase} options={phases.map((value) => ({ value, label: enumLabel(value, phaseLabelKeys, tr) }))} onChange={(value) => update("phase", value)} /><SelectFilter label={tr("analyticsResolution")} value={filters.resolution} options={resolutions.map((value) => ({ value, label: enumLabel(value, resolutionLabelKeys, tr) }))} onChange={(value) => update("resolution", value)} /><SelectFilter label={tr("analyticsSource")} value={filters.source} options={sources.map((value) => ({ value, label: enumLabel(value, sourceLabelKeys, tr) }))} onChange={(value) => update("source", value)} /><SelectFilter label={tr("analyticsConfiguration")} value={filters.configVersion} options={configOptions} onChange={(value) => update("configVersion", value)} /><SelectFilter label={tr("analyticsPicker")} value={filters.pickerUserId} options={pickerOptions} onChange={(value) => update("pickerUserId", value)} /><SelectFilter label={tr("analyticsChecker")} value={filters.checkerUserId} options={checkerOptions} onChange={(value) => update("checkerUserId", value)} /><SelectFilter label={tr("analyticsTroubleshooter")} value={filters.troubleshooterUserId} options={troubleshooterOptions} onChange={(value) => update("troubleshooterUserId", value)} />
     </div></section>
     {error && <div className={styles.alert} role="alert">{error}<button type="button" onClick={() => void load()}>{tr("tryAgain")}</button></div>}
+    {retentionWarning && <div className={styles.retentionWarning} role="status">{tr("analyticsRetentionUnavailable")}</div>}
     {partialDataMessages.length > 0 && <div className={styles.partialNotice} role="status"><strong>{tr("analyticsPartialData")}</strong><ul>{partialDataMessages.map((message) => <li key={message}>{message}</li>)}</ul></div>}
+    {canExport && <section className={styles.card} aria-labelledby="analytics-retained-reports-title"><div className={styles.sectionHeading}><h2 id="analytics-retained-reports-title">{tr("analyticsRetainedReports")}</h2></div>{retainedReportsLoading && !retainedReports.length ? <p className={styles.loading}>{tr("analyticsLoading")}</p> : retainedReports.length ? <><ul className={styles.reportList}>{retainedReports.map((report) => <li className={styles.reportItem} key={report.id}><div className={styles.reportDetails}><strong className={styles.reportFilename}>{report.filename}</strong><span className={styles.reportMeta}>{report.createdAt ? dateLabel(report.createdAt, locale) : ""}{report.byteSize ? ` · ${formatBytes(report.byteSize)}` : ""}</span></div><div className={styles.reportActions}><a className={`${styles.exportButton} ${exporting ? styles.disabledLink : ""}`} href={`/api/analytics/reports/${report.id}`} download={report.filename} aria-disabled={Boolean(exporting)} tabIndex={exporting ? -1 : 0} onClick={(event) => { if (exporting) event.preventDefault(); }}>{tr("analyticsRetainedReport", { filename: report.filename })}</a><button className={styles.exportButton} type="button" onClick={() => void removeRetainedReport(report.id)} disabled={Boolean(exporting) || retainedReportsLoading}>{exporting === "retained-delete" ? tr("analyticsExporting") : tr("analyticsDeleteRetainedReport")}</button></div></li>)}</ul>{retainedReportsNextCursor && <button className={styles.clearButton} type="button" onClick={() => void loadRetainedReports(undefined, retainedReportsNextCursor, true)} disabled={Boolean(exporting) || retainedReportsLoading}>{retainedReportsLoading ? tr("analyticsLoading") : tr("analyticsLoadMoreRetainedReports")}</button>}</> : <p className={styles.empty}>{tr("analyticsNoRetainedReports")}</p>}</section>}
     {loading && !data ? <p className={styles.loading} aria-live="polite">{tr("analyticsLoading")}</p> : <>
       <section aria-labelledby="analytics-kpis-title"><h2 className={styles.srOnly} id="analytics-kpis-title">{tr("analyticsKpis")}</h2><div className={styles.kpiGrid}>{[["analyticsTotalCases", kpis.totalCases], ["analyticsTotalLines", kpis.totalLines], ["analyticsFound", kpis.foundDuringCheck], ["analyticsNotFound", kpis.notFound], ["analyticsWrongLocation", kpis.wrongLocation], ["analyticsRetrieved", kpis.retrieved], ["analyticsOverThreshold", kpis.casesOverThreshold], ["analyticsManualCases", kpis.manualCases], ["analyticsReopenedCases", kpis.reopenedCases], ["analyticsRepeatedOrders", kpis.repeatedOrderNumbers]].map(([label, value]) => <article className={styles.kpi} key={String(label)}><span>{tr(label as MessageKey)}</span><strong>{value}</strong></article>)}</div></section>
       <div className={styles.chartGrid}><section className={styles.card} aria-labelledby="analytics-volume-title"><div className={styles.sectionHeading}><h2 id="analytics-volume-title">{tr("analyticsCasesByPeriod")}</h2><span className={styles.cardMeta}>{tr("analyticsCasesUnit")}</span></div><ChartBars data={kpis.casesByPeriod} emptyLabel={tr("analyticsNoData")} /></section><section className={styles.card} aria-labelledby="analytics-location-title"><div className={styles.sectionHeading}><h2 id="analytics-location-title">{tr("analyticsLinesByLocation")}</h2><span className={styles.cardMeta}>{tr("analyticsLinesUnit")}</span></div><ChartBars data={kpis.linesByLocation} emptyLabel={tr("analyticsNoData")} /></section><section className={styles.card} aria-labelledby="analytics-sku-title"><div className={styles.sectionHeading}><h2 id="analytics-sku-title">{tr("analyticsLinesBySku")}</h2><span className={styles.cardMeta}>{tr("analyticsLinesUnit")}</span></div><ChartBars data={kpis.linesBySku} emptyLabel={tr("analyticsNoData")} /></section><section className={styles.card} aria-labelledby="analytics-config-title"><div className={styles.sectionHeading}><h2 id="analytics-config-title">{tr("analyticsByConfiguration")}</h2><span className={styles.cardMeta}>{tr("analyticsCasesUnit")}</span></div><ChartBars data={kpis.casesByConfigurationVersion} emptyLabel={tr("analyticsNoData")} /></section></div>

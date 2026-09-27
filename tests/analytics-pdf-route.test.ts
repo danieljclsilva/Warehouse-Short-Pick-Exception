@@ -49,11 +49,23 @@ describe("analytics PDF route authorization", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("application/pdf");
     expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("x-report-retention")).toBe("retained");
     expect(response.headers.get("content-disposition")).toMatch(/short-pick-analytics-.*\.pdf/);
     expect(mocks.parseAnalyticsFilters).toHaveBeenCalledWith(expect.any(URLSearchParams));
     expect(mocks.getAnalyticsReportData).toHaveBeenCalledWith(context, expect.any(Object));
     expect(mocks.renderAnalyticsPdf).toHaveBeenCalledWith(expect.any(Object), { language: "en" });
     expect(mocks.persistAnalyticsReport).toHaveBeenCalledWith(context, expect.stringMatching(/\.pdf$/), expect.any(Object), expect.any(Uint8Array));
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([37, 80, 68, 70]));
+  });
+
+  it("still streams the generated PDF when retention fails", async () => {
+    mocks.authenticate.mockResolvedValue(context);
+    mocks.hasAuthPermission.mockReturnValue(true);
+    mocks.persistAnalyticsReport.mockRejectedValue(new Error("retention unavailable"));
+    const response = await GET(new Request("http://localhost/api/analytics/export/pdf?phase=PICKING"));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-report-retention")).toBe("unavailable");
+    expect(response.headers.get("x-report-id")).toBeNull();
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([37, 80, 68, 70]));
   });
 });
