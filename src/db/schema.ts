@@ -117,6 +117,10 @@ export const orderCases = pgTable("order_cases", {
   version: integer("version").notNull().default(1),
 }, (table) => [
   index("order_cases_order_created_idx").on(table.orderNumber, table.createdAt),
+  index("order_cases_created_at_idx").on(table.createdAt),
+  index("order_cases_phase_idx").on(table.phase),
+  index("order_cases_configuration_version_idx").on(table.configurationVersionId),
+  index("order_cases_responsible_user_idx").on(table.currentCaseResponsibleUserId),
   index("order_cases_picking_phase_idx").on(table.pickingUserId, table.phase),
   uniqueIndex("order_cases_one_open_per_order_uq").on(table.orderNumber).where(sql`${table.phase} <> 'CLOSED'`),
   check("order_cases_order_number_digits_check", sql`${table.orderNumber} ~ '^[0-9]+$'`),
@@ -147,6 +151,9 @@ export const shortPickLines = pgTable("short_pick_lines", {
   version: integer("version").notNull().default(1),
 }, (table) => [
   index("short_pick_lines_case_idx").on(table.caseId, table.createdAt),
+  index("short_pick_lines_location_idx").on(table.originalLocation),
+  index("short_pick_lines_sku_idx").on(table.sku),
+  index("short_pick_lines_retrieval_responsible_idx").on(table.retrievalResponsibleUserId),
   index("short_pick_lines_duplicate_idx").on(table.caseId, table.originalLocation, table.sku, table.state),
   check("short_pick_lines_location_normalized_check", sql`${table.originalLocation} = upper(btrim(${table.originalLocation})) AND length(${table.originalLocation}) > 0`),
   check("short_pick_lines_sku_normalized_check", sql`${table.sku} = upper(btrim(${table.sku})) AND length(${table.sku}) > 0`),
@@ -170,6 +177,7 @@ export const checkTasks = pgTable("check_tasks", {
   version: integer("version").notNull().default(1),
 }, (table) => [
   index("check_tasks_status_created_idx").on(table.status, table.createdAt),
+  index("check_tasks_line_created_idx").on(table.shortPickLineId, table.createdAt),
   index("check_tasks_assignee_status_idx").on(table.assignedToUserId, table.status),
   uniqueIndex("check_tasks_one_active_per_line_uq").on(table.shortPickLineId).where(sql`${table.status} <> 'COMPLETED'`),
   check("check_tasks_version_positive_check", sql`${table.version} > 0`),
@@ -183,7 +191,7 @@ export const caseEvents = pgTable("case_events", {
   eventType: text("event_type").notNull(),
   details: jsonb("details").$type<Record<string, unknown>>().notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [index("case_events_case_created_idx").on(table.caseId, table.createdAt)]);
+}, (table) => [index("case_events_case_created_idx").on(table.caseId, table.createdAt), index("case_events_created_idx").on(table.createdAt)]);
 
 export const caseMessages = pgTable("case_messages", {
   id: uuid("id").primaryKey().defaultRandom(),

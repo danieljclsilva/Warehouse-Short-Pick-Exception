@@ -4,7 +4,9 @@ Internal web application for reporting and resolving warehouse short-pick except
 
 ## Current implementation status
 
-Phases 1–6 are complete locally. The Phase 6 verification passed 43 tests across eight files on a fresh PostgreSQL database with migrations `0000` through `0011`, database checks, type checking, linting, production build, and responsive browser checks. The configuration panel uses 17 versioned operational keys, preserves case configuration snapshots, shows immutable audit history, and reports stale-version conflicts. Analytics, hardening, and Railway deployment remain pending.
+Phases 1–7 are complete locally; Phase 8 hardening and deployment remain pending. Phase 7 passed on a fresh disposable PostgreSQL database with migrations `0000` through `0013` (14 migration records), 55 tests across 11 files, `db:check`, type checking, linting, production build, and diff check. PDF QA covered English, Dutch, Polish, and Spanish output with bundled Noto Sans fonts under the OFL, including a 46-page recurring-order report with an explicit omitted-date count. Frontend browser QA at 390px and 796px used fixture-mocked data, with no overflow or browser errors; it was not live-backend browser verification.
+
+The analytics workspace provides date and operational-dimension filters, case and line metrics, recurring-order analysis, and bounded case/line/event CSV exports. It also generates a server-side PDF report on demand. Dashboard access requires `VIEW_ANALYTICS`; CSV and PDF exports require `EXPORT_ANALYTICS`, enforced by server routes. Analytics query limits are 5,000 cases, 10,000 lines, 20,000 events/tasks, and 1,000 recurring-order groups over at most 366 days; the dashboard indicates when results or derived metrics are partial. The UI and PDF support English, Dutch, Polish, and Spanish. Generated PDFs are streamed and are not retained durably; persistent report storage remains Phase 8 work.
 
 ## Local setup
 

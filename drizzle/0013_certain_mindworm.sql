@@ -1,0 +1,3 @@
+CREATE INDEX "order_cases_configuration_version_idx" ON "order_cases" USING btree ("configuration_version_id");--> statement-breakpoint
+CREATE INDEX "order_cases_responsible_user_idx" ON "order_cases" USING btree ("current_case_responsible_user_id");--> statement-breakpoint
+CREATE INDEX "short_pick_lines_retrieval_responsible_idx" ON "short_pick_lines" USING btree ("retrieval_responsible_user_id");

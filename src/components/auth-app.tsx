@@ -8,6 +8,7 @@ import { CheckWorkflow } from "@/components/check-workflow";
 import { OperationsDashboard } from "@/components/operations-dashboard";
 import { NotificationCenter } from "@/components/notification-center";
 import { ConfigurationPanel } from "@/components/configuration-panel";
+import { AnalyticsDashboard } from "@/components/analytics-dashboard";
 import {
   getMessages,
   supportedLocales,
@@ -47,6 +48,7 @@ const navigation = [
   { key: "myWork", permission: ["REPORT_SHORT_PICK", "VIEW_OWN_CASES"] },
   { key: "checks", permission: ["VIEW_AVAILABLE_CHECKS", "CLAIM_CHECK", "COMPLETE_CHECK", "ASSIGN_CHECK", "REASSIGN_CHECK"] },
   { key: "openCases", permission: ["VIEW_ALL_OPEN_CASES"] },
+  { key: "reports", permission: ["VIEW_ANALYTICS"] },
   { key: "notifications", permission: [] },
   { key: "invitations", permission: ["CREATE_INVITES"] },
   { key: "configuration", permission: ["MANAGE_CONFIGURATION"] },
@@ -507,6 +509,8 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
                 canManagePreferences={user.permissions.includes("VIEW_ALL_OPEN_CASES")}
                 onOpenCase={notificationCaseDestination ? () => setActiveSection(notificationCaseDestination) : undefined}
               />
+            ) : activeSection === "reports" && allowedNavigation.some((item) => item.key === "reports") ? (
+              <AnalyticsDashboard tr={tr} locale={locale} canExport={user.permissions.includes("EXPORT_ANALYTICS")} />
             ) : canUsePickerWorkflow && activeSection === "myWork" ? (
               <PickerWorkflow locale={locale} tr={tr} userId={user.id} canReportShortPick={Boolean(user.permissions.includes("REPORT_SHORT_PICK"))} canViewOwnCases={Boolean(user.permissions.includes("VIEW_OWN_CASES"))} canOverrideDuplicateLine={canOverrideDuplicateLine} canStage={user.permissions.includes("MARK_ORDER_STAGED")} canConfirmRetrieval={user.permissions.includes("CONFIRM_RETRIEVAL")} canClose={user.permissions.includes("RESOLVE_CASE")} />
             ) : activeSection === "checks" && allowedNavigation.some((item) => item.key === "checks") ? (

@@ -10,7 +10,7 @@ The [product requirements](./Warehouse_Short_Pick_Exception%20_System.md) are th
 | 4. Operations | TL dashboard, manual cases, troubleshooter, messages, close/reopen | Complete locally; deployment pending |
 | 5. Notifications | In-app notifications, preferences, Web Push | Complete locally; deployment pending |
 | 6. Configuration | Editable values, immutable versions, case snapshots, audit | Complete locally; deployment pending |
-| 7. Analytics and export | Filters, duplicate analysis, CSV, PDF | Pending |
+| 7. Analytics and export | Filters, duplicate analysis, CSV, PDF | Complete locally; deployment and durable PDF retention pending |
 | 8. Hardening | End-to-end tests, accessibility, performance, logging, security, deployment, backups | Pending |
 
 ## Architecture decisions
@@ -77,9 +77,21 @@ The [product requirements](./Warehouse_Short_Pick_Exception%20_System.md) are th
 - A fresh PostgreSQL database applied migrations `0000` through `0011`. Forty-three tests across eight test files passed; `db:check`, type checking, linting, and the production build passed.
 - Browser QA covered saving warning threshold v2 to v3 with immediate immutable history refresh, the unlimited check-capacity control, translated configuration labels, dashboard attention badges, 390px and 796px layouts without horizontal overflow, and no browser warnings or errors.
 
+## Phase 7 implementation and acceptance review
+
+- The analytics dashboard uses structured case, line, task, event, and versioned configuration data. It reports case and line totals, cases by period, lines by location and SKU, check outcomes, retrievals, median elapsed times, threshold cases, manual and reopened cases, recurring order numbers, and cases by configuration version.
+- Server-validated filters cover date range (maximum 366 days), order number, location, SKU, case phase, resolution, case source, configuration version, picker, checker, and troubleshooter. User-level analytics remain operational data and do not rank workers.
+- Recurring order analysis shows occurrence counts and case dates. Dashboard queries are bounded at 5,000 cases, 10,000 lines, 20,000 events/tasks, and 1,000 recurring-order groups. The UI reports when result sets or derived metrics are partial.
+- CSV supports normalized case-level and line-level data, plus event data for users with export permission. Server endpoints enforce `VIEW_ANALYTICS` for dashboard access and `EXPORT_ANALYTICS` for CSV/PDF exports; export controls in the UI are presentation only.
+- The server-generated PDF contains a report title, generated timestamp, applied filters, KPI summary, selected chart/table summaries, case and line detail, and configuration-version context. Its deliberate report layout is not a webpage screenshot. PDF generation is on demand and streamed with private/no-store headers; durable PDF retention is not implemented and remains Phase 8 storage work.
+- Analytics UI and report strings support English, Dutch, Polish, and Spanish with English fallback. Identifiers such as order numbers, locations, and SKUs remain data values.
+- Migrations `0012` and `0013` add query-supporting indexes for analytics access patterns.
+- A fresh disposable PostgreSQL database applied migrations `0000` through `0013` (14 migration records). `db:check`, all 55 tests across 11 files, type checking, linting, production build, and diff check passed.
+- PDF QA covered English, Dutch, Polish, and Spanish output using bundled Noto Sans fonts under the OFL. A 46-page report with long recurring-order history included an explicit omitted-date count. Frontend browser QA at 390px and 796px used fixture-mocked data and found no overflow or browser errors; this does not establish a live-backend browser walkthrough.
+
 ## Known limitations
 
-- Analytics and Railway service deployment remain later work. Configuration is versioned in PostgreSQL; login lockout policy is now managed there rather than through environment variables.
+- Phase 7 is complete locally. Deployment remains pending. PDF responses are currently generated and streamed on demand without durable retention; persistent object storage for generated reports belongs to Phase 8. Configuration is versioned in PostgreSQL; login lockout policy is now managed there rather than through environment variables.
 - Web Push deployment requires HTTPS plus stable `PUSH_PUBLIC_KEY`, `PUSH_PRIVATE_KEY`, and `PUSH_SUBJECT` Railway variables. Live push delivery remains deployment QA; local acceptance covered the configured and unavailable states, while in-app notifications work without push.
 - Railway Phase 8 must schedule `npm run notifications:emit` for unresolved-case monitoring and `npm run push:deliver` for queued Web Push delivery. These periodic jobs are separate from the web service and are not yet provisioned.
 - The Team Leader duplicate-line override is enforced in the API; its management interface belongs to the later Team Leader operations phase.
