@@ -55,8 +55,7 @@ const navigation = [
   { key: "notifications", permission: [] },
   { key: "invitations", permission: ["CREATE_INVITES"] },
   { key: "configuration", permission: ["MANAGE_CONFIGURATION"] },
-  { key: "users", permission: ["VIEW_USERS"] },
-  { key: "photoApproval", permission: ["APPROVE_PROFILE_PHOTO"] },
+  { key: "users", permission: ["VIEW_USERS", "APPROVE_PROFILE_PHOTO"] },
   { key: "profile", permission: [] },
 ] as const satisfies { key: MessageKey; permission: string[] }[];
 
@@ -136,7 +135,7 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
   if (name === "team") {
     return <svg {...common}><circle cx="9" cy="8" r="3" /><path d="M3.5 19v-1.5A4.5 4.5 0 0 1 8 13h2a4.5 4.5 0 0 1 4.5 4.5V19M16 5.5a3 3 0 0 1 0 5.8M17 14h.5a3.5 3.5 0 0 1 3 3.5V19" /></svg>;
   }
-  if (name === "users" || name === "photoApproval") {
+  if (name === "users") {
     return <svg {...common}><circle cx="9" cy="8" r="3" /><path d="M3.5 19v-1.5A4.5 4.5 0 0 1 8 13h2a4.5 4.5 0 0 1 4.5 4.5V19M16 5.5a3 3 0 0 1 0 5.8M17 14h.5a3.5 3.5 0 0 1 3 3.5V19" /></svg>;
   }
   if (name === "profile") {
@@ -185,7 +184,8 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
   const [inviteUrl, setInviteUrl] = useState("");
   const [inviteNotice, setInviteNotice] = useState("");
   const [inviteError, setInviteError] = useState("");
-
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [pendingPhotoCount, setPendingPhotoCount] = useState(0);
   const { messages: t } = getMessages(locale);
   const tr = useCallback((key: MessageKey, values?: Record<string, string>) => translate(t, key, values), [t]);
 
@@ -232,6 +232,33 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
     if (!user) return [];
     return navigationFor(user);
   }, [user]);
+  useEffect(() => {
+    if (!user || view !== "workspace") return;
+    let cancelled = false;
+    const refreshBadges = async () => {
+      try {
+        const response = await fetch("/api/notifications", { credentials: "same-origin", cache: "no-store" });
+        if (response.ok) {
+          const body = (await response.json()) as { unreadCount?: number };
+          if (!cancelled && typeof body.unreadCount === "number") setUnreadCount(body.unreadCount);
+        }
+      } catch { /* badge-only; center shows errors */ }
+      if (!user.permissions.includes("APPROVE_PROFILE_PHOTO") && user.role !== "ADMIN") {
+        if (!cancelled) setPendingPhotoCount(0);
+        return;
+      }
+      try {
+        const response = await fetch("/api/admin/profile-photos", { credentials: "same-origin", cache: "no-store" });
+        if (response.ok) {
+          const body = (await response.json()) as { photos?: unknown[] };
+          if (!cancelled) setPendingPhotoCount(Array.isArray(body.photos) ? body.photos.length : 0);
+        }
+      } catch { /* badge-only; queue shows errors */ }
+    };
+    void refreshBadges();
+    const timer = window.setInterval(() => { void refreshBadges(); }, 15_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [user, view, activeSection]);
 
   const canCreateInvites = user?.role === "ADMIN" || Boolean(user?.permissions.includes("CREATE_INVITES"));
   const canUsePickerWorkflow = user?.role === "PICKER" && Boolean(user.permissions.some((permission) => permission === "REPORT_SHORT_PICK" || permission === "VIEW_OWN_CASES"));
@@ -480,7 +507,9 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
                 aria-current={activeSection === item.key ? "page" : undefined}
               >
                 <Icon name={item.key} />
-                <span>{tr(item.key)}</span>
+                <span className="nav-item-label">{tr(item.key)}</span>
+                {item.key === "notifications" && unreadCount > 0 && <span className="nav-badge" aria-label={tr("notificationsUnread", { count: String(unreadCount) })}>{unreadCount > 99 ? "99+" : unreadCount}</span>}
+                {item.key === "users" && pendingPhotoCount > 0 && <span className="nav-badge" aria-label={tr("photoPendingBadge", { count: String(pendingPhotoCount) })}>{pendingPhotoCount > 99 ? "99+" : pendingPhotoCount}</span>}
               </button>
             ))}
           </nav>
@@ -490,7 +519,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
               <span className="account-copy"><strong>{user.displayName}</strong><small>{roleKeys[user.role as InviteRole | "ADMIN"] ? tr(roleKeys[user.role as InviteRole | "ADMIN"]) : user.role}</small></span>
             </div>
             <button className="nav-item signout-nav" onClick={handleLogout} disabled={busy}>
-              <Icon name="signOut" /><span>{busy ? tr("signingOut") : tr("signOut")}</span>
+              <Icon name="signOut" /><span className="nav-item-label">{busy ? tr("signingOut") : tr("signOut")}</span>
             </button>
           </div>
         </aside>
@@ -508,9 +537,8 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             ) : activeSection === "profile" ? (
               <ProfilePanel locale={locale} tr={tr} onLanguageChange={setLocale} />
             ) : activeSection === "users" && allowedNavigation.some((item) => item.key === "users") ? (
-              <UserManagement actorId={user.id} actorRole={user.role} actorPermissions={user.permissions} tr={tr} />
-            ) : activeSection === "photoApproval" && allowedNavigation.some((item) => item.key === "photoApproval") ? (
-              <PhotoApproval tr={tr} />
+              <><UserManagement actorId={user.id} actorRole={user.role} actorPermissions={user.permissions} tr={tr} />
+                {user.permissions.includes("APPROVE_PROFILE_PHOTO") || user.role === "ADMIN" ? <PhotoApproval tr={tr} onQueueChange={setPendingPhotoCount} /> : null}</>
             ) : activeSection === "openCases" && allowedNavigation.some((item) => item.key === "openCases") ? (
               <OperationsDashboard
                 tr={tr}
@@ -526,6 +554,8 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
                 locale={locale}
                 canManagePreferences={user.permissions.includes("VIEW_ALL_OPEN_CASES")}
                 onOpenCase={notificationCaseDestination ? () => setActiveSection(notificationCaseDestination) : undefined}
+                onReviewPhotos={user.permissions.includes("APPROVE_PROFILE_PHOTO") || user.role === "ADMIN" ? () => setActiveSection("users") : undefined}
+                onUnreadChange={setUnreadCount}
               />
             ) : activeSection === "reports" && allowedNavigation.some((item) => item.key === "reports") ? (
               <AnalyticsDashboard tr={tr} locale={locale} canExport={user.permissions.includes("EXPORT_ANALYTICS")} />

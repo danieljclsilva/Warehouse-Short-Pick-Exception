@@ -142,6 +142,8 @@ button { color: inherit; }
 .nav-item:hover { color: var(--ink); background: #f4f7f5; }
 .nav-item-active { color: var(--green); background: var(--green-wash); font-weight: 650; }
 .nav-item-active:hover { color: var(--green); background: #e0eee7; }
+.nav-item-label { overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
+.nav-badge { display: inline-flex; min-width: 24px; min-height: 24px; align-items: center; justify-content: center; margin-left: auto; padding: 0 7px; border-radius: 999px; color: #fff; background: var(--coral); font-size: 11px; font-weight: 700; }
 .sidebar-bottom { display: grid; gap: 11px; margin-top: auto; padding-top: 14px; border-top: 1px solid var(--line); }
 .account-row { display: flex; min-height: 49px; align-items: center; gap: 10px; padding: 0 8px; }
 .avatar { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: 50%; color: #205d4a; background: #dbece3; font-size: 13px; font-weight: 700; }
@@ -381,6 +383,7 @@ button { color: inherit; }
   .invite-row-primary { grid-column: 1 / -1; justify-content: space-between; }
   .invite-row-details { grid-column: 1 / -1; display: grid; gap: 4px; }
   .revoke-button { grid-column: 1 / -1; width: 100%; }
+  .form-field input, .form-field select, .language-field select, .invite-form .form-field select, .profile-form .form-field select, .check-worker-select, .check-complete-form select, .check-detail-message textarea, .profile-photo-form input[type="file"], .quantity-control input { font-size: 16px; }
 }
 
 @media (max-width: 380px) {
@@ -457,6 +460,7 @@ button { color: inherit; }
 .permission-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; max-height: 52vh; overflow: auto; margin: 15px 0; padding: 4px; }
 .permission-option { display: flex; min-height: 43px; align-items: center; gap: 9px; color: var(--ink-soft); font-size: 12px; cursor: pointer; }
 .permission-option input { width: 18px; height: 18px; accent-color: var(--green); }
+.users-page + .photo-approval-page { margin-top: 28px; }
 .photo-queue { display: grid; gap: 12px; }
 .photo-queue-card { display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; align-items: center; gap: 16px; padding: 15px; border: 1px solid var(--line); border-radius: 11px; background: #fff; }
 .photo-queue-card > img { display: block; width: 92px; height: 92px; border-radius: 9px; background: #edf2ef; object-fit: cover; }

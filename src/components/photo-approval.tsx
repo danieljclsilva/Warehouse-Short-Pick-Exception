@@ -5,9 +5,9 @@ import Image from "next/image";
 import type { MessageKey } from "@/i18n/messages";
 
 type PendingPhoto = { id: string; userId: string; displayName: string; createdAt: string };
-type Props = { tr: (key: MessageKey, values?: Record<string, string>) => string };
+type Props = { tr: (key: MessageKey, values?: Record<string, string>) => string; onQueueChange?: (pendingCount: number) => void };
 
-export function PhotoApproval({ tr }: Props) {
+export function PhotoApproval({ tr, onQueueChange }: Props) {
   const [photos, setPhotos] = useState<PendingPhoto[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
@@ -20,21 +20,22 @@ export function PhotoApproval({ tr }: Props) {
       const body = await response.json() as { photos?: PendingPhoto[]; error?: string };
       if (!response.ok) throw new Error(body.error || tr("photoQueueError"));
       setPhotos(body.photos || []);
+      onQueueChange?.((body.photos || []).length);
     } catch (cause) { setError(cause instanceof Error ? cause.message : tr("unknownError")); }
     finally { setLoading(false); }
-  }, [tr]);
+  }, [tr, onQueueChange]);
   useEffect(() => {
     let cancelled = false;
     fetch("/api/admin/profile-photos", { credentials: "same-origin", cache: "no-store" })
       .then(async (response) => {
         const body = await response.json() as { photos?: PendingPhoto[]; error?: string };
         if (!response.ok) throw new Error(body.error || tr("photoQueueError"));
-        if (!cancelled) setPhotos(body.photos || []);
+        if (!cancelled) { setPhotos(body.photos || []); onQueueChange?.((body.photos || []).length); }
       })
       .catch((cause: unknown) => { if (!cancelled) setError(cause instanceof Error ? cause.message : tr("unknownError")); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [tr]);
+  }, [tr, onQueueChange]);
 
   const decide = async (photo: PendingPhoto, decision: "approve" | "reject") => {
     setBusyId(photo.id); setError(""); setNotice("");
@@ -42,7 +43,11 @@ export function PhotoApproval({ tr }: Props) {
       const response = await fetch(`/api/admin/profile-photos/${encodeURIComponent(photo.id)}/${decision}`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" });
       const body = await response.json() as { error?: string };
       if (!response.ok) throw new Error(body.error || tr("photoDecisionError"));
-      setPhotos((current) => current.filter((item) => item.id !== photo.id));
+      setPhotos((current) => {
+        const next = current.filter((item) => item.id !== photo.id);
+        onQueueChange?.(next.length);
+        return next;
+      });
       setNotice(tr(decision === "approve" ? "photoApproved" : "photoRejected"));
     } catch (cause) { setError(cause instanceof Error ? cause.message : tr("unknownError")); }
     finally { setBusyId(""); }

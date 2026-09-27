@@ -84,7 +84,7 @@ export async function uploadProfilePhoto(auth: AuthContext, file: File, maxUploa
       for (const approver of approvers) {
         if (approver.id === auth.user.id || !approver.permissions.includes("APPROVE_PROFILE_PHOTO")) continue;
         await insertNotification(tx, { recipientUserId: approver.id, type: "PROFILE_PHOTO_APPROVAL_REQUIRED",
-          payload: { photoOwnerUserId: auth.user.id, photoId: photo.id, revision }, dedupeKey: `profile-photo:${photo.id}` });
+          payload: { photoOwnerUserId: auth.user.id, photoOwnerDisplayName: auth.user.displayName, photoId: photo.id, revision }, dedupeKey: `profile-photo:${photo.id}` });
       }
     });
   } catch (error) {
@@ -176,6 +176,16 @@ export async function reviewProfilePhoto(auth: AuthContext, photoId: string, dec
     await tx.update(users).set({ profilePhotoStatus: decision, updatedAt: now }).where(eq(users.id, photo.userId));
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, targetUserId: photo.userId,
       action: decision === "APPROVED" ? "PROFILE_PHOTO_APPROVED" : "PROFILE_PHOTO_REJECTED", details: { photoId: photo.id, ...(reason ? { reason } : {}) } });
+    const pendingApprovalNotifications = await tx.select({ id: notifications.id, payload: notifications.payload })
+      .from(notifications).where(eq(notifications.type, "PROFILE_PHOTO_APPROVAL_REQUIRED"));
+    const notificationIds = pendingApprovalNotifications
+      .filter((notification) => typeof notification.payload.photoId === "string" && notification.payload.photoId === photo.id)
+      .map((notification) => notification.id);
+    if (notificationIds.length) {
+      await tx.update(notifications).set({ readAt: now }).where(and(inArray(notifications.id, notificationIds), isNull(notifications.readAt)));
+      await tx.update(pushOutbox).set({ status: "DISABLED", leaseUntil: null })
+        .where(and(inArray(pushOutbox.notificationId, notificationIds), or(eq(pushOutbox.status, "QUEUED"), eq(pushOutbox.status, "RETRY"))));
+    }
     const [user] = await tx.select({ id: users.id, displayName: users.displayName, role: users.role, status: users.status,
       preferredLanguage: users.preferredLanguage, profilePhotoStatus: users.profilePhotoStatus }).from(users).where(eq(users.id, photo.userId)).limit(1);
     return { profile: user ? { ...user, photoUrl: decision === "APPROVED" ? `/api/profile/photo?userId=${user.id}` : null } : null };

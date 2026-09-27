@@ -36,6 +36,8 @@ type Props = {
   locale: string;
   canManagePreferences: boolean;
   onOpenCase?: (caseId: string) => void;
+  onReviewPhotos?: () => void;
+  onUnreadChange?: (unreadCount: number) => void;
 };
 
 const dateLocales: Record<string, string> = { en: "en-GB", nl: "nl-NL", pl: "pl-PL", es: "es-ES" };
@@ -113,6 +115,8 @@ function notificationTitleKey(type: string): MessageKey {
     CASE_UNRESOLVED_THRESHOLD: "notificationCaseUnresolved",
     UNRESOLVED_OVER_THRESHOLD: "notificationCaseUnresolved",
     CASE_RESOLVED: "notificationCaseResolved",
+    PROFILE_PHOTO_APPROVAL_REQUIRED: "notificationPhotoApprovalRequired",
+    PHOTO_APPROVAL_REQUIRED: "notificationPhotoApprovalRequired",
   };
   return keys[normalized] ?? "notificationUpdate";
 }
@@ -141,8 +145,7 @@ function normalizeThresholds(raw: Record<string, unknown> | undefined): Threshol
 async function readBody<T>(response: Response): Promise<T> {
   return (await response.json().catch(() => ({}))) as T;
 }
-
-export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCase }: Props) {
+export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCase, onReviewPhotos, onUnreadChange }: Props) {
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [preferences, setPreferences] = useState<PreferenceState>(defaultPreferences);
@@ -162,14 +165,16 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
       const body = await readBody<NotificationsResponse>(response);
       if (!response.ok) throw new Error(body.error || tr("notificationsLoadError"));
       setNotifications(body.notifications || []);
-      setUnreadCount(typeof body.unreadCount === "number" ? body.unreadCount : (body.notifications || []).filter((notification) => !notification.readAt).length);
+      const nextUnread = typeof body.unreadCount === "number" ? body.unreadCount : (body.notifications || []).filter((notification) => !notification.readAt).length;
+      setUnreadCount(nextUnread);
+      onUnreadChange?.(nextUnread);
       setError("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : tr("notificationsLoadError"));
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [tr]);
+  }, [tr, onUnreadChange]);
 
   const loadPreferences = useCallback(async () => {
     if (!canManagePreferences) return;
@@ -206,7 +211,11 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
       if (!response.ok) throw new Error(body.error || tr("notificationReadError"));
       const readAt = new Date().toISOString();
       setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, readAt } : item));
-      setUnreadCount((count) => Math.max(0, count - 1));
+      setUnreadCount((count) => {
+        const next = Math.max(0, count - 1);
+        onUnreadChange?.(next);
+        return next;
+      });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : tr("notificationReadError"));
     } finally {
@@ -240,12 +249,14 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
 
   const notificationRows = useMemo(() => notifications.map((notification) => {
     const payload = asPayload(notification.payload);
+    const isPhotoApproval = notification.type === "PROFILE_PHOTO_APPROVAL_REQUIRED";
     const detailParts = [
       payloadText(payload, "orderNumber", "order_number"),
       payloadText(payload, "location", "discoveredLocation", "discovered_location"),
       payloadText(payload, "actorName", "actor_name", "responsibleName", "responsible_name"),
+      isPhotoApproval ? payloadText(payload, "photoOwnerDisplayName", "photoOwnerName", "displayName") : "",
     ].filter(Boolean);
-    return { notification, payload, detailParts };
+    return { notification, payload, detailParts, isPhotoApproval };
   }), [notifications]);
 
   return (
@@ -267,7 +278,7 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
           <div className={styles.error} role="alert"><span>{error}</span><div className={styles.errorActions}><button type="button" className={styles.refreshButton} onClick={() => void loadNotifications()}>{tr("tryAgain")}</button></div></div>
         ) : notificationRows.length === 0 ? <p className={styles.empty}>{tr("notificationsEmpty")}</p> : (
           <div className={styles.list}>
-            {notificationRows.map(({ notification, payload, detailParts }) => (
+            {notificationRows.map(({ notification, payload, detailParts, isPhotoApproval }) => (
               <article className={`${styles.row} ${notification.readAt ? "" : styles.rowUnread}`} key={notification.id}>
                 <span className={styles.dot} aria-hidden="true" />
                 <div className={styles.rowContent}>
@@ -277,6 +288,7 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
                   <time className={styles.rowTime} dateTime={notification.createdAt}>{formatDate(notification.createdAt, locale)}</time>
                 </div>
                 <div className={styles.rowActions}>
+                  {isPhotoApproval && onReviewPhotos && <button type="button" className={styles.caseButton} onClick={onReviewPhotos}>{tr("reviewPhoto")}</button>}
                   {notification.caseId && onOpenCase && <button type="button" className={styles.caseButton} onClick={() => onOpenCase(notification.caseId as string)}>{tr("openCase")}</button>}
                   {!notification.readAt && <button type="button" className={styles.readButton} onClick={() => void markRead(notification)} disabled={busyId === notification.id}>{busyId === notification.id ? tr("saving") : tr("markNotificationRead")}</button>}
                 </div>

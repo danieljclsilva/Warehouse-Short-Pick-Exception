@@ -21,7 +21,7 @@ export const metadata: Metadata = {
   appleWebApp: { capable: true, title: "Short Pick", statusBarStyle: "default" },
 };
 
-export const viewport: Viewport = { themeColor: "#24765d" };
+export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover", themeColor: "#24765d" };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (

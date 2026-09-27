@@ -139,6 +139,7 @@ function safePushPayload(notification: typeof notifications.$inferSelect) {
     NEW_SHORT_PICK: ["New short pick", "A new short pick needs review."], CHECK_CLAIMED: ["Check claimed", "A stock check was claimed."],
     NEW_LOCATION: ["New location", "A new item location was reported."], TROUBLESHOOTER_MESSAGE: ["Case message", "A case has a new message."],
     UNRESOLVED_OVER_THRESHOLD: ["Case needs attention", "An unresolved case passed its attention threshold."], CASE_RESOLVED: ["Case resolved", "A case was resolved."],
+    PROFILE_PHOTO_APPROVAL_REQUIRED: ["Photo approval", "A profile photo needs your review."],
   };
   const [title, body] = messages[notification.type] ?? ["Warehouse update", "A warehouse case needs attention."];
   return { title, body, notificationId: notification.id };
