@@ -128,4 +128,34 @@ Wave 0 (2026-09-28) delivered docs-only contracts: PRD amendments plus the bindi
 - Notification open marks that notification read (idempotent one-at-a-time read), then navigates to the exact case (open or closed read-only) with its line target.
 - Permissions UI exposes the four new grants (`OVERRIDE_CASE_STATE` Team Leader-grantable, `REPAIR_CASE_DATA` Admin-only, `RECORD_REPLENISHMENT` + `REPORT_NEW_LOCATION` Troubleshooter/Assistant/Team Leader/Admin default with Picker by explicit grant) as editable grant/revoke within the existing role allowlists, plus a role-bounds hint. Visibility mirrors server grants; server remains the authorization boundary.
 - i18n adds 63 keys × en/nl/pl/es (analytics same-location + role filter + directory, next-action/blocking-reason codes, found-at-original, replenishment, mark-all-read confirmation, deep-link errors, override/repair confirmations, line-card fields, "no known new location"). Order numbers, locations, and SKUs are never translated; English fallback preserved.
-- Known limitations: domain projection fields (coded nextAction/blockingReason, replenishment dimension, assignment names) render opportunistically when present and are absent until the Wave 1 domain slice lands; real-iPhone scan proof and warehouse acceptance remain pending (out of scope for this slice).
+- Known limitations: real-iPhone scan proof and warehouse acceptance remain pending (out of scope for this slice). Domain projection fields landed in the Wave 1-A2/A3 slice below; the deep-link panel renders its coded fields opportunistically when the server provides them.
+
+## Wave 1-A1 domain slice (field feedback issues 3, 5, 6, 8)
+
+- All five role presets grant `VIEW_AVAILABLE_CHECKS`/`CLAIM_CHECK`/`COMPLETE_CHECK` by default; picker case-note grants included; `OVERRIDE_CASE_STATE` Admin-only grantable to Team Leader, `REPAIR_CASE_DATA` Admin-only. Migration `0017` backfills the three check grants unconditionally to all existing users (later revoke sticks).
+- New `FOUND_AT_ORIGINAL` completion outcome: null discovered location, still routes retrieval via PICKING/STAGED rules. Completion-time workflow settings (`ALLOWED_RESOLUTION_CODES`, checker retrieval routing) use the case snapshot; claim/capacity controls use current operational configuration.
+- `GET /api/checks` cursor+limit pagination returns `{ items, nextCursor, total }` (default 50); millisecond-truncated keyset ordering so same-millisecond rows cannot be skipped; page-3 proof with same-millisecond boundary fixture.
+- `MAX_SIMULTANEOUS_CHECKS_PER_CASE` default is unlimited (`null`) for new configurations; deployed value `1` rolls forward to unlimited through an audited configuration version (prior value + reason); other explicit caps preserved. Upgrade proof via `scripts/prove-0017-upgrade.mjs` on a pre-0017 database.
+- Known edge: pre-0017 snapshots permanently lack `FOUND_AT_ORIGINAL` (immutable); old open cases need re-creation or a repair command to use the new outcome.
+
+## Analytics slice (field feedback issues 3, 4)
+
+- Per-user analytics: user-directory selector, per-user summaries, role filter; no rankings or disciplinary scoring.
+- Same-location-found metric per reporting picker and date range: denominator = unique reported lines with a final conclusive outcome; numerator = latest conclusive outcome is `FOUND_AT_ORIGINAL` (latest wins, repeat checks never double-count); unfinished/`OTHER`/cancelled-without-conclusive excluded. Counts always shown; percentage only at denominator ≥ 20 with suppressed note. CSV (`same-location-found`, `same-location-found-overall`) and PDF carry identical counts.
+- Reads completion codes as text so the metric works with or without the 0017 enum migration; resolution filter accepts `FOUND_AT_ORIGINAL`.
+
+## Wave 1-A2/A3 domain slice (field feedback issues 5, 6, 8, 9, 11, 12, 13, 16)
+
+- Closed-case read-only detail with ALL lines under the closed-read rule (active account + `VIEW_OWN_CASES` as picker/reporter/recorded check-retrieval participant, or manager `VIEW_ALL_OPEN_CASES`; messages need `VIEW_CASE_MESSAGES`). Participant links derive from stored data; no migration needed. New messages on closed cases rejected with `CASE_MESSAGE_CLOSED`; reopen restores posting to authorized active participants.
+- Picker read/write notes on accessible active cases; picker sees own closed history with ALL lines and resolutions.
+- Replenishment `NONE`/`WAITING`/`COMPLETED` line dimension (migration `0018`) with actor/note/named retriever, persisted without changing main line state; transitions `NONE`→`WAITING`→`COMPLETED` plus direct `NONE`→`COMPLETED`; completed routes retrieval + notification via PICKING/STAGED rules. Permission-only availability, no `replenishment_enabled` key. Reporter index `short_pick_lines_reporter_reported_idx` added.
+- Ad hoc discovered-location (`REPORT_NEW_LOCATION`): records finder, reconciles any active check (external-resolution path), derives retrieval owner from phase, atomic audit event + responsibility notification. Completing one's own claimed check needs `COMPLETE_CHECK` only.
+- `OVERRIDE_CASE_STATE` (4 bounded commands, Admin-only default grantable to TL) vs `REPAIR_CASE_DATA` (9 commands, Admin-only; state-breaking steps additionally require override). Preview, explicit reason (≥5 chars, `REPAIR_REASON_REQUIRED`), invariant validation (one-open-case-per-order, one-active-check-per-line, `REPAIR_INVARIANT_VIOLATION`), `CASE_REPAIRED` + audit in one transaction. Ordinary close/reopen needs neither.
+- Typed coded projection: `LineProjection`/`CaseProjection`/`DashboardSummary` with stable next-action/blocking-reason codes + typed params/owner IDs (no free text); `displayStatus` never encodes replenishment (separate badge); dashboard and case detail share one derivation.
+- New error codes centralized in `src/server/case-errors.ts`: `REPAIR_INVARIANT_VIOLATION`, `REPAIR_REASON_REQUIRED`, `CHECK_RESULT_FORBIDDEN`, `REPLENISHMENT_FORBIDDEN`, `CASE_MESSAGE_CLOSED`.
+- Unresolved edges: `REDERIVE_RETRIEVAL_ROUTING` override lacks a dedicated test (other 3 covered); `REOPEN_LINE` repair resets replenishment to `NONE` (preserve-vs-reset is a product call); `CORRECT_LOCATION` with `discoveredLocation: null` clears discovered only (no combined original-replace + clear in one call).
+
+## Field-feedback gate evidence (2026-09-28, branch `codex/field-feedback`)
+
+- Full suite: 26 files / 162 tests pass; `typecheck` clean; `lint` clean; production `build` clean; `db:check` clean; fresh-DB (0000→0018) + upgrade-path (0017→0018, pre-0017→0017) migration proofs pass.
+- Still pending warehouse acceptance: real-iPhone Safari + installed-PWA double-scan on the warehouse label, TEST deployment with populated visual QA, exact notification URL → case after reload on device, state/override/repair/message/location sign-off per the contract acceptance matrix.
