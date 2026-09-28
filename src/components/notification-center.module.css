@@ -50,6 +50,14 @@
   margin-bottom: 12px;
 }
 
+.headingActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .sectionHeading h2 {
   margin: 0;
   color: var(--ink);
@@ -314,6 +322,11 @@
 
   .unreadBadge {
     margin-top: 15px;
+  }
+
+  .headingActions {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .row {

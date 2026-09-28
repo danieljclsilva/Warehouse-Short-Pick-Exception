@@ -35,10 +35,22 @@ type Props = {
   tr: Translator;
   locale: string;
   canManagePreferences: boolean;
-  onOpenCase?: (caseId: string) => void;
+  onOpenCase?: (caseId: string, lineId?: string | null) => void;
   onReviewPhotos?: () => void;
   onUnreadChange?: (unreadCount: number) => void;
 };
+
+const markAllReadCopyFallback = "Mark all read";
+const markAllReadErrorFallback = "Could not mark all notifications as read.";
+
+function trOrFallback(tr: Translator, key: string, fallback: string) {
+  try {
+    const value = tr(key as MessageKey, undefined);
+    return typeof value === "string" && value.length > 0 ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 const dateLocales: Record<string, string> = { en: "en-GB", nl: "nl-NL", pl: "pl-PL", es: "es-ES" };
 
@@ -153,8 +165,10 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
   const [loading, setLoading] = useState(true);
   const [preferencesLoading, setPreferencesLoading] = useState(canManagePreferences);
   const [busyId, setBusyId] = useState("");
+  const [markAllBusy, setMarkAllBusy] = useState(false);
   const [savingPreferences, setSavingPreferences] = useState(false);
   const [error, setError] = useState("");
+  const [markAllError, setMarkAllError] = useState("");
   const [preferencesError, setPreferencesError] = useState("");
   const [saved, setSaved] = useState(false);
 
@@ -203,24 +217,66 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
   }, [canManagePreferences, loadNotifications, loadPreferences]);
 
   const markRead = async (notification: NotificationRecord) => {
-    if (notification.readAt) return;
+    if (notification.readAt || busyId === notification.id) return;
     setBusyId(notification.id);
     try {
       const response = await fetch(`/api/notifications/${encodeURIComponent(notification.id)}/read`, { method: "POST", credentials: "same-origin" });
       const body = await readBody<{ error?: string }>(response);
       if (!response.ok) throw new Error(body.error || tr("notificationReadError"));
       const readAt = new Date().toISOString();
-      setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, readAt } : item));
-      setUnreadCount((count) => {
-        const next = Math.max(0, count - 1);
-        onUnreadChange?.(next);
-        return next;
-      });
+      const nextItems = notifications.map((item) => item.id === notification.id ? { ...item, readAt } : item);
+      const nextUnread = nextItems.filter((item) => !item.readAt).length;
+      setNotifications(nextItems);
+      setUnreadCount(nextUnread);
+      onUnreadChange?.(nextUnread);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : tr("notificationReadError"));
     } finally {
       setBusyId("");
     }
+  };
+
+  const markAllRead = async () => {
+    if (markAllBusy || unreadCount === 0) return;
+    setMarkAllBusy(true);
+    setMarkAllError("");
+    try {
+      const response = await fetch("/api/notifications/read-all", { method: "POST", credentials: "same-origin" });
+      const body = await readBody<{ updated?: number; unreadCount?: number; error?: string }>(response);
+      if (!response.ok) throw new Error(body.error || trOrFallback(tr, "markAllNotificationsReadError", markAllReadErrorFallback));
+      const readAt = new Date().toISOString();
+      setNotifications((current) => current.map((item) => item.readAt ? item : { ...item, readAt }));
+      const nextUnread = typeof body.unreadCount === "number" ? body.unreadCount : 0;
+      setUnreadCount(nextUnread);
+      onUnreadChange?.(nextUnread);
+    } catch (cause) {
+      setMarkAllError(cause instanceof Error ? cause.message : trOrFallback(tr, "markAllNotificationsReadError", markAllReadErrorFallback));
+    } finally {
+      setMarkAllBusy(false);
+    }
+  };
+
+  const openNotificationCase = async (notification: NotificationRecord) => {
+    if (!notification.caseId || !onOpenCase) return;
+    if (!notification.readAt && busyId !== notification.id) {
+      setBusyId(notification.id);
+      try {
+        const response = await fetch(`/api/notifications/${encodeURIComponent(notification.id)}/read`, { method: "POST", credentials: "same-origin" });
+        const body = await readBody<{ error?: string }>(response);
+        if (!response.ok) throw new Error(body.error || tr("notificationReadError"));
+        const readAt = new Date().toISOString();
+        const nextItems = notifications.map((item) => item.id === notification.id ? { ...item, readAt } : item);
+        const nextUnread = nextItems.filter((item) => !item.readAt).length;
+        setNotifications(nextItems);
+        setUnreadCount(nextUnread);
+        onUnreadChange?.(nextUnread);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : tr("notificationReadError"));
+      } finally {
+        setBusyId("");
+      }
+    }
+    onOpenCase(notification.caseId, notification.shortPickLineId ?? null);
   };
 
   const savePreferences = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -272,8 +328,12 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
       <section className={styles.section} aria-labelledby="notification-list-title">
         <div className={styles.sectionHeading}>
           <h2 id="notification-list-title">{tr("notificationUpdates")}</h2>
-          <button type="button" className={styles.refreshButton} onClick={() => void loadNotifications()} disabled={loading}>{tr("refresh")}</button>
+          <div className={styles.headingActions}>
+            <button type="button" className={styles.refreshButton} onClick={() => void markAllRead()} disabled={markAllBusy || loading || unreadCount === 0}>{markAllBusy ? tr("saving") : trOrFallback(tr, "markAllNotificationsRead", markAllReadCopyFallback)}</button>
+            <button type="button" className={styles.refreshButton} onClick={() => void loadNotifications()} disabled={loading}>{tr("refresh")}</button>
+          </div>
         </div>
+        {markAllError && <p className={styles.preferenceError} role="alert">{markAllError}</p>}
         {loading ? <p className={styles.loading} aria-live="polite">{tr("notificationsLoading")}</p> : error ? (
           <div className={styles.error} role="alert"><span>{error}</span><div className={styles.errorActions}><button type="button" className={styles.refreshButton} onClick={() => void loadNotifications()}>{tr("tryAgain")}</button></div></div>
         ) : notificationRows.length === 0 ? <p className={styles.empty}>{tr("notificationsEmpty")}</p> : (
@@ -289,7 +349,7 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
                 </div>
                 <div className={styles.rowActions}>
                   {isPhotoApproval && onReviewPhotos && <button type="button" className={styles.caseButton} onClick={onReviewPhotos}>{tr("reviewPhoto")}</button>}
-                  {notification.caseId && onOpenCase && <button type="button" className={styles.caseButton} onClick={() => onOpenCase(notification.caseId as string)}>{tr("openCase")}</button>}
+                  {notification.caseId && onOpenCase && <button type="button" className={styles.caseButton} onClick={() => void openNotificationCase(notification)} disabled={busyId === notification.id}>{tr("openCase")}</button>}
                   {!notification.readAt && <button type="button" className={styles.readButton} onClick={() => void markRead(notification)} disabled={busyId === notification.id}>{busyId === notification.id ? tr("saving") : tr("markNotificationRead")}</button>}
                 </div>
               </article>
