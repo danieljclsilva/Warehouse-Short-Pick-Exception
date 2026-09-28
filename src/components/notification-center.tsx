@@ -40,17 +40,6 @@ type Props = {
   onUnreadChange?: (unreadCount: number) => void;
 };
 
-const markAllReadCopyFallback = "Mark all read";
-const markAllReadErrorFallback = "Could not mark all notifications as read.";
-
-function trOrFallback(tr: Translator, key: string, fallback: string) {
-  try {
-    const value = tr(key as MessageKey, undefined);
-    return typeof value === "string" && value.length > 0 ? value : fallback;
-  } catch {
-    return fallback;
-  }
-}
 
 const dateLocales: Record<string, string> = { en: "en-GB", nl: "nl-NL", pl: "pl-PL", es: "es-ES" };
 
@@ -243,14 +232,14 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
     try {
       const response = await fetch("/api/notifications/read-all", { method: "POST", credentials: "same-origin" });
       const body = await readBody<{ updated?: number; unreadCount?: number; error?: string }>(response);
-      if (!response.ok) throw new Error(body.error || trOrFallback(tr, "markAllNotificationsReadError", markAllReadErrorFallback));
+      if (!response.ok) throw new Error(body.error || tr("markAllNotificationsReadError"));
       const readAt = new Date().toISOString();
       setNotifications((current) => current.map((item) => item.readAt ? item : { ...item, readAt }));
       const nextUnread = typeof body.unreadCount === "number" ? body.unreadCount : 0;
       setUnreadCount(nextUnread);
       onUnreadChange?.(nextUnread);
     } catch (cause) {
-      setMarkAllError(cause instanceof Error ? cause.message : trOrFallback(tr, "markAllNotificationsReadError", markAllReadErrorFallback));
+      setMarkAllError(cause instanceof Error ? cause.message : tr("markAllNotificationsReadError"));
     } finally {
       setMarkAllBusy(false);
     }
@@ -329,7 +318,7 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
         <div className={styles.sectionHeading}>
           <h2 id="notification-list-title">{tr("notificationUpdates")}</h2>
           <div className={styles.headingActions}>
-            <button type="button" className={styles.refreshButton} onClick={() => void markAllRead()} disabled={markAllBusy || loading || unreadCount === 0}>{markAllBusy ? tr("saving") : trOrFallback(tr, "markAllNotificationsRead", markAllReadCopyFallback)}</button>
+            <button type="button" className={styles.refreshButton} onClick={() => void markAllRead()} disabled={markAllBusy || loading || unreadCount === 0}>{markAllBusy ? tr("saving") : tr("markAllNotificationsRead")}</button>
             <button type="button" className={styles.refreshButton} onClick={() => void loadNotifications()} disabled={loading}>{tr("refresh")}</button>
           </div>
         </div>
