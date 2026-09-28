@@ -2,7 +2,7 @@
 
 The [product requirements](./Warehouse_Short_Pick_Exception%20_System.md) are the source of truth. The project is a modular Next.js application with PostgreSQL. Each phase is accepted only after its behavior, tests, type checking, linting, migrations, and known limitations have been reviewed.
 
-Warehouse field feedback from 2026-09-28 is scoped in the [implementation plan](./WAREHOUSE_FEEDBACK_IMPLEMENTATION_PLAN.md). It is planning work only; no feedback item is accepted as implemented. The first delivery gate is to revise the product requirements and shared contracts before parallel OMP branches begin.
+Wave 0 (2026-09-28) delivered docs-only contracts: PRD amendments plus the binding acceptance matrix in [FIELD_FEEDBACK_CONTRACTS.md](./FIELD_FEEDBACK_CONTRACTS.md). No application code or migrations changed in Wave 0. A same-day review follow-up tightened the contracts without code: coded next-action/blocking-reason DTOs with client-side localization, ALL-lines case detail plus separate dashboard summary, replenishment as a NONE/WAITING/COMPLETED line dimension, Admin-only repair vs grantable Team Leader override, explicit replenishment/report defaults, concrete closed-read rule, null-location FOUND_AT_ORIGINAL with retrieval routing, removal of the `replenishment_enabled` key, audited 1→unlimited capacity roll-forward, and cursor+total checks pagination with page-2 proof.
 
 | Phase | Scope | Status |
 | --- | --- | --- |

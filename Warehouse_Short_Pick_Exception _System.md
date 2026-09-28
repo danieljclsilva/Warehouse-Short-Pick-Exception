@@ -133,10 +133,9 @@ The frontend must render only capabilities that the authenticated user can use.
 
 Do not show disabled functionality merely as greyed-out controls when it is irrelevant to that user.
 
-Example:
+Example (amended 2026-09-28 — defaults grant the queue, rendering stays permission-driven):
 
-A Picker who has permission only to report shortages must not see a queue of available checks.
-
+A Picker without `VIEW_AVAILABLE_CHECKS` must not see a queue of available checks. By default, however, every role preset — including Picker — grants `VIEW_AVAILABLE_CHECKS`, `CLAIM_CHECK`, and `COMPLETE_CHECK`, so all users normally see, claim, and finish every available line check. Frontend visibility always mirrors the server permission check; it is never the authorization boundary.
 ---
 
 # 6. Permission Model
@@ -171,6 +170,9 @@ CONFIRM_RETRIEVAL
 MARK_ORDER_STAGED
 RESOLVE_CASE
 REOPEN_CASE
+OVERRIDE_CASE_STATE
+RECORD_REPLENISHMENT
+REPAIR_CASE_DATA
 
 CREATE_CASE_ON_BEHALF
 CREATE_INVITES
@@ -195,13 +197,13 @@ RESET_USER_PIN
 REVOKE_USER_SESSIONS
 ```
 
-Names may differ in implementation, but equivalent granularity must exist.
+`REPORT_NEW_LOCATION` defaults to Troubleshooter, Assistant, Team Leader, and Admin presets; Picker holds it only by explicit grant. `RECORD_REPLENISHMENT` defaults to Troubleshooter, Assistant, Team Leader, and Admin presets; Picker holds it only by explicit grant. `OVERRIDE_CASE_STATE` defaults to Admin only and may be granted only to Admin or Team Leader. `REPAIR_CASE_DATA` defaults to Admin only and may be granted only to Admin. Each of these permissions is individually grantable/revocable per user within those bounds, including revoking any default.
 
 ---
 
 # 7. Permission Hierarchy
 
-## 7.1 Picker
+## 7.1 Picker (amended 2026-09-28)
 
 A normal Picker:
 
@@ -209,8 +211,8 @@ A normal Picker:
 - cannot modify another user's permissions;
 - may report short picks;
 - may manage cases they are actively picking;
-- may optionally be granted permission to view and claim checks;
-- may optionally receive additional operational permissions.
+- may read and write case notes on accessible active cases and read their closed-case history; the server rejects new messages on closed cases;
+- may receive `RECORD_REPLENISHMENT` or `REPORT_NEW_LOCATION` by explicit grant (`OVERRIDE_CASE_STATE` and `REPAIR_CASE_DATA` are never grantable to Picker).
 
 ## 7.2 Troubleshooter
 
@@ -1035,7 +1037,7 @@ updated_at
 
 # 30. Check Claiming
 
-If user has `CLAIM_CHECK`, they may claim an unassigned claimable check.
+If user has `CLAIM_CHECK`, they may claim an unassigned claimable check. The available-checks list endpoint (`GET /api/checks`) is cursor-paginated with an explicit contract: query `?cursor=&limit=` (default limit 50), response `{ items, nextCursor, total }` where `total` is the full count of available checks; the silent 100-row cap MUST NOT truncate results without a `nextCursor`. Acceptance MUST fetch page 2 to prove all checks are visible.
 
 Claiming must be atomic.
 
@@ -1073,23 +1075,15 @@ This rule must be enforced server-side.
 
 Maximum simultaneous checks per Order Case must be configurable.
 
-Suggested default:
+Default for new configurations (amended 2026-09-28):
 
 ```text
-1
+unlimited (null)
 ```
 
-Configuration may later allow:
+Capacity roll-forward rule (2026-09-28): a deployed value of `1` is indistinguishable from an intentional choice of `1` without configuration history, so the migration MUST NOT assume intent. The migration records the prior value and reason in the new configuration version, then changes a prior value of `1` to unlimited (`null`) because the warehouse owner explicitly requires every available line to be claimable by default; any other prior explicit cap (finite 2–100 or unlimited) is preserved unchanged. If prior configuration history is unavailable so the pre-existing value cannot be determined, escalate to the operator instead of guessing.
 
-```text
-2
-3
-unlimited
-```
-
-This allows operational experiments without code changes.
-
-If limit has been reached:
+If a finite limit has been reached:
 
 - additional lines remain OPEN;
 - no new claim is permitted until capacity becomes available.
@@ -1150,6 +1144,7 @@ Line state becomes equivalent to:
 FOUND
 RETRIEVAL_PENDING
 ```
+Found at the original location (amended 2026-09-28) is a distinct check outcome (`FOUND_AT_ORIGINAL`): the checker verifies stock at the line's original location. It records the original location and verifier, preserves the reporting picker, leaves `discovered_location` null (MUST NOT invent a location value), and still creates a physical retrieval obligation routed by the existing PICKING/STAGED rules (§35–§37). A later authorized correction supersedes the earlier outcome; analytics uses the latest conclusive outcome per line.
 
 ---
 
@@ -1293,6 +1288,10 @@ retrieved_by = troubleshooter
 
 Never treat location discovery alone as retrieval.
 
+### Replenishment progress (added 2026-09-28)
+
+Replenishment is its own persisted state dimension on each short-pick line, separate from case phase and from the line's main state: `replenishment_state` is one of `NONE` (default), `WAITING`, or `COMPLETED`. It is a manual progress marker, not inventory integration: an authorized actor (`RECORD_REPLENISHMENT`) marks a line `WAITING` and later `COMPLETED`, each with timestamp, note, and named retriever/responsible user. `WAITING` is allowed from `NONE` only; `COMPLETED` is allowed from `WAITING` (or directly from `NONE` when no wait was recorded) and routes a retrieval task plus notification to the named responsible user using the existing PICKING/STAGED routing rules (§35–§37). Each transition writes its event (`REPLENISHMENT_WAITING` / `REPLENISHMENT_COMPLETED`) and audit entry atomically with the line update, renders with a display badge distinct from the line's main-state badge on dashboard and check screens, and remains visible without requiring a notification read. The system MUST NOT mutate stock quantities.
+
 ---
 
 # 40. Troubleshooter Workflow
@@ -1308,15 +1307,17 @@ Troubleshooter interface should emphasize:
 - case messages;
 - elapsed time.
 
-Troubleshooter can use structured actions such as:
+Troubleshooter can use structured actions such as (amended 2026-09-28):
 
 ```text
+FOUND_AT_ORIGINAL
 FOUND
 NOT FOUND
 WRONG LOCATION
 RETRIEVED
 OTHER
 ```
+`FOUND_AT_ORIGINAL` verifies stock at the line's original location and records no new location. `FOUND` requires a distinct new location. `NOT FOUND` and `WRONG LOCATION` are conclusive non-find outcomes; `OTHER` is non-conclusive and excluded from the same-location-found metric (§62A).
 
 and free-text messages where necessary.
 
@@ -1326,14 +1327,15 @@ and free-text messages where necessary.
 
 Free-text messaging is intended only for complex operational notes.
 
-Initially allow messages for:
+Allowed by default (amended 2026-09-28):
 
 - Troubleshooter;
 - Team Leader;
 - Assistant;
-- Admin.
+- Admin;
+- any Picker (or other role) holding `ADD_CASE_MESSAGE` / `VIEW_CASE_MESSAGES` on a case they can access while the case is active.
 
-Normal Pickers do not need general chat by default.
+Pickers with those grants can read and write notes on accessible active cases and read their own closed-case history. The server MUST reject a new message on a closed case; reopening restores posting only for authorized active participants. Do not build a general chat system.
 
 A message must include:
 
@@ -1383,6 +1385,8 @@ BTS-02
 
 The timeline is an audit trail.
 
+Timeline rendering rules (amended 2026-09-28): a case message renders as exactly one visible row; the `CASE_MESSAGE_ADDED` event stays in the audit store but MUST NOT render as a second row. Status and assignment events render previous and new values, the target person where applicable, location, actor, and timestamp when available. Older events with sparse payloads render a truthful fallback and MUST NOT invent missing values.
+
 ---
 
 # 43. Immutable Event Log
@@ -1405,6 +1409,10 @@ CHECK_REASSIGNED
 CHECK_COMPLETED
 
 NEW_LOCATION_REPORTED
+FOUND_AT_ORIGINAL_VERIFIED
+
+REPLENISHMENT_WAITING
+REPLENISHMENT_COMPLETED
 
 RETRIEVAL_ASSIGNED
 RETRIEVAL_CONFIRMED
@@ -1413,6 +1421,8 @@ RETRIEVAL_FAILED
 ORDER_STAGED
 
 RESPONSIBILITY_CHANGED
+
+CASE_REPAIRED
 
 CASE_MESSAGE_ADDED
 
@@ -1468,8 +1478,16 @@ Reopening:
 - creates `CASE_REOPENED` event;
 - returns case to a valid active state;
 - re-establishes responsibility explicitly.
-
 Do not mutate the historical closure event.
+
+
+# 45A. Stuck-State Override and Admin Repair (added 2026-09-28)
+
+`OVERRIDE_CASE_STATE` defaults to Admin only and is grantable to Team Leader; it authorizes a bounded override command set that never edits data arbitrarily: retry a blocked close with explicit administrative resolution, force-resolve a stuck line to a terminal state with reason, release a stale check claim so the line becomes claimable again, and re-derive retrieval routing after a phase change. Each override validates invariants (including one-open-case-per-order and one-active-check-per-line), records actor, reason, before/after values, case event (`CASE_REPAIRED`), and audit entry in ONE database transaction, and rejects invariant violations. `OVERRIDE_CASE_STATE` alone never grants the broader repair set below.
+
+`REPAIR_CASE_DATA` defaults to Admin only and may be granted only to Admin; it authorizes the separate closed Admin repair command set: correct phase/physical placement, reassign or release a stale check, change retrieval owner, correct a location, cancel/reopen a line, close/reopen a case. State-breaking repair steps additionally require `OVERRIDE_CASE_STATE`. Each command validates invariants, records actor, reason, before/after values, case event (`CASE_REPAIRED`), and audit entry in ONE database transaction, and rejects repairs that would violate invariants. The admin UI previews consequences and requires an explicit reason. Ordinary authorized close/reopen remains available to permitted roles without either permission.
+
+After every consequential action — stage, assign, check completion, replenishment, retrieval, close, reopen, override, repair — the UI MUST show a concise confirmation stating the consequence and the next action with its owner.
 
 ---
 
@@ -1654,11 +1672,17 @@ Thresholds should be configurable where relevant.
 
 Responsibility notifications remain visible in-app regardless.
 
+### 52A. Mark-all-read and exact-case deep links (added 2026-09-28)
+
+The notification center MUST offer an atomic, recipient-scoped "mark all read" action: it marks only the signed-in user's notifications, is idempotent, and refreshes the unread badge without a reload.
+
+Every notification that references a case MUST deep-link to the canonical case URL `/?case=<caseId>` (with optional `&line=<lineId>`), independent of which queue is open. Opening a notification marks that notification read and navigates to the exact case. Direct load and refresh apply the same server access check as `GET /api/cases/:id`: a closed case is readable by an active (non-disabled, non-archived) account holding `VIEW_OWN_CASES` who is the case picker, a line reporter on the case, or a recorded check/retrieval participant on the case (claimer, assignee, completer, or retriever), or by a manager holding `VIEW_ALL_OPEN_CASES`; message content within the detail additionally requires `VIEW_CASE_MESSAGES`. Closed cases resolve to a read-only detail view, and inaccessible cases show a clear error. Whether the historical check/retrieval participant links needed for this rule already exist in stored events/assignments or require a tracked migration is a Wave 1 domain-owner decision recorded before branching.
+
 ---
 
 # 53. Team Leader / Assistant Dashboard
 
-Dashboard should prioritize current operational attention.
+Dashboard header metrics (open cases, open lines, checking, staged, over-threshold, resolved today) are served by a dedicated summary endpoint/response, separate from the per-case detail projection: the case-detail projection returns ALL lines of the case (open and terminal), never only open lines, so closed detail is complete.
 
 Suggested header metrics:
 
@@ -1681,7 +1705,7 @@ Example:
 | 12m | 341207 | Staged | 2 | Seba | unresolved | Troubleshooter |
 | 4m | 341215 | Picking | 1 | Gondal | open | Gondal |
 
-On mobile, render equivalent cards.
+On mobile, render equivalent cards. Line-level detail (amended 2026-09-28): the dashboard and check screens distinguish open cases from open short-pick lines. Each line card shows its own display status, original location, known new location or an explicit "none known" state, reporter, assigned checker/retriever, replenishment badge (distinct from the main-state badge), and the next action with its owner. Server DTOs carry stable `nextActionCode` / `blockingReasonCode` values with typed parameters and owner IDs; all user-facing wording is rendered client-side from the four-language dictionaries (English fallback), never as free-text strings from the server. Waiting/completed replenishment has distinct visible states on both surfaces.
 
 ---
 
@@ -1736,6 +1760,8 @@ Profile
 ```
 
 Avoid exposing irrelevant options.
+
+Defaults (amended 2026-09-28): every role preset includes `VIEW_AVAILABLE_CHECKS`, `CLAIM_CHECK`, and `COMPLETE_CHECK`, so Example B is the normal Picker experience. If those grants are revoked for a user, the queue and claim controls disappear entirely (Example A) rather than rendering disabled.
 
 ---
 
@@ -1822,14 +1848,12 @@ manual_case_creation_enabled
 
 assistant_can_manage_configuration
 
-push_enabled
-
 profile_photo_max_upload_bytes
 
 order_scanner_normalization_rule
 ```
 
-All values must have documented defaults.
+All values must have documented defaults. `max_simultaneous_checks_per_case` defaults to unlimited (`null`) for new configurations; existing deployments roll their explicit value forward through an audited configuration change (§32). No `replenishment_enabled` key exists: replenishment availability is governed solely by the `RECORD_REPLENISHMENT` permission, and any such key MUST NOT be introduced without a specified default, tracked migration, and UI.
 
 ---
 
@@ -1914,6 +1938,8 @@ reopened cases
 historically repeated order numbers
 
 cases by configuration version
+
+same-location-found counts per reporting picker (added 2026-09-28; see §62A)
 ```
 
 ---
@@ -1939,6 +1965,12 @@ troubleshooter
 User-level analytics should be treated as operational data, not a performance score.
 
 Do not automatically rank workers.
+
+### 62A. Same-location-found metric and per-user analytics (added 2026-09-28)
+
+Denominator: unique lines reported in the chosen date range whose final conclusive check outcome exists. Numerator: those lines whose latest conclusive outcome is `FOUND_AT_ORIGINAL`. `FOUND` elsewhere, `NOT FOUND`, and `WRONG LOCATION` count in the denominator; unfinished lines, `OTHER`, and cancelled lines without a conclusive check are excluded. Repeat checks never double-count: the latest conclusive outcome per line wins, including a later authorized correction.
+
+Display: always show numerator, denominator, date range, and per-outcome counts for every user. Show a percentage only when the denominator is 20 or more; below that, suppress the percentage (counts only). No worker rankings, disciplinary scoring, or league tables — this is an operational signal, not a performance score. Per-user analytics add a reliable user-directory selector and per-user summaries with CSV/PDF export parity.
 
 ---
 
@@ -2450,7 +2482,7 @@ SKU
 
 Workers may mix scan and typing within one report.
 
-Initial camera scanning can use browser capabilities.
+Initial camera scanning can use browser capabilities, but MUST include a tested JavaScript decoder fallback when native `BarcodeDetector` is absent (notably iOS Safari), covering live camera and photo decode, rear-camera selection, lifecycle cleanup, camera-denial messaging, and retained manual entry. Acceptance requires a real iPhone Safari (and installed web-app) check scanning the actual warehouse order label twice in succession with Android still working; emulator-only proof is insufficient.
 
 Also support keyboard-wedge scanners naturally by allowing focused inputs.
 
