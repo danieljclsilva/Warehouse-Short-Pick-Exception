@@ -28,6 +28,117 @@ export function normalizeOrderNumber(value: string) {
   return orderNumberSchema.parse(value);
 }
 
+export type NextActionCode = "CLAIM_CHECK" | "COMPLETE_CHECK" | "RETRIEVE" | "STAGE_ORDER" | "REPLENISH" | "RESOLVE" | "WAIT" | "NONE";
+export type BlockingReasonCode = "CAPACITY_REACHED" | "CHECK_CLAIMED" | "AWAITING_RETRIEVAL" | "AWAITING_REPLENISHMENT" | "CASE_CLOSED" | null;
+export type LineDisplayStatus = "OPEN" | "CHECKING" | "FOUND" | "FOUND_AT_ORIGINAL" | "WAITING_RETRIEVAL" | "RETRIEVING" | "RETRIEVED" | "NOT_FOUND" | "WRONG_LOCATION" | "TROUBLESHOOTING" | "RESOLVED" | "CANCELLED";
+export type ReplenishmentState = "NONE" | "WAITING" | "COMPLETED";
+export type LineProjection = {
+  lineId: string; caseId: string; orderNumber: string;
+  displayStatus: LineDisplayStatus;
+  originalLocation: string; knownNewLocation: string | null;
+  reporterUserId: string; reporterName: string | null;
+  checkerUserId: string | null; checkerName: string | null;
+  retrieverUserId: string | null; retrieverName: string | null;
+  replenishment: { state: ReplenishmentState; note: string | null; actorName: string | null; at: string | null };
+  nextActionCode: NextActionCode; nextActionParams: Record<string, string>;
+  actionOwnerUserId: string | null; actionOwnerName: string | null;
+  blockingReasonCode: BlockingReasonCode;
+};
+export type CaseProjection = {
+  caseId: string; orderNumber: string; phase: "PICKING" | "STAGED" | "CLOSED";
+  openLineCount: number; lines: LineProjection[];
+};
+export type DashboardSummary = {
+  openCases: number; openLines: number; checking: number; staged: number; overThreshold: number; resolvedToday: number;
+};
+
+type ShortPickLineRow = typeof shortPickLines.$inferSelect;
+type CheckTaskRow = typeof checkTasks.$inferSelect;
+
+function displayStatusForLine(line: ShortPickLineRow, latestCompletionCode: string | null): LineDisplayStatus {
+  if (line.state === "RESOLVED") return "RESOLVED";
+  if (line.state === "CANCELLED") return "CANCELLED";
+  if (line.state === "CHECKING") return "CHECKING";
+  if (line.state === "RETRIEVING") return "RETRIEVING";
+  if (line.state === "FOUND") {
+    if (latestCompletionCode === "FOUND_AT_ORIGINAL" && !line.discoveredLocation) return "FOUND_AT_ORIGINAL";
+    return "FOUND";
+  }
+  if (line.state === "OPEN") {
+    if (latestCompletionCode === "NOT_FOUND") return "NOT_FOUND";
+    if (latestCompletionCode === "WRONG_LOCATION") return "WRONG_LOCATION";
+    return "OPEN";
+  }
+  return "TROUBLESHOOTING";
+}
+
+function nextActionForLine(line: ShortPickLineRow, phase: "PICKING" | "STAGED" | "CLOSED", hasActiveCheck: boolean): {
+  nextActionCode: NextActionCode; nextActionParams: Record<string, string>; actionOwnerUserId: string | null; blockingReasonCode: BlockingReasonCode;
+} {
+  if (phase === "CLOSED") return { nextActionCode: "NONE", nextActionParams: {}, actionOwnerUserId: null, blockingReasonCode: "CASE_CLOSED" };
+  if (line.state === "RESOLVED" || line.state === "CANCELLED") return { nextActionCode: "NONE", nextActionParams: {}, actionOwnerUserId: null, blockingReasonCode: null };
+  if (line.state === "CHECKING" || hasActiveCheck) {
+    return { nextActionCode: "COMPLETE_CHECK", nextActionParams: { lineId: line.id }, actionOwnerUserId: line.currentResponsibleUserId, blockingReasonCode: "CHECK_CLAIMED" };
+  }
+  if (line.state === "FOUND" && (line.retrievalState === "PENDING" || line.retrievalState === "FAILED")) {
+    return { nextActionCode: "RETRIEVE", nextActionParams: { lineId: line.id }, actionOwnerUserId: line.retrievalResponsibleUserId, blockingReasonCode: "AWAITING_RETRIEVAL" };
+  }
+  if (line.state === "OPEN" && line.replenishmentState !== "NONE") {
+    return { nextActionCode: "REPLENISH", nextActionParams: { lineId: line.id }, actionOwnerUserId: line.replenishmentRetrieverUserId, blockingReasonCode: "AWAITING_REPLENISHMENT" };
+  }
+  if (line.state === "OPEN") return { nextActionCode: "CLAIM_CHECK", nextActionParams: { lineId: line.id }, actionOwnerUserId: null, blockingReasonCode: null };
+  return { nextActionCode: "WAIT", nextActionParams: { lineId: line.id }, actionOwnerUserId: line.currentResponsibleUserId, blockingReasonCode: null };
+}
+
+export function projectLines(args: {
+  orderNumber: string; phase: "PICKING" | "STAGED" | "CLOSED";
+  lines: ShortPickLineRow[]; checks: CheckTaskRow[]; names: Map<string, string | null>;
+}): LineProjection[] {
+  const activeCheckLineIds: Record<string, true> = {};
+  const latestCompletion: Record<string, string | null> = {};
+  const ordered = [...args.checks].sort((a, b) => (b.completedAt?.getTime() ?? 0) - (a.completedAt?.getTime() ?? 0));
+  for (const check of args.checks) {
+    if (check.status === "CLAIMED" || check.status === "ASSIGNED") activeCheckLineIds[check.shortPickLineId] = true;
+  }
+  for (const check of ordered) {
+    if (check.status === "COMPLETED" && latestCompletion[check.shortPickLineId] === undefined) latestCompletion[check.shortPickLineId] = check.completionCode;
+  }
+  const activeChecker: Record<string, CheckTaskRow> = {};
+  for (const check of args.checks) {
+    if ((check.status === "CLAIMED" || check.status === "ASSIGNED") && activeChecker[check.shortPickLineId] === undefined) activeChecker[check.shortPickLineId] = check;
+  }
+  return args.lines.map((line) => {
+    const code = latestCompletion[line.id] ?? null;
+    const checker = activeChecker[line.id] ?? null;
+    const checkerUserId = checker ? (checker.assignedToUserId ?? checker.claimedByUserId) : null;
+    const action = nextActionForLine(line, args.phase, activeCheckLineIds[line.id] === true);
+    const replenishmentState: ReplenishmentState = line.replenishmentState === "WAITING" || line.replenishmentState === "COMPLETED" ? line.replenishmentState : "NONE";
+    return {
+      lineId: line.id, caseId: line.caseId, orderNumber: args.orderNumber,
+      displayStatus: displayStatusForLine(line, code),
+      originalLocation: line.originalLocation, knownNewLocation: line.discoveredLocation,
+      reporterUserId: line.reportedByUserId, reporterName: args.names.get(line.reportedByUserId) ?? null,
+      checkerUserId, checkerName: checkerUserId ? (args.names.get(checkerUserId) ?? null) : null,
+      retrieverUserId: line.retrievalResponsibleUserId, retrieverName: line.retrievalResponsibleUserId ? (args.names.get(line.retrievalResponsibleUserId) ?? null) : null,
+      replenishment: { state: replenishmentState, note: line.replenishmentNote, actorName: line.replenishmentActorUserId ? (args.names.get(line.replenishmentActorUserId) ?? null) : null, at: line.replenishmentAt ? line.replenishmentAt.toISOString() : null },
+      nextActionCode: action.nextActionCode, nextActionParams: action.nextActionParams,
+      actionOwnerUserId: action.actionOwnerUserId, actionOwnerName: action.actionOwnerUserId ? (args.names.get(action.actionOwnerUserId) ?? null) : null,
+      blockingReasonCode: action.blockingReasonCode,
+    };
+  });
+}
+
+export function summarizeDashboard(cases: Array<{ phase: string; openLineCount: number; checkingCount: number; attentionLevel?: string }>, resolvedToday: number): DashboardSummary {
+  return {
+    openCases: cases.length,
+    openLines: cases.reduce((total, item) => total + item.openLineCount, 0),
+    checking: cases.reduce((total, item) => total + item.checkingCount, 0),
+    staged: cases.filter((item) => item.phase === "STAGED").length,
+    overThreshold: cases.filter((item) => item.attentionLevel === "CRITICAL").length,
+    resolvedToday,
+  };
+}
+
 const isOpen = ne(orderCases.phase, "CLOSED");
 
 async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: string, includeMessages: boolean) {
@@ -39,7 +150,10 @@ async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: st
     .from(caseEvents).leftJoin(users, eq(caseEvents.actorUserId, users.id)).where(eq(caseEvents.caseId, caseId)).orderBy(caseEvents.createdAt, caseEvents.id);
   const messages = includeMessages ? await db.select({ id: caseMessages.id, shortPickLineId: caseMessages.shortPickLineId, authorUserId: caseMessages.authorUserId, authorName: users.displayName, message: caseMessages.message, createdAt: caseMessages.createdAt })
     .from(caseMessages).innerJoin(users, eq(caseMessages.authorUserId, users.id)).where(eq(caseMessages.caseId, caseId)).orderBy(caseMessages.createdAt, caseMessages.id) : [];
-  const personIds = [record.pickingUserId, record.currentCaseResponsibleUserId].filter((id): id is string => Boolean(id));
+  const personIds = [...new Set([record.pickingUserId, record.currentCaseResponsibleUserId,
+    ...lines.flatMap((line) => [line.reportedByUserId, line.currentResponsibleUserId, line.discoveredByUserId, line.retrievalResponsibleUserId, line.replenishmentActorUserId, line.replenishmentRetrieverUserId]),
+    ...checks.flatMap((check) => [check.claimedByUserId, check.assignedToUserId]),
+  ].filter((id): id is string => Boolean(id)))];
   const people = personIds.length ? await db.select({ id: users.id, displayName: users.displayName }).from(users).where(inArray(users.id, personIds)) : [];
   const names = new Map(people.map((person) => [person.id, person.displayName]));
   const unresolvedLines = lines.filter((line) => line.state !== "RESOLVED" && line.state !== "CANCELLED");
@@ -47,10 +161,13 @@ async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: st
   const currentIssue = lines.some((line) => line.retrievalState === "FAILED") ? "RETRIEVAL_FAILED"
     : lines.some((line) => line.state === "FOUND") ? "RETRIEVAL_PENDING"
       : checkingCount ? "CHECKING" : unresolvedLines.length ? "OPEN" : "READY_TO_CLOSE";
+  const lineProjections = projectLines({ orderNumber: record.orderNumber, phase: record.phase, lines, checks, names });
+  const projection: CaseProjection = { caseId: record.id, orderNumber: record.orderNumber, phase: record.phase, openLineCount: unresolvedLines.length, lines: lineProjections };
   return { ...record, pickerName: record.pickingUserId ? names.get(record.pickingUserId) ?? null : null,
     responsibleName: record.currentCaseResponsibleUserId ? names.get(record.currentCaseResponsibleUserId) ?? null : null,
     missingCount: unresolvedLines.reduce((total, line) => total + line.missingQuantity, 0), checkingCount, currentIssue,
-    lines: lines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity })), checks, events, messages };
+    lines: lines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity })), checks, events, messages,
+    projection, lineProjections };
 }
 
 function canReadCase(auth: AuthContext, row: typeof orderCases.$inferSelect) {
@@ -73,6 +190,28 @@ export async function hasCurrentCaseResponsibility(
     .where(and(eq(shortPickLines.caseId, row.id), eq(shortPickLines.state, "CHECKING"), inArray(checkTasks.status, ["CLAIMED", "ASSIGNED"]),
       sql`(${checkTasks.claimedByUserId} = ${auth.user.id} OR ${checkTasks.assignedToUserId} = ${auth.user.id})`)).limit(1);
   return Boolean(check);
+}
+
+export async function isRecordedCaseParticipant(
+  db: Pick<ReturnType<typeof getDb>, "select">,
+  auth: AuthContext,
+  row: typeof orderCases.$inferSelect,
+) {
+  if (row.pickingUserId === auth.user.id) return true;
+  const [reporter] = await db.select({ id: shortPickLines.id }).from(shortPickLines)
+    .where(and(eq(shortPickLines.caseId, row.id), eq(shortPickLines.reportedByUserId, auth.user.id))).limit(1);
+  if (reporter) return true;
+  const [check] = await db.select({ id: checkTasks.id }).from(checkTasks)
+    .innerJoin(shortPickLines, eq(checkTasks.shortPickLineId, shortPickLines.id))
+    .where(and(eq(shortPickLines.caseId, row.id), sql`(${checkTasks.claimedByUserId} = ${auth.user.id} OR ${checkTasks.assignedToUserId} = ${auth.user.id})`)).limit(1);
+  if (check) return true;
+  const [completed] = await db.select({ id: caseEvents.id }).from(caseEvents)
+    .where(and(eq(caseEvents.caseId, row.id), eq(caseEvents.actorUserId, auth.user.id),
+      inArray(caseEvents.eventType, ["CHECK_COMPLETED", "FOUND_AT_ORIGINAL_VERIFIED", "NEW_LOCATION_REPORTED"]))).limit(1);
+  if (completed) return true;
+  const [retrieval] = await db.select({ id: shortPickLines.id }).from(shortPickLines)
+    .where(and(eq(shortPickLines.caseId, row.id), sql`(${shortPickLines.retrievalResponsibleUserId} = ${auth.user.id} OR ${shortPickLines.retrievedByUserId} = ${auth.user.id} OR ${shortPickLines.discoveredByUserId} = ${auth.user.id} OR ${shortPickLines.replenishmentActorUserId} = ${auth.user.id} OR ${shortPickLines.replenishmentRetrieverUserId} = ${auth.user.id})`)).limit(1);
+  return Boolean(retrieval);
 }
 
 export async function lookupOrder(auth: AuthContext, rawOrderNumber: string) {
@@ -170,10 +309,17 @@ export async function addCaseLine(auth: AuthContext, caseId: string, input: z.in
 
 export async function getCaseForUser(auth: AuthContext, caseId: string) {
   return getDb().transaction(async (tx) => {
-    const [row] = await tx.select().from(orderCases).where(eq(orderCases.id, caseId)).for("update").limit(1);
+    const [row] = await tx.select().from(orderCases).where(eq(orderCases.id, caseId)).limit(1);
     if (!row) throw new CaseApiError("CASE_NOT_FOUND", "Case not found", 404);
+    if (row.phase === "CLOSED") {
+      const isManager = hasAuthPermission(auth, "VIEW_ALL_OPEN_CASES");
+      const isParticipant = hasAuthPermission(auth, "VIEW_OWN_CASES") && (await isRecordedCaseParticipant(tx, auth, row));
+      if (!isManager && !isParticipant) throw new CaseApiError("CASE_ACCESS_DENIED", "You cannot access this closed case", 403);
+      const detail = await readCase(tx, caseId, hasAuthPermission(auth, "VIEW_CASE_MESSAGES"));
+      return { ...detail, readOnly: true as const };
+    }
     if (!canReadCase(auth, row)) {
-      if (row.phase === "CLOSED" || !hasAuthPermission(auth, "VIEW_CASE_MESSAGES") || !(await hasCurrentCaseResponsibility(tx, auth, row))) {
+      if (!hasAuthPermission(auth, "VIEW_CASE_MESSAGES") || !(await hasCurrentCaseResponsibility(tx, auth, row))) {
         throw new CaseApiError("CASE_ACCESS_DENIED", "You cannot access this case", 403);
       }
     }

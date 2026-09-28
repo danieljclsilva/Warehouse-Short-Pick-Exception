@@ -12,6 +12,12 @@ export const stageCaseSchema = z.object({ confirmedPhysicalPlacement: z.boolean(
 export const retrievalSchema = z.object({ result: z.enum(["RETRIEVED", "FAILED"]) });
 export const assignRetrievalSchema = z.object({ userId: z.uuid() });
 
+export const replenishmentSchema = z.object({
+  state: z.enum(["WAITING", "COMPLETED"]),
+  note: z.string().trim().min(1).max(500),
+  retrieverUserId: z.uuid(),
+});
+
 export async function listMyRetrievals(auth: AuthContext) {
   if (!hasAuthPermission(auth, "CONFIRM_RETRIEVAL")) throw new CaseApiError("CASE_ACCESS_DENIED", "Cannot view retrievals", 403);
   const rows = await getDb().select({ line: shortPickLines, case: orderCases }).from(shortPickLines)
@@ -104,5 +110,36 @@ export async function confirmRetrieval(auth: AuthContext, caseId: string, lineId
     await tx.insert(caseEvents).values({ caseId, shortPickLineId: lineId, actorUserId: auth.user.id, eventType, details: { discoveredLocation: line.discoveredLocation, casePhase: record.phase } });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: eventType, details: { caseId, lineId } });
     return { caseId, lineId, retrievalState: result };
+  });
+}
+
+export async function recordReplenishment(auth: AuthContext, caseId: string, lineId: string, input: z.infer<typeof replenishmentSchema>) {
+  if (!hasAuthPermission(auth, "RECORD_REPLENISHMENT")) throw new CaseApiError("REPLENISHMENT_FORBIDDEN", "Recording replenishment requires the replenishment grant", 403);
+  return getDb().transaction(async (tx) => {
+    const [record] = await tx.select().from(orderCases).where(eq(orderCases.id, caseId)).for("update").limit(1);
+    if (!record || record.phase === "CLOSED") throw new CaseApiError("CASE_NOT_OPEN", "Case is closed or missing", 409);
+    const [line] = await tx.select().from(shortPickLines).where(and(eq(shortPickLines.id, lineId), eq(shortPickLines.caseId, caseId))).for("update").limit(1);
+    if (!line) throw new CaseApiError("CASE_NOT_FOUND", "Line not found", 404);
+    if (line.state === "RESOLVED" || line.state === "CANCELLED") throw new CaseApiError("REPLENISHMENT_FORBIDDEN", "Replenishment is not available on a terminal line", 409);
+    const current = line.replenishmentState === "WAITING" || line.replenishmentState === "COMPLETED" ? line.replenishmentState : "NONE";
+    const allowed = (current === "NONE" && (input.state === "WAITING" || input.state === "COMPLETED"))
+      || (current === "WAITING" && input.state === "COMPLETED");
+    if (!allowed) throw new CaseApiError("REPLENISHMENT_FORBIDDEN", `Replenishment cannot move from ${current} to ${input.state}`, 409, { current, requested: input.state });
+    const [retriever] = await tx.select({ id: users.id, displayName: users.displayName }).from(users).where(and(eq(users.id, input.retrieverUserId), eq(users.status, "ACTIVE"))).limit(1);
+    if (!retriever) throw new CaseApiError("REPLENISHMENT_FORBIDDEN", "Retriever must be an active user", 400);
+    const now = new Date();
+    await tx.update(shortPickLines).set({
+      replenishmentState: input.state, replenishmentNote: input.note, replenishmentActorUserId: auth.user.id,
+      replenishmentAt: now, replenishmentRetrieverUserId: retriever.id, updatedAt: now, version: sql`${shortPickLines.version} + 1`,
+    }).where(eq(shortPickLines.id, lineId));
+    const eventType = input.state === "WAITING" ? "REPLENISHMENT_WAITING" : "REPLENISHMENT_COMPLETED";
+    await tx.insert(caseEvents).values({ caseId, shortPickLineId: lineId, actorUserId: auth.user.id, eventType,
+      details: { previousState: current, state: input.state, note: input.note, retrieverUserId: retriever.id, casePhase: record.phase } });
+    await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: eventType, details: { caseId, lineId, previousState: current, state: input.state, note: input.note, retrieverUserId: retriever.id } });
+    if (input.state === "COMPLETED") {
+      await insertResponsibilityNotification(tx, { recipientUserId: retriever.id, type: "RESPONSIBILITY_RETRIEVAL_ASSIGNED",
+        caseId, shortPickLineId: lineId, payload: { orderNumber: record.orderNumber, replenishmentCompleted: true, note: input.note, casePhase: record.phase } });
+    }
+    return { caseId, lineId, previousState: current, state: input.state, note: input.note, retrieverUserId: retriever.id, at: now.toISOString() };
   });
 }
