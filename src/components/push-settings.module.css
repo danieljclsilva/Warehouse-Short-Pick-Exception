@@ -4,7 +4,7 @@
   padding: 1.25rem;
   border: 1px solid var(--line, #dce3e8);
   border-radius: 1rem;
-  background: var(--surface, #fff);
+  background: var(--surface);
   color: var(--ink, #192733);
 }
 
@@ -41,7 +41,7 @@
   border-radius: 0.7rem;
   padding: 0.6rem 0.9rem;
   color: inherit;
-  background: var(--surface, #fff);
+  background: var(--surface);
   font: inherit;
   font-weight: 650;
   cursor: pointer;
@@ -51,7 +51,7 @@
   justify-self: start;
   border-color: var(--green, #23725c);
   background: var(--green, #23725c);
-  color: #fff;
+  color: var(--on-green);
 }
 
 .primaryButton:disabled,
@@ -119,7 +119,7 @@
 }
 
 .error {
-  color: #a52828;
+  color: var(--error-ink, #a52828);
 }
 
 .notice {

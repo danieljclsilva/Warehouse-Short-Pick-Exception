@@ -13,6 +13,7 @@ import { ProfilePanel } from "@/components/profile-panel";
 import { UserManagement } from "@/components/user-management";
 import { PhotoApproval } from "@/components/photo-approval";
 import { EnvironmentBanner } from "@/components/environment-banner";
+import { ThemePicker } from "@/components/theme-picker";
 import {
   getMessages,
   supportedLocales,
@@ -572,7 +573,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
               <span /><span /><span />
             </button>
             <div className="breadcrumb"><span>{tr("workspace")}</span><span className="breadcrumb-divider">/</span><strong>{tr(activeSection)}</strong></div>
-            <div className="topbar-actions"><LanguagePicker locale={locale} label={tr("language")} onChange={changeLocale} /><span className="avatar avatar-small" aria-hidden="true">{user.displayName.slice(0, 1).toUpperCase()}</span></div>
+            <div className="topbar-actions"><ThemePicker tr={tr} /><LanguagePicker locale={locale} label={tr("language")} onChange={changeLocale} /><span className="avatar avatar-small" aria-hidden="true">{user.displayName.slice(0, 1).toUpperCase()}</span></div>
           </header>
           <main className="workspace-content">
             {activeSection === "configuration" && allowedNavigation.some((item) => item.key === "configuration") ? (
@@ -678,7 +679,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
       </section>
 
       <section className="auth-panel">
-        <div className="auth-panel-top"><span className="brand-mark brand-mark-small"><Icon name="brand" size={25} /></span><LanguagePicker locale={locale} label={tr("language")} onChange={changeLocale} /></div>
+        <div className="auth-panel-top"><span className="brand-mark brand-mark-small"><Icon name="brand" size={25} /></span><div className="auth-controls"><ThemePicker tr={tr} /><LanguagePicker locale={locale} label={tr("language")} onChange={changeLocale} /></div></div>
         {view === "login" && (
           <div className="auth-form-wrap">
             <div className="auth-heading"><h1>{tr("loginTitle")}</h1><p>{tr("loginDescription")}</p></div>

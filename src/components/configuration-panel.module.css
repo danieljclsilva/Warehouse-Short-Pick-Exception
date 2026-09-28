@@ -90,7 +90,7 @@
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   color: var(--ink);
-  background: #fff;
+  background: var(--surface);
   font-size: 13px;
 }
 .control textarea { min-height: 70px; resize: vertical; }
@@ -125,12 +125,12 @@
   border: 1px solid var(--green);
   border-radius: 8px;
   color: var(--green);
-  background: #fff;
+  background: var(--surface);
   font-size: 13px;
   font-weight: 680;
   cursor: pointer;
 }
-.save { color: #fff; background: var(--green); }
+.save { color: var(--on-green); background: var(--green); }
 .save:hover:not(:disabled) { background: var(--green-hover); }
 .reload:hover:not(:disabled), .historyButton:hover:not(:disabled) { background: var(--green-wash); }
 .save:disabled, .reload:disabled, .historyButton:disabled { cursor: wait; opacity: .62; }
@@ -144,8 +144,8 @@
   background: var(--surface);
   font-size: 13px;
 }
-.notice { border-color: #b5d6c7; color: #245c48; background: var(--green-wash); }
-.error { border-color: #efb5a8; color: #763b2e; background: var(--coral-wash); }
+.notice { border-color: var(--line-strong); color: var(--green); background: var(--green-wash); }
+.error { border-color: var(--error-line); color: var(--error-ink); background: var(--coral-wash); }
 .errorActions { display: flex; justify-content: flex-end; margin-top: 11px; }
 
 .history {

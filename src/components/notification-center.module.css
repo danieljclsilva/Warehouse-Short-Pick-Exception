@@ -31,7 +31,7 @@
   align-items: center;
   padding: 0 11px;
   border-radius: 999px;
-  color: #245c48;
+  color: var(--green);
   background: var(--green-wash);
   font-size: 12px;
   font-weight: 700;
@@ -86,7 +86,7 @@
 }
 
 .rowUnread {
-  background: #fbfdfb;
+  background: var(--surface);
 }
 
 .dot {
@@ -147,7 +147,7 @@
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   color: var(--green);
-  background: #fff;
+  background: var(--surface);
   font-size: 12px;
   font-weight: 680;
   cursor: pointer;
@@ -184,8 +184,8 @@
 }
 
 .error {
-  border-color: #efb5a8;
-  color: #763b2e;
+  border-color: var(--error-line);
+  color: var(--error-ink);
   background: var(--coral-wash);
   text-align: left;
 }
@@ -247,7 +247,7 @@
   border: 1px solid var(--line-strong);
   border-radius: 7px;
   color: var(--ink);
-  background: #fff;
+  background: var(--surface);
   font-size: 12px;
 }
 
@@ -282,7 +282,7 @@
 .saveButton {
   min-height: 44px;
   border-color: var(--green);
-  color: #fff;
+  color: var(--on-green);
   background: var(--green);
 }
 
@@ -297,7 +297,7 @@
 
 .preferenceError {
   margin: 12px 0 0;
-  color: #994b3c;
+  color: var(--error-ink);
   font-size: 12px;
 }
 
