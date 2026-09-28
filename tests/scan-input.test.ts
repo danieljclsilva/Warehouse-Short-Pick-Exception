@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { normalizeScannedValue } from "@/components/scan-input";
 
 describe("normalizeScannedValue", () => {
-  it("normalizes a clear keyboard-wedge order payload to its numeric identifier", () => {
+  it("normalizes an NLVW order payload", () => {
     expect(normalizeScannedValue("NLVW341151", "order")).toBe("341151");
   });
 
-  it("preserves an order payload with multiple numeric runs for validation", () => {
+  it("preserves ambiguous order payloads", () => {
     expect(normalizeScannedValue("NLVW341151-02", "order")).toBe("NLVW341151-02");
   });
 
@@ -14,15 +14,12 @@ describe("normalizeScannedValue", () => {
     expect(normalizeScannedValue("  341151  ", "order")).toBe("341151");
   });
 
-  it("does not invent an order identifier when there are no digits", () => {
+  it("does not invent an order identifier", () => {
     expect(normalizeScannedValue("NLVW", "order")).toBe("NLVW");
   });
 
-  it("uppercases scanned locations the way the server stores them", () => {
+  it("uppercases locations and SKUs", () => {
     expect(normalizeScannedValue("03.aa.1", "location")).toBe("03.AA.1");
-  });
-
-  it("uppercases scanned SKUs without otherwise altering them", () => {
     expect(normalizeScannedValue("ff405d-42", "sku")).toBe("FF405D-42");
   });
 });
