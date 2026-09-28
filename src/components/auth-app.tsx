@@ -287,8 +287,11 @@ function DeepCasePanel({ tr, caseId, lineId, canViewMessages, onClose }: {
 
   useEffect(() => {
     let cancelled = false;
-    setStatus("loading");
-    setData(null);
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setStatus("loading");
+      setData(null);
+    });
     fetch(`/api/cases/${encodeURIComponent(caseId)}`, { credentials: "same-origin", cache: "no-store" })
       .then(async (response) => {
         const envelope = (await response.json().catch(() => ({}))) as { case?: DeepLinkCase };
