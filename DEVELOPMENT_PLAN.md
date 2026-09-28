@@ -2,6 +2,8 @@
 
 The [product requirements](./Warehouse_Short_Pick_Exception%20_System.md) are the source of truth. The project is a modular Next.js application with PostgreSQL. Each phase is accepted only after its behavior, tests, type checking, linting, migrations, and known limitations have been reviewed.
 
+Warehouse field feedback from 2026-09-28 is scoped in the [implementation plan](./WAREHOUSE_FEEDBACK_IMPLEMENTATION_PLAN.md). It is planning work only; no feedback item is accepted as implemented. The first delivery gate is to revise the product requirements and shared contracts before parallel OMP branches begin.
+
 | Phase | Scope | Status |
 | --- | --- | --- |
 | 1. Foundation | PostgreSQL, migrations, invite-only registration, PIN login, persistent revocable sessions, granular permissions, four-language base UI | Complete locally; deployment pending |

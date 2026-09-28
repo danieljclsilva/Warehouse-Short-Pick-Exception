@@ -1,0 +1,88 @@
+# Warehouse field-feedback implementation plan
+
+Status: **planning only** (2026-09-28). The sixteen items below are the live warehouse feedback. This plan does not claim that any feature is implemented or deployed. `Warehouse_Short_Pick_Exception _System.md` remains the product source of truth; the first delivery task is to revise its affected requirements and acceptance criteria to reflect this feedback, then update `DEVELOPMENT_PLAN.md` after each completed slice.
+
+## What the current app does
+
+- Notification records already contain `caseId`, but `auth-app.tsx` discards it when opening a notification and only changes the section. There is one-at-a-time read, with no bulk action or case URL.
+- Case phase (`PICKING/STAGED/CLOSED`), line state, check task state, and retrieval state are separate. `RETRIEVING` is defined but never written; retrieval state is unconstrained text. Three screens derive and label status differently. A server-owned operational projection is needed before adding more badges.
+- Claiming checks is permission controlled, but `CLAIM_CHECK` is absent from the picker default. Picker case views omit messages and closed history. The server already rejects a new message on a closed case.
+- A found check requires a `discoveredLocation`; the data model does not distinguish “found at the original location.” There is no replenishment workflow. Assignment data exists but is incomplete in the cards and timeline.
+- Camera scanning relies on native `BarcodeDetector`; if absent, both live and photo decoding fail. A tested JavaScript decoder fallback is needed for iOS, with manual entry retained.
+- Analytics already supports picker/checker/troubleshooter filters but lacks a reliable user directory selector and per-user summary. Existing requirements prohibit automated worker rankings; the requested same-location-found rate should be presented as an operational signal with numerator, denominator, and context.
+- Admins can force-close unresolved lines with a reason and reopen cases. There is no guided case-repair panel. The existing CLI admin recovery is for account access, not case repair.
+
+## Product decisions and shared contracts (gate before feature branches)
+
+The contract owner updates the PRD and publishes an acceptance matrix. Feature agents consume these definitions and do not invent their own:
+
+1. **Case status is a projection, not a new overloaded phase.** Keep the durable case phase and line/check/retrieval states separate. Define a typed server response for each line and case: display status, responsible user(s), next action, action owner, location history, and blocking reason. Give waiting-for-replenishment and replenishment-completed distinct persisted events/states; require an authorized actor, timestamp, and note. Completed replenishment routes a retrieval task and notification to the named responsible user. A badge and next action remain visible in the open case even when notifications are read.
+2. **Found at original location is an explicit check outcome.** Record the original location and verifier, preserve the reporting picker, and avoid a fictitious “new location.” The per-picker rate uses **unique lines reported in the chosen date range with a final conclusive check outcome** as the denominator; the numerator is those lines whose final conclusive outcome is “found at original location.” Include found elsewhere, not found, and wrong location in the denominator; exclude unfinished, `OTHER`, and cancelled lines without a conclusive check. Use the latest conclusive outcome per line, including a later authorized correction, so repeat checks do not double count. Show numerator, denominator, date range, and counts for every user; show a percentage only at 20 or more eligible lines, with an insufficient-sample label below that. Do not rank workers or infer negligence from the metric alone.
+3. **Permission matrix.** Centralize new permissions such as `OVERRIDE_CASE_STATE`, `RECORD_REPLENISHMENT`, and `REPAIR_CASE_DATA` in `src/domain/permissions.ts`, with server checks and configurable per-user grants. Every role preset gets `VIEW_AVAILABLE_CHECKS`, `CLAIM_CHECK`, and `COMPLETE_CHECK` by default. Backfill these three permissions to **all existing users**, including users who previously lacked or had them revoked; grants remain editable afterward. A claimed check must be finishable by its owner: `COMPLETE_CHECK` authorizes recording any check result, including a found location. Keep a separate `REPORT_NEW_LOCATION` grant for adding a location without owning a check. Picker case-message permissions also reach existing and new pickers. An admin can grant/revoke each new privilege through existing user management. `OVERRIDE_CASE_STATE` defaults to Admin only and can be granted to leaders; it stays distinct from close/reopen and data repair.
+4. **Recovery commands, not arbitrary state editing.** Enumerate allowed repairs (correct phase/physical placement, reassign or release a stale check, change retrieval owner, correct location, cancel/reopen a line, close/reopen a case). Each command validates invariants and records actor, reason, before/after values, case event, and audit log in one transaction. Reject a repair that would violate the one-open-case-per-order or one-active-check-per-line constraints. The admin UI previews consequences and requires an explicit reason. Ordinary authorized close/reopen remains available.
+5. **Case deep link.** Canonical URL identifies the case and optional line, independently of which queue is open. Direct load and refresh use the same server access check as `GET /api/cases/:id`; closed cases resolve to a read-only detail view. An inaccessible case gives a clear error. Notification open marks that notification read and navigates to the exact case.
+6. **Timeline event contract.** One visible message row, without the redundant `CASE_MESSAGE_ADDED` row; keep the event in the audit store. Status/assignment events render previous and new values, target person, location, actor, and timestamp when available. Older events with sparse payloads get a truthful fallback rather than invented data.
+7. **Ad hoc location discovery.** A Team Leader, Assistant, Troubleshooter, or Admin with a configurable `REPORT_NEW_LOCATION` grant can add a newly discovered location to an existing line without claiming its check task first. The command records who found it, reconciles any active check, derives the retrieval owner from the case phase, and emits the audit event and responsibility notification in the same transaction. The UI places this action beside the line's original location and current “no known new location” text. Completing one's own claimed check with a found outcome does not require this separate ad hoc grant.
+8. **Availability and capacity.** “Claim a short pick” means claiming an available **line check**. List all open available line checks to every role and make them claimable by default; replace the current silent 100-row limit with pagination and a total count. Keep `CLAIM_CHECKS_ENABLED` on by default and preserve an explicit operator choice to turn it off. The current global setting defaults to one simultaneous active check per case; revise its default to unlimited for new configurations and roll the existing production value forward through an audited configuration change, unless an operator intentionally set a different limit. Preserve an explicit configurable cap for future operations. Claim conflicts still allow exactly one winner per line.
+
+## Delivery order and OMP ownership
+
+Use one git worktree and `codex/field-*` branch per OMP agent. Agents never edit another owner's files, never deploy, never push to `main`, and never alter production/test data. The coordinator reviews and merges one branch at a time. Each agent receives the revised PRD, shared types, API contracts, and its exact file allowlist. If a necessary edit crosses that list, the agent stops and returns a proposed patch to the owner. Limit concurrent implementation to three agents to leave capacity for review/integration.
+
+| Wave / owner | Issues | Exclusive files and responsibility | Depends on |
+| --- | --- | --- | --- |
+| 0 — contract/integration owner | All | PRD, this plan, `DEVELOPMENT_PLAN.md`; reproduce the warehouse failure scenarios in disposable data; define state projection, permission/role matrix, event payloads, endpoint/URL shapes, analytics formula, and acceptance tests. Own `src/i18n/messages.ts` throughout integration. | None |
+| 1 — domain owner | 3, 5, 6, 8, 9, 11, 12, 13, 15, 16 | `src/db/schema.ts`, `drizzle/**`, `src/domain/permissions.ts`, server case/check/progress/operations/configuration modules and their mutation routes. Implement transactional transitions, replenishment, found-at-origin, messaging/closed guard, picker access/claim grants, assignment data, recovery commands, and typed projection. Own domain integration tests. Request new notification event handling from notification owner; do not edit their files. | Wave 0 |
+| 1 — scanning owner | 7 | `src/components/scan-input.tsx` and its focused tests. Add native-detection feature check plus decoder fallback for camera/photo, rear camera, lifecycle cleanup, and iOS error paths. Return any global CSS or translation changes to the integration owner. No case API or shared dictionary edits. | Wave 0 scan acceptance |
+| 1 — notification owner | 1, 2 (API/UI part), 9 | `src/server/notifications.ts`, `src/app/api/notifications/**`, `src/components/notification-center.tsx` and its CSS/tests. Atomic recipient-scoped “mark all read,” unread count, and case ID callback. Do not edit shell routing or case screens. | Wave 0 URL contract |
+| 2 — operations UI owner | 8, 9, 10, 11, 12, 13, 14, 16 | `src/components/operations-dashboard.tsx` + module CSS; new admin case-repair components; shared read-only case status/timeline/line card components in `src/components/case-*` with clear exported props. Show line-level statuses, original/new location, reporter, assigned checker/retriever, next action, guided repair, and detailed timeline. No server mutations or dictionary edits. | Domain response contract |
+| 2 — picker/check UI owner | 3, 5, 6, 8, 9, 12, 16 | `src/components/picker-workflow.tsx`, `src/components/check-workflow.tsx` and their own CSS/tests. Own case notes, closed history, claim control, found-at-origin option, easy location reporting, visible assignment/retrieval owner, replenishment status, and next action. Consume shared case components; do not change them. | Domain response + operations shared component contract |
+| 2 — analytics owner | 3, 4 | `src/server/analytics.ts`, analytics API/export/PDF/CSV modules, `src/components/analytics-dashboard.tsx` + CSS and analytics tests. Add user directory/filter, per-user summaries, same-location-found counts/rate and export parity. No domain mutations or schema edits; request indexes from domain owner. | Found-at-origin schema/formula |
+| 3 — integration owner | 2, 10, 15 and all cross-cutting | `src/components/auth-app.tsx`, `src/components/user-management.tsx`, `src/i18n/messages.ts`, `src/app/globals.css`, shared navigation types, integration/browser tests, PRD and `DEVELOPMENT_PLAN.md`. Wire exact case URLs and closed-case view, editable new permissions, all four languages, accessible action feedback, visual consistency, and merge conflicts. | Feature branches |
+
+Wave 1 agents can run in parallel after contracts. In Wave 2, operations UI first publishes its component props, then picker/check UI consumes them; analytics can run in parallel. If OMP context is limited, split the domain assignment into sequential **state/recovery** and **access/messages** tasks while retaining one domain owner for shared server files. Use Muse Spark for scoped implementation; request a Sol review only for transition safety, migration/backfill, or security-sensitive admin recovery if the coordinator cannot resolve those risks from tests and code review.
+
+### Issue-to-owner handoff
+
+| # | User request | Primary owner; integration support |
+| --- | --- | --- |
+| 1 | Mark all notifications read | Notification |
+| 2 | Open exact case, including closed | Integration; notification callback |
+| 3 | Found at original location and rate | Domain; picker/check UI; analytics |
+| 4 | Per-user analytics | Analytics |
+| 5 | Picker case messages | Domain; picker/check UI |
+| 6 | Default claim, closed history, closed message lock | Domain; picker/check UI |
+| 7 | iOS order scanning | Scanning; integration CSS/copy |
+| 8 | Blocked transitions, override, next-action feedback | Domain; operations UI; integration |
+| 9 | Replenishment and visible status | Domain; operations UI; picker/check UI |
+| 10 | Remove duplicate timeline message event | Operations UI; integration case timeline |
+| 11 | Show state changes and assignment target in timeline | Domain event payload; operations UI |
+| 12 | Show assignee after assignment | Domain projection; operations and picker/check UI |
+| 13 | Safe admin case repair | Domain recovery commands; operations UI |
+| 14 | Show open lines, badges, and responsible people | Domain projection; operations UI |
+| 15 | Configurable new permissions | Domain; integration user-management wiring |
+| 16 | Original/new locations, reporter, retrieval owner, next step | Domain; picker/check and operations UI |
+
+## Acceptance scenarios by issue
+
+| Feedback | Required proof |
+| --- | --- |
+| 1–2 notifications | Mark all is idempotent and only affects the signed-in user; unread badge updates. A notification opens its exact open or closed case after reload and a direct URL access check. |
+| 3–4 found-at-origin and users | Checker can choose original location distinctly from a new location. The resulting line history is accurate; per-user statistics show count, denominator, range, role filter, and export parity, and suppress percentages below 20 eligible lines. |
+| 5–6 picker participation | Every existing and new role can see, claim, and finish available line checks by default; the previous one-active-check-per-case default no longer blocks another available line. Pickers can read/write messages on a case they can access while active, see their own closed cases and resolutions, and cannot post after closure. Reopening restores posting only to authorized active participants. |
+| 7 iOS scanning | Real iPhone Safari and installed web-app checks scan the actual warehouse order label twice in succession; Android still works. Verify camera permission denial, rear camera, cleanup, manual typing, and hardware scanner input. Emulator-only proof is insufficient. |
+| 8, 13 state recovery | Reproduce the reported blocked close/status flows before fixing. Authorized override repairs each supported stuck state with a reason; unauthorized requests fail; concurrent actions preserve uniqueness and a consistent audit trail. The user sees a concise consequence/next-step confirmation after stage, assign, check completion, replenishment, retrieval, close, reopen, and repair. |
+| 9, 14, 16 operational view | Dashboard and check screen distinguish open cases from open short-pick lines; each line shows its own status, original location, known new location or “none known,” reporter, checker/retriever, and next step. An authorized Team Leader, Assistant, Troubleshooter, or Admin can report a new location without first owning a check. Waiting/completed replenishment persists, routes ownership, and remains visible without reading a notification. |
+| 10–12 timeline and assignment | One message appears once. Assignment shows target person immediately on card/detail and in event text. Status events show the actual before/after states; old sparse events do not fabricate them. |
+| 15 permissions | Every new capability has a central permission, API enforcement test, editable grant/revoke path, and a test for existing-picker migration behavior. |
+
+## Gates for each merged slice
+
+1. PRD and `DEVELOPMENT_PLAN.md` reflect the slice and any known limitation. Every schema change has a tracked migration and fresh-database plus upgrade-path verification.
+2. Tests cover permissions, closed/read-only behavior, concurrency, event and audit atomicity, and four-language text. Run `npm test`, `npm run typecheck`, `npm run lint`, `npm run db:check`, and production build. Use the repository's exact scripts if names differ.
+3. Browser QA at desktop and narrow mobile width; iOS scanning needs a real iPhone. Review keyboard access, focus after deep-link navigation, and visible status without relying on push.
+4. Deploy to the isolated Railway test environment first, with fictional data and a documented rollback/migration plan. Obtain warehouse-user acceptance for the critical state flow before production rollout. Preserve a backup and verify its restore path before any production schema migration.
+
+## Confirmed product decisions
+
+- All five product choices were confirmed by the warehouse owner: Admin-only override by default, line-check claiming for every user type, manual replenishment progress, unconditional permission backfill to existing users, and a contextual same-location-found metric. The formulas and operational edge cases above are the implementation decisions to validate with acceptance tests.
