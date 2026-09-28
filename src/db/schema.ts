@@ -9,7 +9,7 @@ export const physicalStateEnum = pgEnum("physical_state", ["WITH_PICKER", "SHORT
 export const caseSourceEnum = pgEnum("case_source", ["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "ADMIN_MANUAL"]);
 export const shortPickLineStateEnum = pgEnum("short_pick_line_state", ["OPEN", "CHECKING", "FOUND", "RETRIEVING", "RESOLVED", "CANCELLED"]);
 export const checkTaskStatusEnum = pgEnum("check_task_status", ["AVAILABLE", "CLAIMED", "ASSIGNED", "COMPLETED"]);
-export const checkCompletionCodeEnum = pgEnum("check_completion_code", ["FOUND", "NOT_FOUND", "WRONG_LOCATION", "OTHER"]);
+export const checkCompletionCodeEnum = pgEnum("check_completion_code", ["FOUND", "FOUND_AT_ORIGINAL", "NOT_FOUND", "WRONG_LOCATION", "OTHER"]);
 export const notificationTypeEnum = pgEnum("notification_type", [
   "RESPONSIBILITY_CASE_ASSIGNED", "RESPONSIBILITY_CHECK_ASSIGNED", "RESPONSIBILITY_RETRIEVAL_ASSIGNED",
   "RESPONSIBILITY_NEW_LOCATION", "RESPONSIBILITY_CASE_REOPENED",

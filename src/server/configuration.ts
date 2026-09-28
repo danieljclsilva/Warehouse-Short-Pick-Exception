@@ -6,10 +6,10 @@ import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/case-errors";
 
-export const RESOLUTION_CODES = ["FOUND", "NOT_FOUND", "WRONG_LOCATION", "OTHER"] as const;
+export const RESOLUTION_CODES = ["FOUND", "FOUND_AT_ORIGINAL", "NOT_FOUND", "WRONG_LOCATION", "OTHER"] as const;
 
 export const CONFIGURATION_DEFAULTS = {
-  MAX_SIMULTANEOUS_CHECKS_PER_CASE: 1,
+  MAX_SIMULTANEOUS_CHECKS_PER_CASE: null,
   CLAIM_CHECKS_ENABLED: true,
   CHECKER_RETRIEVAL_DURING_PICKING_ENABLED: false,
   CHECKER_RETRIEVAL_WHEN_STAGED_ENABLED: true,

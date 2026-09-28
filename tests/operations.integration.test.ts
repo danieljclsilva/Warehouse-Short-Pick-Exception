@@ -92,7 +92,8 @@ describeDatabase("Phase 4 operations against PostgreSQL", () => {
     expect(saved).toMatchObject({ message: "Carton beside hold.", shortPickLineId: record.lines[0]!.id });
     const pickerDetail = await caseDetailRoute(request(`/api/cases/${record.id}`, "GET", undefined, pickerCookie), { params: Promise.resolve({ id: record.id }) });
     expect(pickerDetail.status).toBe(200);
-    expect((await pickerDetail.json()).case.messages).toEqual([]);
+    // Pickers read messages on accessible cases; posting stays restricted to responsible participants.
+    expect((await pickerDetail.json()).case.messages).toEqual(expect.arrayContaining([expect.objectContaining({ message: "Carton beside hold." })]));
     const assistantDetail = await caseDetailRoute(request(`/api/cases/${record.id}`, "GET", undefined, assistantCookie), { params: Promise.resolve({ id: record.id }) });
     expect((await assistantDetail.json()).case.messages).toEqual(expect.arrayContaining([expect.objectContaining({ message: "Carton beside hold." })]));
     const dashboard = await dashboardRoute(request("/api/operations/dashboard", "GET", undefined, assistantCookie));
