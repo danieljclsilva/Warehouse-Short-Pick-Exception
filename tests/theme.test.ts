@@ -1,11 +1,17 @@
+import { createElement } from "react";
+import vm from "node:vm";
 import { describe, expect, it, vi } from "vitest";
+import { renderToString } from "react-dom/server";
+import { ThemePicker } from "@/components/theme-picker";
 import {
   THEME_DARK_META_COLOR,
   THEME_INIT_SCRIPT,
   THEME_LIGHT_META_COLOR,
   THEME_STORAGE_KEY,
   applyResolvedTheme,
+  getThemeStorage,
   parseThemeChoice,
+  persistThemeChoice,
   readStoredThemeChoice,
   resolveTheme,
 } from "@/components/theme";
@@ -32,6 +38,45 @@ describe("resolveTheme", () => {
   it("follows prefers-color-scheme for system", () => {
     expect(resolveTheme("system", true)).toBe("dark");
     expect(resolveTheme("system", false)).toBe("light");
+  });
+});
+
+describe("theme storage accessors", () => {
+  it("returns null without a window (server render)", () => {
+    expect(getThemeStorage()).toBeNull();
+  });
+
+  it("returns null when touching window.localStorage throws", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      get() {
+        throw new Error("blocked storage");
+      },
+    });
+    try {
+      expect(getThemeStorage()).toBeNull();
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, "window", descriptor);
+      else Reflect.deleteProperty(globalThis, "window");
+    }
+  });
+
+  it("persists the choice and reports storage failures", () => {
+    const setItem = vi.fn();
+    expect(persistThemeChoice({ setItem }, "dark")).toBe(true);
+    expect(setItem).toHaveBeenCalledWith(THEME_STORAGE_KEY, "dark");
+    expect(persistThemeChoice(null, "dark")).toBe(false);
+    expect(
+      persistThemeChoice(
+        {
+          setItem: () => {
+            throw new Error("denied");
+          },
+        },
+        "dark",
+      ),
+    ).toBe(false);
   });
 });
 
@@ -80,5 +125,79 @@ describe("theme persistence contract", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("boot script behavior", () => {
+  function runBootScript({ stored, prefersDark }: { stored: string | null; prefersDark: boolean }) {
+    const state = { theme: undefined as string | undefined, colorScheme: undefined as string | undefined };
+    const metaContents: string[] = [];
+    const sandbox = {
+      window: {
+        localStorage: {
+          getItem: () => stored,
+        },
+        matchMedia: () => ({ matches: prefersDark }),
+      },
+      document: {
+        documentElement: {
+          dataset: {
+            set theme(value: string) {
+              state.theme = value;
+            },
+          },
+          style: {
+            set colorScheme(value: string) {
+              state.colorScheme = value;
+            },
+          },
+          querySelectorAll: () => [{ setAttribute: (_: string, value: string) => metaContents.push(value) }],
+        },
+      },
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(THEME_INIT_SCRIPT, sandbox);
+    return { state, metaContents };
+  }
+
+  it("applies the stored choice before paint", () => {
+    const { state, metaContents } = runBootScript({ stored: "dark", prefersDark: false });
+    expect(state.theme).toBe("dark");
+    expect(state.colorScheme).toBe("dark");
+    expect(metaContents).toContain(THEME_DARK_META_COLOR);
+  });
+
+  it("tracks the OS preference for system and falls back safely without storage", () => {
+    const dark = runBootScript({ stored: "system", prefersDark: true });
+    expect(dark.state.theme).toBe("dark");
+    const light = runBootScript({ stored: null, prefersDark: false });
+    expect(light.state.theme).toBe("light");
+    expect(light.metaContents).toContain(THEME_LIGHT_META_COLOR);
+  });
+
+  it("never throws in restricted browsing contexts", () => {
+    const sandbox = {
+      window: {
+        matchMedia: () => ({ matches: false }),
+        documentElement: {},
+      },
+      document: { documentElement: { dataset: {}, style: {}, querySelectorAll: () => [] } },
+    };
+    Object.defineProperty(sandbox.window, "localStorage", {
+      get() {
+        throw new Error("denied");
+      },
+    });
+    vm.createContext(sandbox);
+    expect(() => vm.runInContext(THEME_INIT_SCRIPT, sandbox)).not.toThrow();
+  });
+});
+
+describe("ThemePicker server render", () => {
+  it("renders a deterministic initial selection for SSR and first client paint", () => {
+    const html = renderToString(createElement(ThemePicker, { tr: () => "label" }));
+    // Hydration-safe default: same markup on server and first client render;
+    // the stored choice syncs after mount while the boot script holds paint.
+    expect(html).toContain('value="system"');
   });
 });

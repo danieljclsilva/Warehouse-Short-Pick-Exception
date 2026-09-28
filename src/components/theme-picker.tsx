@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MessageKey } from "@/i18n/messages";
 import {
-  THEME_STORAGE_KEY,
   applyResolvedTheme,
-  parseThemeChoice,
+  getThemeStorage,
+  persistThemeChoice,
   readStoredThemeChoice,
   resolveTheme,
   type ThemeChoice,
@@ -13,37 +13,51 @@ import {
 
 type Translator = (key: MessageKey) => string;
 
-function initialThemeChoice(): ThemeChoice {
-  if (typeof window === "undefined") return "system";
-  const stored = readStoredThemeChoice(window.localStorage);
-  applyResolvedTheme(resolveTheme(stored, window.matchMedia("(prefers-color-scheme: dark)").matches));
-  return stored;
-}
-
 export function ThemePicker({ tr }: { tr: Translator }) {
-  const [choice, setChoice] = useState<ThemeChoice>(initialThemeChoice);
+  // Deterministic initial render ("system") on server and client: the
+  // pre-paint boot script already set the correct data-theme, and the stored
+  // choice hydrates after mount to avoid a hydration mismatch.
+  const [choice, setChoice] = useState<ThemeChoice>("system");
+  const choiceRef = useRef<ThemeChoice>("system");
 
+  // Hydration from storage is an event subscription: the stored choice may
+  // already differ at mount, so apply it immediately, then keep listening
+  // for other tabs (native storage events). State updates live in the
+  // subscription callbacks, not the effect body.
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => {
-      const current = parseThemeChoice(window.localStorage.getItem(THEME_STORAGE_KEY));
-      if (current === "system") applyResolvedTheme(resolveTheme(current, media.matches));
+    // System tracks the OS preference using the in-memory choice, so a tab
+    // whose storage writes fail keeps its unsaved choice in force.
+    const onMediaChange = () => {
+      if (choiceRef.current === "system") {
+        applyResolvedTheme(resolveTheme("system", media.matches));
+      }
     };
-    media.addEventListener("change", onChange);
-    window.addEventListener("storage", onChange);
+    // Cross-tab updates: another tab's write changes both the applied theme
+    // and this picker's selected value.
+    const applyStoredChoice = () => {
+      const current = readStoredThemeChoice(getThemeStorage());
+      choiceRef.current = current;
+      setChoice(current);
+      applyResolvedTheme(resolveTheme(current, media.matches));
+    };
+    media.addEventListener("change", onMediaChange);
+    window.addEventListener("storage", applyStoredChoice);
+    // Re-apply after mount: covers dev StrictMode remounts (which clear the
+    // script-set attribute) and syncs the picker with the stored choice.
+    applyStoredChoice();
     return () => {
-      media.removeEventListener("change", onChange);
-      window.removeEventListener("storage", onChange);
+      media.removeEventListener("change", onMediaChange);
+      window.removeEventListener("storage", applyStoredChoice);
     };
   }, []);
 
   const change = (next: ThemeChoice) => {
+    choiceRef.current = next;
     setChoice(next);
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, next);
-    } catch {
-      /* Private browsing without storage: apply for this session only. */
-    }
+    // Ignore the return: when storage is unavailable the in-memory choice
+    // above stays in force for this tab.
+    persistThemeChoice(getThemeStorage(), next);
     applyResolvedTheme(resolveTheme(next, window.matchMedia("(prefers-color-scheme: dark)").matches));
   };
 

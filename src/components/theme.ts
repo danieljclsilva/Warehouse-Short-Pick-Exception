@@ -30,12 +30,45 @@ export function resolveTheme(choice: ThemeChoice, prefersDark: boolean): Resolve
  */
 export const THEME_INIT_SCRIPT = `(function(){try{var s=null;try{s=window.localStorage.getItem("${THEME_STORAGE_KEY}")}catch(e){}var c=s==="light"||s==="dark"||s==="system"?s:"system";var t=c==="dark"||(c!=="light"&&window.matchMedia("(prefers-color-scheme: dark)").matches)?"dark":"light";var r=document.documentElement;r.dataset.theme=t;r.style.colorScheme=t;var m=r.querySelectorAll('meta[name="theme-color"]');for(var i=0;i<m.length;i++){m[i].setAttribute("content",t==="dark"?"${THEME_DARK_META_COLOR}":"${THEME_LIGHT_META_COLOR}")}}catch(e){}})();`;
 
+/**
+ * Returns browser localStorage, or null when unavailable. Guards both the
+ * `window.localStorage` property access and restricted contexts where even
+ * touching the property throws (e.g. blocked third-party storage).
+ */
+export function getThemeStorage(): Pick<Storage, "getItem" | "setItem"> | null {
+  try {
+    if (typeof window === "undefined") return null;
+    const storage = window.localStorage;
+    if (!storage) return null;
+    return storage;
+  } catch {
+    return null;
+  }
+}
+
 export function readStoredThemeChoice(storage: Pick<Storage, "getItem"> | null | undefined): ThemeChoice {
   try {
     if (!storage) return "system";
     return parseThemeChoice(storage.getItem(THEME_STORAGE_KEY));
   } catch {
     return "system";
+  }
+}
+
+/**
+ * Persists the choice; returns false when storage is unavailable so the
+ * caller keeps the in-memory choice in force for the current tab.
+ */
+export function persistThemeChoice(
+  storage: Pick<Storage, "setItem"> | null | undefined,
+  choice: ThemeChoice,
+): boolean {
+  try {
+    if (!storage) return false;
+    storage.setItem(THEME_STORAGE_KEY, choice);
+    return true;
+  } catch {
+    return false;
   }
 }
 
