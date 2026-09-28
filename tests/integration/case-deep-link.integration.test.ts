@@ -151,7 +151,7 @@ describeDatabase("Integration slice: case deep link (open, closed, denied, reloa
   it("rejects new messages on the closed case", async () => {
     const response = await postMessage(request(`/api/cases/${closedCaseId}/messages`, "POST", { message: "late note" }, leaderCookie), { params: Promise.resolve({ id: closedCaseId }) });
     expect(response.status).toBe(409);
-    expect(ErrorShape.parse(await response.json()).code).toBe("CASE_NOT_OPEN");
+    expect(ErrorShape.parse(await response.json()).code).toBe("CASE_MESSAGE_CLOSED");
   });
 
   it("marks the notification read, then resolves the exact case with its line target", async () => {
