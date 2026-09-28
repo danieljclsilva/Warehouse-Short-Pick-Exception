@@ -183,6 +183,54 @@ export async function assignCheck(auth: AuthContext, taskId: string, userId: str
   });
 }
 
+export const discoveredLocationSchema = z.object({
+  location: z.string().trim().min(1).max(128).transform((value) => value.toUpperCase()),
+  note: z.string().trim().max(500).default(""),
+});
+
+export async function reportDiscoveredLocation(auth: AuthContext, caseId: string, lineId: string, input: z.infer<typeof discoveredLocationSchema>) {
+  if (!hasAuthPermission(auth, "REPORT_NEW_LOCATION")) throw new CaseApiError("CHECK_RESULT_FORBIDDEN", "Reporting a new location requires the location grant", 403);
+  return getDb().transaction(async (tx) => {
+    const [record] = await tx.select().from(orderCases).where(eq(orderCases.id, caseId)).for("update").limit(1);
+    if (!record || record.phase === "CLOSED") throw new CaseApiError("CASE_NOT_OPEN", "Case is closed or missing", 409);
+    const [line] = await tx.select().from(shortPickLines).where(and(eq(shortPickLines.id, lineId), eq(shortPickLines.caseId, caseId))).for("update").limit(1);
+    if (!line) throw new CaseApiError("CASE_NOT_FOUND", "Line not found", 404);
+    if (line.state === "RESOLVED" || line.state === "CANCELLED") throw new CaseApiError("CHECK_RESULT_FORBIDDEN", "Location cannot be reported on a terminal line", 409);
+    if (input.location === line.originalLocation) throw new CaseApiError("CHECK_RESULT_FORBIDDEN", "A discovered location must differ from the original location", 400);
+    const now = new Date();
+    const [activeCheck] = await tx.select().from(checkTasks).where(and(eq(checkTasks.shortPickLineId, lineId), ne(checkTasks.status, "COMPLETED"))).for("update").limit(1);
+    let reconciledTaskId: string | null = null;
+    if (activeCheck) {
+      reconciledTaskId = activeCheck.id;
+      await tx.update(checkTasks).set({ status: "COMPLETED", completionCode: "FOUND", completedAt: now, updatedAt: now, version: sql`${checkTasks.version} + 1` }).where(eq(checkTasks.id, activeCheck.id));
+    }
+    const [stagedResponsible] = record.phase === "STAGED" && record.currentCaseResponsibleUserId
+      ? await tx.select({ id: users.id, role: users.role, permissions: users.permissions }).from(users).where(and(eq(users.id, record.currentCaseResponsibleUserId), eq(users.status, "ACTIVE"))).limit(1)
+      : [];
+    const ownerFromPhase = record.phase === "PICKING" ? record.pickingUserId
+      : stagedResponsible?.role === "TROUBLESHOOTER" && stagedResponsible.permissions.includes("CONFIRM_RETRIEVAL") ? stagedResponsible.id : null;
+    await tx.update(shortPickLines).set({
+      state: "FOUND", currentResponsibleUserId: ownerFromPhase,
+      discoveredLocation: input.location, discoveredByUserId: auth.user.id, discoveredAt: now,
+      retrievalState: "PENDING", retrievalResponsibleUserId: ownerFromPhase, updatedAt: now, version: sql`${shortPickLines.version} + 1`,
+    }).where(eq(shortPickLines.id, lineId));
+    await tx.update(orderCases).set({ updatedAt: now, version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
+    await tx.insert(caseEvents).values({ caseId, shortPickLineId: lineId, actorUserId: auth.user.id, eventType: "NEW_LOCATION_REPORTED",
+      details: { location: input.location, note: input.note || null, reconciledTaskId, externalResolution: true, casePhase: record.phase } });
+    await tx.insert(caseEvents).values({ caseId, shortPickLineId: lineId, actorUserId: auth.user.id, eventType: "RETRIEVAL_ASSIGNED",
+      details: { responsibleUserId: ownerFromPhase, casePhase: record.phase, source: "DISCOVERED_LOCATION" } });
+    await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "DISCOVERED_LOCATION_REPORTED",
+      details: { caseId, lineId, location: input.location, reconciledTaskId, responsibleUserId: ownerFromPhase } });
+    if (ownerFromPhase) {
+      await insertResponsibilityNotification(tx, { recipientUserId: ownerFromPhase, type: "RESPONSIBILITY_NEW_LOCATION",
+        caseId, shortPickLineId: lineId, payload: { orderNumber: record.orderNumber, discoveredLocation: input.location, finderUserId: auth.user.id } });
+    }
+    await insertMonitoringNotifications(tx, { type: "NEW_LOCATION", caseId, shortPickLineId: lineId,
+      payload: { orderNumber: record.orderNumber, discoveredLocation: input.location }, excludeUserId: auth.user.id });
+    return { caseId, lineId, location: input.location, reconciledTaskId, retrievalResponsibleUserId: ownerFromPhase };
+  });
+}
+
 export async function completeCheck(auth: AuthContext, taskId: string, input: z.infer<typeof completeCheckSchema>) {
   if (!hasAuthPermission(auth, "COMPLETE_CHECK")) throw new CaseApiError("CASE_ACCESS_DENIED", "Cannot complete checks", 403);
   const caseId = await taskCaseId(taskId);
