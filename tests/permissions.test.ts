@@ -3,6 +3,21 @@ import { canManageRole, canManageUser, defaultPermissions, permissionsAllowedFor
 import { persistentSessionCookie, SESSION_COOKIE_MAX_AGE_SECONDS } from "../src/server/security";
 
 describe("role and permission hierarchy", () => {
+  it("grants check and picker note defaults across role presets", () => {
+    for (const role of ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "ADMIN"] as const) {
+      const permissions = defaultPermissions(role);
+      expect(permissions).toEqual(expect.arrayContaining(["VIEW_AVAILABLE_CHECKS", "CLAIM_CHECK", "COMPLETE_CHECK"]));
+    }
+    expect(defaultPermissions("PICKER")).toEqual(expect.arrayContaining(["ADD_CASE_MESSAGE", "VIEW_CASE_MESSAGES"]));
+    expect(defaultPermissions("ASSISTANT")).toContain("REPORT_NEW_LOCATION");
+  });
+
+  it("enforces grant bounds for override and repair permissions", () => {
+    expect(permissionsAllowedForRole("TEAM_LEADER", ["OVERRIDE_CASE_STATE"])).toBe(true);
+    expect(permissionsAllowedForRole("TEAM_LEADER", ["REPAIR_CASE_DATA"])).toBe(false);
+    expect(permissionsAllowedForRole("PICKER", ["OVERRIDE_CASE_STATE"])).toBe(false);
+    expect(permissionsAllowedForRole("ADMIN", ["OVERRIDE_CASE_STATE", "REPAIR_CASE_DATA"])).toBe(true);
+  });
   it("limits assistant management to picker and troubleshooter roles", () => {
     expect(canManageRole("ASSISTANT", "PICKER")).toBe(true);
     expect(canManageRole("ASSISTANT", "TROUBLESHOOTER")).toBe(true);
