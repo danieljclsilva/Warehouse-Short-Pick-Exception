@@ -552,6 +552,22 @@ button { color: inherit; }
 .permission-option { display: flex; min-height: 43px; align-items: center; gap: 9px; color: var(--ink-soft); font-size: 12px; cursor: pointer; }
 .permission-option input { width: 18px; height: 18px; accent-color: var(--green); }
 .users-page + .photo-approval-page { margin-top: 28px; }
+.deep-case-panel { display: grid; gap: 14px; padding: 21px 23px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); }
+.deep-case-panel #deep-case-title { margin: 0; font-size: clamp(21px, 2.2vw, 28px); letter-spacing: -.02em; }
+.deep-case-panel #deep-case-title:focus { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+.deep-case-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.deep-case-meta { margin: 0; color: var(--ink-soft); font-size: 13px; }
+.deep-case-lines { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.deep-case-line { padding: 13px 15px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.deep-case-line[data-current="true"] { border-color: var(--green); box-shadow: 0 0 0 1px var(--green); }
+.deep-case-line-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 14px; font-size: 13px; }
+.deep-case-facts { display: flex; flex-wrap: wrap; gap: 10px 28px; margin: 10px 0 0; padding: 10px 0 0; border-top: 1px solid var(--line); }
+.deep-case-facts div { display: grid; gap: 2px; }
+.deep-case-facts dt { color: var(--muted); font-size: 11px; }
+.deep-case-facts dd { margin: 0; color: var(--ink); font-size: 12px; font-weight: 600; }
+.deep-case-messages h3 { margin: 0 0 8px; font-size: 14px; }
+.deep-case-messages ol { display: grid; gap: 8px; margin: 0; padding-left: 18px; font-size: 13px; }
+.permission-bounds-hint { margin: 0 0 4px; color: var(--muted); font-size: 12px; }
 .photo-queue { display: grid; gap: 12px; }
 .photo-queue-card { display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; align-items: center; gap: 16px; padding: 15px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); }
 .photo-queue-card > img { display: block; width: 92px; height: 92px; border-radius: 9px; background: var(--hover); object-fit: cover; }
