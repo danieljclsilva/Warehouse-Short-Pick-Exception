@@ -148,6 +148,19 @@ async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: st
   const checks = lines.length ? await db.select().from(checkTasks).where(inArray(checkTasks.shortPickLineId, lines.map((line) => line.id))).orderBy(checkTasks.createdAt, checkTasks.id) : [];
   const events = await db.select({ id: caseEvents.id, shortPickLineId: caseEvents.shortPickLineId, actorUserId: caseEvents.actorUserId, actorName: users.displayName, eventType: caseEvents.eventType, details: caseEvents.details, createdAt: caseEvents.createdAt })
     .from(caseEvents).leftJoin(users, eq(caseEvents.actorUserId, users.id)).where(eq(caseEvents.caseId, caseId)).orderBy(caseEvents.createdAt, caseEvents.id);
+  const locationByLine = new Map(lines.map((line) => [line.id, { originalLocation: line.originalLocation, discoveredLocation: line.discoveredLocation }]));
+  const shapedEvents = events.map((event) => {
+    const raw = (event.details ?? {}) as Record<string, unknown>;
+    const pickString = (value: unknown): string | null => (typeof value === "string" && value.length > 0 ? value : null);
+    const lineId = typeof event.shortPickLineId === "string" ? event.shortPickLineId : null;
+    const lineLocations = lineId ? locationByLine.get(lineId) : undefined;
+    const completionCode = pickString(raw.code);
+    const discoveredLocation = pickString(raw.location) ?? pickString(raw.discoveredLocation)
+      ?? (event.eventType === "CHECK_COMPLETED" && completionCode === "FOUND" ? (lineLocations?.discoveredLocation ?? null) : null);
+    const originalLocation = pickString(raw.originalLocation)
+      ?? (event.eventType === "CHECK_COMPLETED" && completionCode === "FOUND_AT_ORIGINAL" ? (lineLocations?.originalLocation ?? null) : null);
+    return { ...event, completionCode, taskId: pickString(raw.taskId), discoveredLocation, originalLocation };
+  });
   const messages = includeMessages ? await db.select({ id: caseMessages.id, shortPickLineId: caseMessages.shortPickLineId, authorUserId: caseMessages.authorUserId, authorName: users.displayName, message: caseMessages.message, createdAt: caseMessages.createdAt })
     .from(caseMessages).innerJoin(users, eq(caseMessages.authorUserId, users.id)).where(eq(caseMessages.caseId, caseId)).orderBy(caseMessages.createdAt, caseMessages.id) : [];
   const personIds = [...new Set([record.pickingUserId, record.currentCaseResponsibleUserId,
@@ -166,7 +179,7 @@ async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: st
   return { ...record, pickerName: record.pickingUserId ? names.get(record.pickingUserId) ?? null : null,
     responsibleName: record.currentCaseResponsibleUserId ? names.get(record.currentCaseResponsibleUserId) ?? null : null,
     missingCount: unresolvedLines.reduce((total, line) => total + line.missingQuantity, 0), checkingCount, currentIssue,
-    lines: lines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity })), checks, events, messages,
+    lines: lines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity })), checks, events: shapedEvents, messages,
     projection, lineProjections };
 }
 
