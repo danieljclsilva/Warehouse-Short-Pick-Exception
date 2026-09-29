@@ -165,6 +165,7 @@ type DeepLinkLine = {
   quantity?: number | null;
   missingQuantity?: number | null;
   state?: string | null;
+  displayStatus?: string | null;
   retrievalState?: string | null;
   discoveredLocation?: string | null;
   reporterName?: string | null;
@@ -175,6 +176,7 @@ type DeepLinkLine = {
   replenishmentActorName?: string | null;
   nextActionCode?: string | null;
   blockingReasonCode?: string | null;
+  pickerRetrieval?: boolean | null;
 };
 
 type DeepLinkMessage = { id: string; message: string; authorName: string; createdAt: string };
@@ -191,7 +193,39 @@ type DeepLinkCase = {
   messages?: DeepLinkMessage[] | null;
 };
 
-export function DeepCaseView({ tr, data, lineId, canViewMessages, status, onClose, headingRef, currentLineRef }: {
+type BriefInstruction = { key: MessageKey; values?: Record<string, string> };
+
+export function briefInstructionForLine(line: { nextActionCode?: string | null; blockingReasonCode?: string | null; checkerName?: string | null; retrieverName?: string | null; replenishmentActorName?: string | null; discoveredLocation?: string | null; location?: string | null; originalLocation?: string | null; pickerRetrieval?: boolean | null }): BriefInstruction | null {
+  const nextAction = line.nextActionCode ?? null;
+  const owner = line.checkerName ?? line.retrieverName ?? line.replenishmentActorName ?? null;
+  const ownerSuffix = owner ? ` · ${owner}` : "";
+  const base = { ownerSuffix };
+  switch (nextAction) {
+    case "CLAIM_CHECK": return { key: "navInstructionClaimCheck", values: base };
+    case "COMPLETE_CHECK": return { key: "navInstructionCompleteCheck", values: base };
+    case "RETRIEVE": {
+      const place = line.discoveredLocation ?? line.location ?? line.originalLocation ?? null;
+      if (line.pickerRetrieval === true) return { key: "navInstructionPickerRetrieve", values: place ? { ...base, location: place } : base };
+      return { key: place ? "navInstructionRetrieve" : "navInstructionRetrieveHandoff", values: place ? { ...base, location: place } : base };
+    }
+    case "REPLENISH": return { key: "navInstructionReplenish", values: base };
+    case "STAGE_ORDER": return { key: "navInstructionStageOrder", values: base };
+    case "RESOLVE": return { key: "navInstructionResolve", values: base };
+    case "WAIT": return { key: "navInstructionWait", values: base };
+    case "NONE": return null;
+    default: return null;
+  }
+}
+
+export function stepperStageForLine(line: { state?: string | null; displayStatus?: string | null; pickerRetrieval?: boolean | null }): "waiting" | "ready" | "done" {
+  const status = (line.displayStatus ?? line.state ?? "").toUpperCase();
+  if (status === "RESOLVED" || status === "RETRIEVED" || status === "CANCELLED") return "done";
+  if (status === "FOUND" || status === "FOUND_AT_ORIGINAL" || status === "WAITING_RETRIEVAL" || status === "RETRIEVING" || line.pickerRetrieval === true) return "ready";
+  if (status === "RETRIEVE" || status === "RETRIEVE_REQUESTED") return "ready";
+  return "waiting";
+}
+
+export function DeepCaseView({ tr, data, lineId, canViewMessages, status, onClose, headingRef, currentLineRef, fromNotification = false }: {
   tr: (key: MessageKey, values?: Record<string, string>) => string;
   data: DeepLinkCase | null;
   lineId: string | null;
@@ -200,7 +234,9 @@ export function DeepCaseView({ tr, data, lineId, canViewMessages, status, onClos
   onClose: () => void;
   headingRef: React.RefObject<HTMLHeadingElement | null>;
   currentLineRef: React.RefObject<HTMLElement | null>;
+  fromNotification?: boolean;
 }) {
+  const [dismissedInstructionKey, setDismissedInstructionKey] = useState<string | null>(null);
   if (status === "loading") {
     return (
       <section className="deep-case-panel" aria-labelledby="deep-case-title" aria-busy="true">
@@ -223,6 +259,10 @@ export function DeepCaseView({ tr, data, lineId, canViewMessages, status, onClos
   const closed = data.phase === "CLOSED" || Boolean(data.closedAt || data.resolvedAt);
   const lines = data.lines ?? [];
   const visibleMessages = canViewMessages && Array.isArray(data.messages) ? data.messages : [];
+  const focusedLine = lineId !== null ? lines.find((line) => line.id === lineId) ?? null : null;
+  const instructionTarget = fromNotification ? (focusedLine ?? (lines.length === 1 ? lines[0] : null)) : null;
+  const instructionKey = instructionTarget ? `${data.id}:${instructionTarget.id}:${instructionTarget.nextActionCode ?? ""}` : null;
+  const instruction = !closed && instructionTarget && instructionKey !== dismissedInstructionKey ? briefInstructionForLine(instructionTarget) : null;
   return (
     <section className="deep-case-panel" aria-labelledby="deep-case-title">
       <div className="deep-case-head">
@@ -231,15 +271,27 @@ export function DeepCaseView({ tr, data, lineId, canViewMessages, status, onClos
       </div>
       <p className="deep-case-meta">{data.phase === "STAGED" ? tr("phaseStaged") : data.phase === "CLOSED" ? tr("caseClosed") : tr("phasePicking")} · {data.pickerName || tr("unknownPicker")}</p>
       {closed ? <p className="profile-message" role="note">{tr("caseClosedReadOnlyNote")}</p> : null}
+      {instruction ? (
+        <p className="deep-case-instruction" role="status">
+          <span>{tr(instruction.key, instruction.values)}</span>
+          <button className="text-button" type="button" onClick={() => setDismissedInstructionKey(instructionKey)}>{tr("navInstructionDismiss")}</button>
+        </p>
+      ) : null}
       {lines.length ? (
         <ul className="deep-case-lines">
           {lines.map((line) => {
             const current = lineId !== null && line.id === lineId;
             const quantity = line.missingQuantity ?? line.quantity;
+            const stepperStage = stepperStageForLine(line);
             return (
               <li key={line.id}>
                 <article className="deep-case-line" data-current={current ? "true" : "false"} aria-current={current ? "true" : undefined} ref={current ? currentLineRef : undefined}>
                   <div className="deep-case-line-top"><strong>{line.originalLocation || line.location || "—"}</strong><span>{line.sku || "—"} ×{typeof quantity === "number" ? quantity : "—"}</span></div>
+                  <ol className="deep-case-stepper" aria-label={tr("stepperProgressLabel")}>
+                    <li data-stage={stepperStage === "waiting" ? "current" : "done"} aria-current={stepperStage === "waiting" ? "step" : undefined}>{tr("stepperWaiting")}</li>
+                    <li data-stage={stepperStage === "ready" ? "current" : stepperStage === "done" ? "done" : "todo"} aria-current={stepperStage === "ready" ? "step" : undefined}>{line.pickerRetrieval === true ? tr("stepperPickerRetrieval") : tr("stepperReady")}</li>
+                    <li data-stage={stepperStage === "done" ? "current" : "todo"} aria-current={stepperStage === "done" ? "step" : undefined}>{tr("stepperDone")}</li>
+                  </ol>
                   <dl className="deep-case-facts">
                     <div><dt>{tr("lineOriginalLocation")}</dt><dd>{line.originalLocation || line.location || "—"}</dd></div>
                     <div><dt>{tr("lineKnownNewLocation")}</dt><dd>{line.discoveredLocation || tr("lineNoKnownNewLocation")}</dd></div>
@@ -272,13 +324,23 @@ export function DeepCaseView({ tr, data, lineId, canViewMessages, status, onClos
     </section>
   );
 }
+type DeepTarget = { view: "live"; section: MessageKey } | { view: "readonly" };
 
-function DeepCasePanel({ tr, caseId, lineId, canViewMessages, onClose }: {
+export function resolveDeepTarget(input: { phase?: string | null; closedAt?: string | null; resolvedAt?: string | null; canAct: boolean }): DeepTarget {
+  const closed = input.phase === "CLOSED" || Boolean(input.closedAt ?? input.resolvedAt);
+  if (closed || !input.canAct) return { view: "readonly" };
+  return { view: "live", section: "myWork" };
+}
+
+function DeepCasePanel({ tr, caseId, lineId, canViewMessages, canAct, fromNotification = false, onClose, onOpenLive }: {
   tr: (key: MessageKey, values?: Record<string, string>) => string;
   caseId: string;
   lineId: string | null;
   canViewMessages: boolean;
+  canAct: boolean;
+  fromNotification?: boolean;
   onClose: () => void;
+  onOpenLive?: (caseId: string, lineId: string | null) => void;
 }) {
   const [data, setData] = useState<DeepLinkCase | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "missing" | "forbidden" | "failed">("loading");
@@ -312,7 +374,19 @@ function DeepCasePanel({ tr, caseId, lineId, canViewMessages, onClose }: {
     if (status !== "loading") headingRef.current?.focus();
   }, [status, lineId]);
 
-  return <DeepCaseView tr={tr} data={data} lineId={lineId} canViewMessages={canViewMessages} status={status} onClose={onClose} headingRef={headingRef} currentLineRef={currentLineRef} />;
+  const openCase = status === "ready" && data !== null && data.phase !== "CLOSED" && !data.closedAt && !data.resolvedAt;
+  const target = resolveDeepTarget({ phase: data?.phase ?? null, closedAt: data?.closedAt ?? null, resolvedAt: data?.resolvedAt ?? null, canAct: openCase && canAct });
+  if (target.view === "live" && onOpenLive && status === "ready" && data) {
+    return (
+      <>
+        <DeepCaseView tr={tr} data={data} lineId={lineId} canViewMessages={canViewMessages} status={status} onClose={onClose} headingRef={headingRef} currentLineRef={currentLineRef} fromNotification={fromNotification} />
+        <div className="dialog-actions">
+          <button className="primary-button" type="button" onClick={() => onOpenLive(caseId, lineId)}>{tr("navInstructionOpenLiveCase")}</button>
+        </div>
+      </>
+    );
+  }
+  return <DeepCaseView tr={tr} data={data} lineId={lineId} canViewMessages={canViewMessages} status={status} onClose={onClose} headingRef={headingRef} currentLineRef={currentLineRef} fromNotification={fromNotification} />;
 }
 
 export function AuthApp({ initialInviteToken = "", initialView = "login" }: AuthAppProps) {
@@ -347,6 +421,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
   const [pendingPhotoCount, setPendingPhotoCount] = useState(0);
   const [deepCaseId, setDeepCaseId] = useState<string | null>(null);
   const [deepLineId, setDeepLineId] = useState<string | null>(null);
+  const [deepCaseFromNotification, setDeepCaseFromNotification] = useState(false);
   const { messages: t } = getMessages(locale);
   const tr = useCallback((key: MessageKey, values?: Record<string, string>) => translate(t, key, values), [t]);
   const localeRef = useRef<Locale>(locale);
@@ -403,6 +478,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             if (deepCase) {
               setDeepCaseId(deepCase);
               setDeepLineId(deepLine);
+              setDeepCaseFromNotification(true);
               setActiveSection(firstSection?.key ?? "workspace");
             } else setActiveSection(requestedSection ? "notifications" : firstSection?.key ?? "workspace");
             setView("workspace");
@@ -463,21 +539,40 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
   const canUsePickerWorkflow = user?.role === "PICKER" && Boolean(user.permissions.some((permission) => permission === "REPORT_SHORT_PICK" || permission === "VIEW_OWN_CASES"));
   const canOverrideDuplicateLine = Boolean(user?.permissions.includes("OVERRIDE_DUPLICATE_SHORT_PICK_LINE"));
   const assignableRoles = user ? inviteRolesByActor[user.role] ?? [] : [];
-  const openCaseFromNotification = useCallback((caseId: string, lineId: string | null) => {
+  const openCaseFromNotification = useCallback((caseId: string, lineId: string | null, notification?: { notification?: { type?: string | null; payload?: Record<string, unknown> | null } | null }) => {
+    const inner = notification?.notification ?? null;
+    const payload = inner?.payload && typeof inner.payload === "object" ? inner.payload as Record<string, unknown> : {};
+    const flaggedLine = typeof payload.shortPickLineId === "string" ? payload.shortPickLineId
+      : typeof payload.lineId === "string" ? payload.lineId : null;
+    const targetLine = lineId ?? flaggedLine;
     setDeepCaseId(caseId);
-    setDeepLineId(lineId);
-    router.replace(`/?case=${encodeURIComponent(caseId)}${lineId ? `&line=${encodeURIComponent(lineId)}` : ""}`, { scroll: false });
+    setDeepLineId(targetLine);
+    setDeepCaseFromNotification(true);
+    router.replace(`/?case=${encodeURIComponent(caseId)}${targetLine ? `&line=${encodeURIComponent(targetLine)}` : ""}`, { scroll: false });
   }, [router]);
+  const openLiveCase = useCallback((caseId: string, lineId: string | null) => {
+    setDeepCaseFromNotification(true);
+    if (canUsePickerWorkflow) {
+      setActiveSection("myWork");
+      setMobileNavOpen(false);
+    } else if (user?.permissions.includes("VIEW_ALL_OPEN_CASES")) {
+      setActiveSection("openCases");
+      setMobileNavOpen(false);
+    }
+    router.replace(`/?case=${encodeURIComponent(caseId)}${lineId ? `&line=${encodeURIComponent(lineId)}` : ""}`, { scroll: false });
+  }, [canUsePickerWorkflow, router, user]);
 
   const closeDeepCase = useCallback(() => {
     setDeepCaseId(null);
     setDeepLineId(null);
+    setDeepCaseFromNotification(false);
     router.replace("/", { scroll: false });
   }, [router]);
 
   const selectSection = useCallback((section: MessageKey) => {
     setDeepCaseId(null);
     setDeepLineId(null);
+    setDeepCaseFromNotification(false);
     setActiveSection(section);
     setMobileNavOpen(false);
     router.replace("/", { scroll: false });
@@ -755,7 +850,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
           </header>
           <main className="workspace-content">
             {deepCaseId ? (
-              <DeepCasePanel tr={tr} caseId={deepCaseId} lineId={deepLineId} canViewMessages={user.permissions.includes("VIEW_CASE_MESSAGES")} onClose={closeDeepCase} />
+              <DeepCasePanel tr={tr} caseId={deepCaseId} lineId={deepLineId} canViewMessages={user.permissions.includes("VIEW_CASE_MESSAGES")} canAct={user.permissions.some((permission) => ["REPORT_SHORT_PICK", "CLAIM_CHECK", "COMPLETE_CHECK", "ASSIGN_CHECK", "REASSIGN_CHECK", "CONFIRM_RETRIEVAL", "ADD_CASE_MESSAGE", "RESOLVE_CASE", "RECORD_REPLENISHMENT", "MARK_ORDER_STAGED"].includes(permission))} fromNotification={deepCaseFromNotification} onClose={closeDeepCase} onOpenLive={openLiveCase} />
             ) : null}
             {activeSection === "configuration" && allowedNavigation.some((item) => item.key === "configuration") ? (
               <ConfigurationPanel tr={tr} locale={locale} role={user.role} />
@@ -779,7 +874,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
                 tr={tr}
                 locale={locale}
                 canManagePreferences={user.permissions.includes("VIEW_ALL_OPEN_CASES")}
-                onOpenCase={(caseId, lineId) => openCaseFromNotification(caseId, lineId ?? null)}
+                onOpenCase={(caseId, lineId, notification) => openCaseFromNotification(caseId, lineId ?? null, notification)}
                 onReviewPhotos={user.permissions.includes("APPROVE_PROFILE_PHOTO") || user.role === "ADMIN" ? () => selectSection("users") : undefined}
                 onUnreadChange={setUnreadCount}
               />

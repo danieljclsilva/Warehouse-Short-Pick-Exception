@@ -31,11 +31,12 @@ type PreferenceKey =
 type PreferenceState = Record<PreferenceKey, boolean>;
 type ThresholdState = Record<PreferenceKey, number | null>;
 
+export type NotificationOpenTarget = { caseId: string; lineId: string | null; notification: NotificationRecord };
 type Props = {
   tr: Translator;
   locale: string;
   canManagePreferences: boolean;
-  onOpenCase?: (caseId: string, lineId?: string | null) => void;
+  onOpenCase?: (caseId: string, lineId?: string | null, notification?: NotificationOpenTarget) => void;
   onReviewPhotos?: () => void;
   onUnreadChange?: (unreadCount: number) => void;
 };
@@ -265,7 +266,11 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
         setBusyId("");
       }
     }
-    onOpenCase(notification.caseId, notification.shortPickLineId ?? null);
+    const lineId = notification.shortPickLineId ?? null;
+    const payload = asPayload(notification.payload);
+    const payloadLineId = typeof payload.shortPickLineId === "string" ? payload.shortPickLineId
+      : typeof payload.lineId === "string" ? payload.lineId : null;
+    onOpenCase(notification.caseId, lineId ?? payloadLineId, { caseId: notification.caseId, lineId: lineId ?? payloadLineId, notification });
   };
 
   const savePreferences = async (event: React.FormEvent<HTMLFormElement>) => {
