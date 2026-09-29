@@ -24,7 +24,8 @@ import { POST as claimRoute } from "../src/app/api/checks/[id]/claim/route";
 import { POST as completeRoute } from "../src/app/api/checks/[id]/complete/route";
 import { POST as stageRoute } from "../src/app/api/cases/[id]/stage/route";
 import { GET as dashboardRoute } from "../src/app/api/operations/dashboard/route";
-import { normalizeConfigurationValues } from "../src/server/configuration";
+import { CONFIGURATION_DEFAULTS, configurationPatchSchema, normalizeConfigurationValues } from "../src/server/configuration";
+import { ZodError } from "zod";
 
 const describeDatabase = process.env.DATABASE_URL ? describe : describe.skip;
 const request = (path: string, method: string, body?: unknown, cookie?: string) => new Request(`http://localhost${path}`, {
@@ -414,5 +415,29 @@ describeDatabase("Phase 6 configuration versioning and snapshots against Postgre
     if (audit) {
       await expectImmutableFailure(db.update(configurationAudits).set({ changedValues: { CRITICAL_THRESHOLD_MINUTES: 5 }, changedByUserId: null }).where(eq(configurationAudits.id, audit.id)));
     }
+  });
+
+  it("normalizes a legacy v1 row (missing newer keys) with defaults", () => {
+    const { PROFILE_PHOTO_MAX_UPLOAD_BYTES: _dropped, ...rest } = { ...CONFIGURATION_DEFAULTS } as Record<string, unknown>; void _dropped;
+    const legacy = { ...rest, ALLOWED_RESOLUTION_CODES: ["FOUND", "NOT_FOUND", "WRONG_LOCATION", "OTHER"], MAX_SIMULTANEOUS_CHECKS_PER_CASE: 1 };
+    const normalized = normalizeConfigurationValues(legacy);
+    expect(normalized.PROFILE_PHOTO_MAX_UPLOAD_BYTES).toBe(CONFIGURATION_DEFAULTS.PROFILE_PHOTO_MAX_UPLOAD_BYTES);
+    expect(normalized.MAX_SIMULTANEOUS_CHECKS_PER_CASE).toBe(1);
+    expect(normalized.ALLOWED_RESOLUTION_CODES).toEqual(["FOUND", "NOT_FOUND", "WRONG_LOCATION", "OTHER"]);
+  });
+
+  it("drops unknown retired keys without touching known values", () => {
+    const normalized = normalizeConfigurationValues({ ...CONFIGURATION_DEFAULTS, LEGACY_PICKER_PIN_ENABLED: true });
+    expect("LEGACY_PICKER_PIN_ENABLED" in normalized).toBe(false);
+    expect(normalized.PUSH_ENABLED).toBe(CONFIGURATION_DEFAULTS.PUSH_ENABLED);
+  });
+
+  it("still throws on wrong-typed stored values", () => {
+    expect(() => normalizeConfigurationValues({ ...CONFIGURATION_DEFAULTS, WARNING_THRESHOLD_MINUTES: "soon" })).toThrow(ZodError);
+  });
+
+  it("keeps PATCH input strict against unknown keys", () => {
+    expect(configurationPatchSchema.safeParse({ expectedVersion: 1, values: { PUSH_ENABLED: true, BOGUS_KEY: 1 } }).success).toBe(false);
+    expect(configurationPatchSchema.safeParse({ expectedVersion: 1, values: { PUSH_ENABLED: false } }).success).toBe(true);
   });
 });

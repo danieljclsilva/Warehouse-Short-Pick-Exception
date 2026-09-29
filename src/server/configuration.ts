@@ -72,10 +72,16 @@ const configurationShape = z.object({
   PUSH_ENABLED: z.boolean(),
   PROFILE_PHOTO_MAX_UPLOAD_BYTES: integer(64 * 1024, 25 * 1024 * 1024),
 }).strict();
-const configurationSchema = configurationShape.superRefine((values, ctx) => {
+
+const storedConfigurationSchema = z.object(configurationShape.shape).superRefine((values, ctx) => {
   if (values.WARNING_THRESHOLD_MINUTES > values.ATTENTION_THRESHOLD_MINUTES) ctx.addIssue({ code: "custom", path: ["WARNING_THRESHOLD_MINUTES"], message: "Warning threshold cannot exceed attention threshold" });
   if (values.ATTENTION_THRESHOLD_MINUTES > values.CRITICAL_THRESHOLD_MINUTES) ctx.addIssue({ code: "custom", path: ["ATTENTION_THRESHOLD_MINUTES"], message: "Attention threshold cannot exceed critical threshold" });
 });
+
+export function zodIssuePaths(error: unknown): string[] {
+  if (!(error instanceof z.ZodError)) return [];
+  return error.issues.map((issue) => (issue.path.length ? issue.path.join(".") : issue.code));
+}
 
 export const configurationPatchSchema = z.object({
   values: configurationShape.partial(),
@@ -85,7 +91,11 @@ export const configurationPatchSchema = z.object({
 export type ConfigurationPatch = z.infer<typeof configurationPatchSchema>;
 
 export function normalizeConfigurationValues(values: unknown): ConfigurationValues {
-  return configurationSchema.parse({ ...CONFIGURATION_DEFAULTS, ...(values && typeof values === "object" ? values : {}) });
+  // Stored rows MUST parse tolerantly: the default (strip) object drops retired
+  // keys while still type-checking every known key, and the merge below fills
+  // keys added after the row was written from CONFIGURATION_DEFAULTS.
+  // PATCH input keeps strict validation via configurationPatchSchema.
+  return storedConfigurationSchema.parse({ ...CONFIGURATION_DEFAULTS, ...(values && typeof values === "object" ? values : {}) });
 }
 
 export function assertConfigurationPermission(auth: AuthContext, current?: ConfigurationValues) {
