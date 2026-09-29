@@ -18,11 +18,14 @@ export type ServerLogContext = {
   reportId?: string;
   attemptCount?: number;
   lockoutMinutes?: number;
+  casesScanned?: number;
+  eligibleRecipients?: number;
+  created?: number;
 };
 
 const safeContextKeys = new Set<keyof ServerLogContext>([
   "area", "route", "code", "reason", "outcome", "status", "errorType", "issueCode", "userId", "caseId", "lineId", "checkId",
-  "notificationId", "outboxId", "reportId", "attemptCount", "lockoutMinutes",
+  "notificationId", "outboxId", "reportId", "attemptCount", "lockoutMinutes", "casesScanned", "eligibleRecipients", "created",
 ]);
 
 const secretAssignment = /\b(pin|session(?:[_ -]?token)?|invitation(?:[_ -]?token)?|invite(?:[_ -]?token)?|token|cookie|set-cookie|authorization|password|secret)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi;
