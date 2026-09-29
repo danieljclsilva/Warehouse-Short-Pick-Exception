@@ -365,19 +365,23 @@ button { color: inherit; }
 .check-workflow { width: 100%; max-width: 1100px; }
 .check-section { margin-top: 30px; }
 .check-section h2 { margin: 0 0 13px; font-size: 17px; font-weight: 680; letter-spacing: -.025em; }
-.check-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(275px, 1fr)); gap: 14px; }
+.check-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(275px, 100%), 1fr)); gap: 14px; }
 .check-card { display: grid; align-content: start; gap: 14px; min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
-.check-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.check-card-head strong { font-size: 15px; }
-.check-card-head span { padding: 4px 8px; border-radius: 5px; color: var(--green); background: var(--green-wash); font-size: 11px; font-weight: 650; }
-.check-card-item { display: flex; justify-content: space-between; gap: 8px; margin: 0; color: var(--ink-soft); }
+.check-card-head { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.check-card-head strong { min-width: 0; flex: 1 1 auto; font-size: 15px; overflow-wrap: anywhere; }
+.check-card-head span { max-width: 100%; flex: 0 1 auto; padding: 4px 8px; border-radius: 5px; color: var(--green); background: var(--green-wash); font-size: 11px; font-weight: 650; overflow-wrap: anywhere; }
+.check-card-item { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin: 0; color: var(--ink-soft); }
+.check-card-item strong, .check-card-item span { min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
 .check-card-item strong { color: var(--ink); }
 .check-card .primary-button { margin: 0; }
-.check-assign-row, .check-card-actions, .case-retrieval-actions, .case-stage-actions { display: flex; gap: 9px; }
-.check-assign-row > *, .check-card-actions > *, .case-retrieval-actions > *, .case-stage-actions > * { min-width: 0; flex: 1; }
-.check-worker-select { min-height: 48px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--input); color: var(--ink); }
-.check-complete-form { display: grid; gap: 12px; }
-.check-complete-form select { min-height: 48px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--input); color: var(--ink); }
+.check-assign-row, .check-card-actions, .case-retrieval-actions, .case-stage-actions { display: flex; flex-wrap: wrap; gap: 9px; }
+.check-assign-row > *, .check-card-actions > *, .case-retrieval-actions > *, .case-stage-actions > * { min-width: 0; flex: 1; max-width: 100%; }
+@media (max-width: 480px) {
+  .check-assign-row > *, .check-card-actions > *, .case-retrieval-actions > *, .case-stage-actions > * { flex-basis: 140px; }
+}
+.check-worker-select { width: 100%; min-width: 0; max-width: 100%; min-height: 48px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--input); color: var(--ink); text-overflow: ellipsis; overflow: hidden; }
+.check-complete-form { display: grid; gap: 12px; min-width: 0; }
+.check-complete-form select { min-width: 0; max-width: 100%; min-height: 48px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--input); color: var(--ink); text-overflow: ellipsis; overflow: hidden; }
 .check-notice { margin: 0 0 15px; padding: 11px 13px; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--green); background: var(--green-wash); }
 .check-empty { margin: 0; padding: 19px; border: 1px dashed var(--line-strong); border-radius: 8px; color: var(--muted); background: var(--surface); }
 .case-discovered-location { width: 100%; margin: 0; color: var(--ink-soft); font-size: 12px; }
