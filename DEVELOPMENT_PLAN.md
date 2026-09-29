@@ -159,3 +159,10 @@ Wave 0 (2026-09-28) delivered docs-only contracts: PRD amendments plus the bindi
 
 - Full suite: 26 files / 162 tests pass; `typecheck` clean; `lint` clean; production `build` clean; `db:check` clean; fresh-DB (0000→0018) + upgrade-path (0017→0018, pre-0017→0017) migration proofs pass.
 - Still pending warehouse acceptance: real-iPhone Safari + installed-PWA double-scan on the warehouse label, TEST deployment with populated visual QA, exact notification URL → case after reload on device, state/override/repair/message/location sign-off per the contract acceptance matrix.
+
+## Field-feedback deployment (2026-09-29, `main` @ `b9239a3`)
+
+- Pre-deploy: full gates green (26 files / 162 tests, typecheck, lint, production build, `db:check`); fresh + upgrade migration proofs pass. Production backup verified via scheduled run `postgres-logical/20260929T021752Z-7c5b3111e264.dump.age` (103,922 bytes, uploaded + verified + retention completed) before the schema migration.
+- TEST: `744454bc` SUCCESS on commit `b9239a3` (`main`); migrations applied; `/api/health` 200; `/api/environment` reports test; new endpoints return 401 unauthenticated as expected.
+- PROD: `e606be12` SUCCESS on commit `b9239a3` (`main`); pre-deploy `npm run db:migrate` applied 0017 + 0018 against production; `/api/health` 200 `{status:ok,database:ok}`; login page renders; analytics/checks endpoints enforce auth (401).
+- Waived by operator: real-iPhone Safari/PWA scan acceptance skipped; mobile-authenticated screenshots not captured. Contract items depending on a physical device remain unverified.
