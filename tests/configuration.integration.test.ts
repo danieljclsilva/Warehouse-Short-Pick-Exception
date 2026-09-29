@@ -244,7 +244,7 @@ describeDatabase("Phase 6 configuration versioning and snapshots against Postgre
     expect(assistantId).toBeTruthy();
   });
 
-  it("versions the legacy check-capacity route and applies capacity from the case snapshot", async () => {
+  it("versions the legacy check-capacity route and applies current capacity while snapshots stay intact", async () => {
     const before = await currentConfiguration();
     const legacyRead = await getCapacityRoute(request("/api/admin/check-capacity", "GET", undefined, leaderCookie));
     expect(legacyRead.status).toBe(200);
@@ -254,6 +254,7 @@ describeDatabase("Phase 6 configuration versioning and snapshots against Postgre
     const cappedCase = await createCase("legacy-old-capacity");
     const cappedSecond = await addSecondLine(cappedCase.id, "legacy-old-capacity");
     expect(cappedCase.configurationVersionId).toBe(before.versionId);
+    const [snapshotBefore] = await getDb().select().from(configurationVersions).where(eq(configurationVersions.id, before.versionId));
     const changed = await setCapacityRoute(request("/api/admin/check-capacity", "PUT", { maxSimultaneousChecksPerCase: desired }, leaderCookie));
     expect(changed.status).toBe(200);
     const after = await currentConfiguration();
@@ -262,10 +263,16 @@ describeDatabase("Phase 6 configuration versioning and snapshots against Postgre
     expect(audit?.changedValues).toMatchObject({ MAX_SIMULTANEOUS_CHECKS_PER_CASE: desired });
     const [legacyLog] = await getDb().select().from(auditLog).where(and(eq(auditLog.action, "CONFIGURATION_CHANGED"), eq(auditLog.actorUserId, (await getDb().select({ id: users.id }).from(users).where(eq(users.identifier, `configuration-${suffix}-leader`)).limit(1))[0]!.id))).orderBy(desc(auditLog.createdAt)).limit(1);
     expect(legacyLog?.details).toMatchObject({ source: "legacy_check_capacity_endpoint", newVersion: after.version });
+    // The historical snapshot row is immutable: the version the case was created under is unchanged.
+    const [snapshotAfter] = await getDb().select().from(configurationVersions).where(eq(configurationVersions.id, before.versionId));
+    expect(snapshotAfter).toMatchObject({ version: before.version, values: snapshotBefore!.values });
+    const [storedCase] = await getDb().select().from(orderCases).where(eq(orderCases.id, cappedCase.id));
+    expect(storedCase.configurationVersionId).toBe(before.versionId);
 
     expect((await claimRoute(request(`/api/checks/${cappedCase.taskId}/claim`, "POST", undefined, checkerOneCookie), { params: Promise.resolve({ id: cappedCase.taskId }) })).status).toBe(200);
+    // Claim capacity is operational: the old-snapshot case follows the CURRENT cap, not its snapshot.
     const oldCapacityClaim = await claimRoute(request(`/api/checks/${cappedSecond.taskId}/claim`, "POST", undefined, checkerTwoCookie), { params: Promise.resolve({ id: cappedSecond.taskId }) });
-    expect(oldCapacityClaim.status).toBe(before.values.MAX_SIMULTANEOUS_CHECKS_PER_CASE === 1 ? 409 : 200);
+    expect(oldCapacityClaim.status).toBe(desired === 1 ? 409 : 200);
 
     const newVersionCase = await createCase("new-capacity");
     const newVersionSecond = await addSecondLine(newVersionCase.id, "new-capacity");

@@ -12,6 +12,7 @@ import { POST as responsibilityRoute } from "../src/app/api/cases/[id]/responsib
 import { POST as stageRoute } from "../src/app/api/cases/[id]/stage/route";
 import { POST as completeCheckRoute } from "../src/app/api/checks/[id]/complete/route";
 import { GET as notificationsRoute } from "../src/app/api/notifications/route";
+import { POST as readAllRoute } from "../src/app/api/notifications/read-all/route";
 import { POST as readRoute } from "../src/app/api/notifications/[id]/read/route";
 import { GET as preferencesRoute, PATCH as updatePreferencesRoute } from "../src/app/api/notifications/preferences/route";
 
@@ -130,5 +131,81 @@ describeDatabase("Phase 5 notification routing and isolation", () => {
     expect((await resolverNotifications.json()).notifications).toEqual(expect.arrayContaining([expect.objectContaining({ type: "RESPONSIBILITY_NEW_LOCATION", caseId: item.id, shortPickLineId: item.lines[0]!.id })]));
     const checkerNotifications = await notificationsRoute(request("/api/notifications", "GET", undefined, checkerTwoCookie));
     expect((await checkerNotifications.json()).notifications).not.toEqual(expect.arrayContaining([expect.objectContaining({ type: "RESPONSIBILITY_NEW_LOCATION", caseId: item.id, shortPickLineId: item.lines[0]!.id })]));
+  });
+});
+
+describeDatabase("Wave 1 mark-all-read and >100-row recipient isolation", () => {
+  const suffix = randomUUID().replaceAll("-", "").slice(0, 10);
+  const userIds: string[] = [];
+  let readerCookie = "";
+  let readerId = "";
+  let otherCookie = "";
+
+  async function makeUser(role: Role, name: string) {
+    const [user] = await getDb().insert(users).values({ identifier: `notify-wave1-${suffix}-${name}`, displayName: name,
+      pinHash: await hashPin("123456"), role, permissions: defaultPermissions(role) }).returning();
+    userIds.push(user!.id);
+    return user!;
+  }
+
+  function seedUnread(recipientUserId: string, count: number, readCount = 0) {
+    return getDb().insert(notifications).values(Array.from({ length: count }, (_, index) => ({
+      recipientUserId, type: "NEW_SHORT_PICK" as const, caseId: null, shortPickLineId: null,
+      payload: { orderNumber: `wave1-${suffix}-${index}` }, dedupeKey: `wave1-${suffix}-${recipientUserId}-${index}`,
+      readAt: index < readCount ? new Date("2026-09-01T00:00:00Z") : null,
+    })));
+  }
+
+  async function unreadCount(cookie: string) {
+    const response = await notificationsRoute(request("/api/notifications", "GET", undefined, cookie));
+    expect(response.status).toBe(200);
+    return (await response.json()).unreadCount as number;
+  }
+
+  beforeAll(async () => {
+    const reader = await makeUser("TEAM_LEADER", "reader");
+    const other = await makeUser("TEAM_LEADER", "other");
+    readerId = reader.id;
+    readerCookie = (await createSession(reader.id)).cookie.split(";")[0]!;
+    otherCookie = (await createSession(other.id)).cookie.split(";")[0]!;
+  });
+
+  afterAll(async () => {
+    const db = getDb();
+    if (userIds.length) {
+      await db.delete(notificationPreferences).where(inArray(notificationPreferences.userId, userIds));
+      await db.delete(notifications).where(inArray(notifications.recipientUserId, userIds));
+      await db.delete(auditLog).where(inArray(auditLog.actorUserId, userIds));
+      await db.delete(sessions).where(inArray(sessions.userId, userIds));
+      await db.delete(users).where(inArray(users.id, userIds));
+    }
+    await closeDb();
+  });
+
+  it("requires authentication", async () => {
+    expect((await readAllRoute(new Request("http://localhost/api/notifications/read-all", { method: "POST" }))).status).toBe(401);
+  });
+
+  it("marks every unread row past the 100-row list limit and stays idempotent", async () => {
+    await seedUnread(readerId, 120, 3);
+    expect(await unreadCount(readerCookie)).toBe(117);
+    const first = await readAllRoute(request("/api/notifications/read-all", "POST", undefined, readerCookie));
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ updated: 117, unreadCount: 0 });
+    const second = await readAllRoute(request("/api/notifications/read-all", "POST", undefined, readerCookie));
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual({ updated: 0, unreadCount: 0 });
+  });
+
+  it("leaves another recipient untouched and keeps one-at-a-time read", async () => {
+    const other = (await getDb().select({ id: users.id }).from(users).where(eq(users.identifier, `notify-wave1-${suffix}-other`)))[0]!;
+    await seedUnread(other.id, 4);
+    const readerResult = await readAllRoute(request("/api/notifications/read-all", "POST", undefined, readerCookie));
+    expect(await readerResult.json()).toEqual({ updated: 0, unreadCount: 0 });
+    expect(await unreadCount(otherCookie)).toBe(4);
+    const list = (await (await notificationsRoute(request("/api/notifications", "GET", undefined, otherCookie))).json()).notifications as Array<{ id: string; shortPickLineId: string | null; caseId: string | null }>;
+    expect(list[0]).toMatchObject({ caseId: null, shortPickLineId: null });
+    expect((await readRoute(request(`/api/notifications/${list[0]!.id}/read`, "POST", undefined, otherCookie), { params: Promise.resolve({ id: list[0]!.id }) })).status).toBe(200);
+    expect(await unreadCount(otherCookie)).toBe(3);
   });
 });

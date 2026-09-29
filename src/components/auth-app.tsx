@@ -157,6 +157,163 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
   }
   return <svg {...common}><path d="M10 17l5-5-5-5M15 12H4M20 4v16" /></svg>;
 }
+type DeepLinkLine = {
+  id: string;
+  location?: string | null;
+  originalLocation?: string | null;
+  sku?: string | null;
+  quantity?: number | null;
+  missingQuantity?: number | null;
+  state?: string | null;
+  retrievalState?: string | null;
+  discoveredLocation?: string | null;
+  reporterName?: string | null;
+  checkerName?: string | null;
+  retrieverName?: string | null;
+  replenishmentState?: string | null;
+  replenishmentNote?: string | null;
+  replenishmentActorName?: string | null;
+  nextActionCode?: string | null;
+  blockingReasonCode?: string | null;
+};
+
+type DeepLinkMessage = { id: string; message: string; authorName: string; createdAt: string };
+
+type DeepLinkCase = {
+  id: string;
+  orderNumber: string;
+  phase: string;
+  pickerName?: string | null;
+  responsibleName?: string | null;
+  closedAt?: string | null;
+  resolvedAt?: string | null;
+  lines?: DeepLinkLine[] | null;
+  messages?: DeepLinkMessage[] | null;
+};
+
+export function DeepCaseView({ tr, data, lineId, canViewMessages, status, onClose, headingRef, currentLineRef }: {
+  tr: (key: MessageKey, values?: Record<string, string>) => string;
+  data: DeepLinkCase | null;
+  lineId: string | null;
+  canViewMessages: boolean;
+  status: "loading" | "ready" | "missing" | "forbidden" | "failed";
+  onClose: () => void;
+  headingRef: React.RefObject<HTMLHeadingElement | null>;
+  currentLineRef: React.RefObject<HTMLElement | null>;
+}) {
+  if (status === "loading") {
+    return (
+      <section className="deep-case-panel" aria-labelledby="deep-case-title" aria-busy="true">
+        <h2 id="deep-case-title" ref={headingRef} tabIndex={-1}>{tr("caseDeepLinkLoading")}</h2>
+      </section>
+    );
+  }
+
+  if (status !== "ready" || !data) {
+    const messageKey = status === "missing" ? "caseDeepLinkNotFound" : status === "forbidden" ? "caseDeepLinkForbidden" : "caseLoadError";
+    return (
+      <section className="deep-case-panel" aria-labelledby="deep-case-title">
+        <h2 id="deep-case-title" ref={headingRef} tabIndex={-1}>{tr("orderLabel")} …</h2>
+        <p className="profile-message profile-error" role="alert">{tr(messageKey)}</p>
+        <div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose}>{tr("caseDeepLinkClose")}</button></div>
+      </section>
+    );
+  }
+
+  const closed = data.phase === "CLOSED" || Boolean(data.closedAt || data.resolvedAt);
+  const lines = data.lines ?? [];
+  const visibleMessages = canViewMessages && Array.isArray(data.messages) ? data.messages : [];
+  return (
+    <section className="deep-case-panel" aria-labelledby="deep-case-title">
+      <div className="deep-case-head">
+        <h2 id="deep-case-title" ref={headingRef} tabIndex={-1}>{tr("orderLabel")} {data.orderNumber}</h2>
+        {closed ? <span className="invite-status status-muted">{tr("caseClosedBadge")}</span> : null}
+      </div>
+      <p className="deep-case-meta">{data.phase === "STAGED" ? tr("phaseStaged") : data.phase === "CLOSED" ? tr("caseClosed") : tr("phasePicking")} · {data.pickerName || tr("unknownPicker")}</p>
+      {closed ? <p className="profile-message" role="note">{tr("caseClosedReadOnlyNote")}</p> : null}
+      {lines.length ? (
+        <ul className="deep-case-lines">
+          {lines.map((line) => {
+            const current = lineId !== null && line.id === lineId;
+            const quantity = line.missingQuantity ?? line.quantity;
+            return (
+              <li key={line.id}>
+                <article className="deep-case-line" data-current={current ? "true" : "false"} aria-current={current ? "true" : undefined} ref={current ? currentLineRef : undefined}>
+                  <div className="deep-case-line-top"><strong>{line.originalLocation || line.location || "—"}</strong><span>{line.sku || "—"} ×{typeof quantity === "number" ? quantity : "—"}</span></div>
+                  <dl className="deep-case-facts">
+                    <div><dt>{tr("lineOriginalLocation")}</dt><dd>{line.originalLocation || line.location || "—"}</dd></div>
+                    <div><dt>{tr("lineKnownNewLocation")}</dt><dd>{line.discoveredLocation || tr("lineNoKnownNewLocation")}</dd></div>
+                    {line.reporterName ? <div><dt>{tr("lineReporter")}</dt><dd>{line.reporterName}</dd></div> : null}
+                    {line.checkerName ? <div><dt>{tr("lineChecker")}</dt><dd>{line.checkerName}</dd></div> : null}
+                    {line.retrieverName ? <div><dt>{tr("lineRetriever")}</dt><dd>{line.retrieverName}</dd></div> : null}
+                    {line.replenishmentState ? <div><dt>{tr("lineReplenishmentState")}</dt><dd>{tr(`replenishmentState${line.replenishmentState}` as MessageKey)}{line.replenishmentNote ? ` · ${line.replenishmentNote}` : ""}{line.replenishmentActorName ? ` · ${line.replenishmentActorName}` : ""}</dd></div> : null}
+                    {line.nextActionCode ? <div><dt>{tr("lineNextStep")}</dt><dd>{tr(`nextAction${line.nextActionCode}` as MessageKey)}</dd></div> : null}
+                    {line.blockingReasonCode ? <div><dt>{tr("attentionLevelLabel")}</dt><dd>{tr(`blockingReason${line.blockingReasonCode}` as MessageKey)}</dd></div> : null}
+                  </dl>
+                </article>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p className="profile-empty">{tr("noItemsYet")}</p>
+      )}
+      {visibleMessages.length > 0 ? (
+        <section className="deep-case-messages" aria-label={tr("caseTimeline")}>
+          <h3>{tr("caseTimeline")}</h3>
+          <ol>
+            {visibleMessages.map((entry) => (
+              <li key={entry.id}><span><strong>{entry.authorName}</strong> · </span><span>{entry.message}</span></li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
+      <div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose}>{tr("caseDeepLinkClose")}</button></div>
+    </section>
+  );
+}
+
+function DeepCasePanel({ tr, caseId, lineId, canViewMessages, onClose }: {
+  tr: (key: MessageKey, values?: Record<string, string>) => string;
+  caseId: string;
+  lineId: string | null;
+  canViewMessages: boolean;
+  onClose: () => void;
+}) {
+  const [data, setData] = useState<DeepLinkCase | null>(null);
+  const [status, setStatus] = useState<"loading" | "ready" | "missing" | "forbidden" | "failed">("loading");
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const currentLineRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setStatus("loading");
+      setData(null);
+    });
+    fetch(`/api/cases/${encodeURIComponent(caseId)}`, { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        const envelope = (await response.json().catch(() => ({}))) as { case?: DeepLinkCase };
+        if (cancelled) return;
+        if (response.status === 404) { setStatus("missing"); return; }
+        if (response.status === 403) { setStatus("forbidden"); return; }
+        const body = envelope.case;
+        if (!response.ok || !body?.id) { setStatus("failed"); return; }
+        setData({ ...body, lines: Array.isArray(body.lines) ? body.lines : [] });
+        setStatus("ready");
+      })
+      .catch(() => { if (!cancelled) setStatus("failed"); });
+    return () => { cancelled = true; };
+  }, [caseId]);
+
+  useEffect(() => {
+    if (status === "ready" && lineId) currentLineRef.current?.scrollIntoView({ block: "nearest" });
+    if (status !== "loading") headingRef.current?.focus();
+  }, [status, lineId]);
+
+  return <DeepCaseView tr={tr} data={data} lineId={lineId} canViewMessages={canViewMessages} status={status} onClose={onClose} headingRef={headingRef} currentLineRef={currentLineRef} />;
+}
 
 export function AuthApp({ initialInviteToken = "", initialView = "login" }: AuthAppProps) {
   const router = useRouter();
@@ -188,6 +345,8 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
   const [inviteError, setInviteError] = useState("");
   const [unreadCount, setUnreadCount] = useState(0);
   const [pendingPhotoCount, setPendingPhotoCount] = useState(0);
+  const [deepCaseId, setDeepCaseId] = useState<string | null>(null);
+  const [deepLineId, setDeepLineId] = useState<string | null>(null);
   const { messages: t } = getMessages(locale);
   const tr = useCallback((key: MessageKey, values?: Record<string, string>) => translate(t, key, values), [t]);
   const localeRef = useRef<Locale>(locale);
@@ -236,9 +395,16 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
               localeRef.current = serverLocale;
             }
             const firstSection = navigationFor(body.user).at(0);
+            const params = new URLSearchParams(window.location.search);
+            const deepCase = window.location.pathname === "/" ? params.get("case") : null;
+            const deepLine = window.location.pathname === "/" ? params.get("line") : null;
             const requestedSection = window.location.pathname === "/"
-              && new URLSearchParams(window.location.search).get("section") === "notifications";
-            setActiveSection(requestedSection ? "notifications" : firstSection?.key ?? "workspace");
+              && params.get("section") === "notifications";
+            if (deepCase) {
+              setDeepCaseId(deepCase);
+              setDeepLineId(deepLine);
+              setActiveSection(firstSection?.key ?? "workspace");
+            } else setActiveSection(requestedSection ? "notifications" : firstSection?.key ?? "workspace");
             setView("workspace");
             if (requestedSection) router.replace("/", { scroll: false });
           }
@@ -297,13 +463,25 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
   const canUsePickerWorkflow = user?.role === "PICKER" && Boolean(user.permissions.some((permission) => permission === "REPORT_SHORT_PICK" || permission === "VIEW_OWN_CASES"));
   const canOverrideDuplicateLine = Boolean(user?.permissions.includes("OVERRIDE_DUPLICATE_SHORT_PICK_LINE"));
   const assignableRoles = user ? inviteRolesByActor[user.role] ?? [] : [];
-  const notificationCaseDestination: MessageKey | null = allowedNavigation.some((item) => item.key === "openCases")
-    ? "openCases"
-    : canUsePickerWorkflow
-      ? "myWork"
-      : allowedNavigation.some((item) => item.key === "checks")
-        ? "checks"
-        : null;
+  const openCaseFromNotification = useCallback((caseId: string, lineId: string | null) => {
+    setDeepCaseId(caseId);
+    setDeepLineId(lineId);
+    router.replace(`/?case=${encodeURIComponent(caseId)}${lineId ? `&line=${encodeURIComponent(lineId)}` : ""}`, { scroll: false });
+  }, [router]);
+
+  const closeDeepCase = useCallback(() => {
+    setDeepCaseId(null);
+    setDeepLineId(null);
+    router.replace("/", { scroll: false });
+  }, [router]);
+
+  const selectSection = useCallback((section: MessageKey) => {
+    setDeepCaseId(null);
+    setDeepLineId(null);
+    setActiveSection(section);
+    setMobileNavOpen(false);
+    router.replace("/", { scroll: false });
+  }, [router]);
 
   const loadInvites = useCallback(async () => {
     try {
@@ -547,7 +725,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
               <button
                 key={item.key}
                 className={`nav-item${activeSection === item.key ? " nav-item-active" : ""}`}
-                onClick={() => { setActiveSection(item.key); setMobileNavOpen(false); }}
+                onClick={() => selectSection(item.key)}
                 aria-current={activeSection === item.key ? "page" : undefined}
               >
                 <Icon name={item.key} />
@@ -576,6 +754,9 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             <div className="topbar-actions"><ThemePicker tr={tr} /><LanguagePicker locale={locale} label={tr("language")} onChange={changeLocale} /><span className="avatar avatar-small" aria-hidden="true">{user.displayName.slice(0, 1).toUpperCase()}</span></div>
           </header>
           <main className="workspace-content">
+            {deepCaseId ? (
+              <DeepCasePanel tr={tr} caseId={deepCaseId} lineId={deepLineId} canViewMessages={user.permissions.includes("VIEW_CASE_MESSAGES")} onClose={closeDeepCase} />
+            ) : null}
             {activeSection === "configuration" && allowedNavigation.some((item) => item.key === "configuration") ? (
               <ConfigurationPanel tr={tr} locale={locale} role={user.role} />
             ) : activeSection === "profile" ? (
@@ -598,8 +779,8 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
                 tr={tr}
                 locale={locale}
                 canManagePreferences={user.permissions.includes("VIEW_ALL_OPEN_CASES")}
-                onOpenCase={notificationCaseDestination ? () => setActiveSection(notificationCaseDestination) : undefined}
-                onReviewPhotos={user.permissions.includes("APPROVE_PROFILE_PHOTO") || user.role === "ADMIN" ? () => setActiveSection("users") : undefined}
+                onOpenCase={(caseId, lineId) => openCaseFromNotification(caseId, lineId ?? null)}
+                onReviewPhotos={user.permissions.includes("APPROVE_PROFILE_PHOTO") || user.role === "ADMIN" ? () => selectSection("users") : undefined}
                 onUnreadChange={setUnreadCount}
               />
             ) : activeSection === "reports" && allowedNavigation.some((item) => item.key === "reports") ? (

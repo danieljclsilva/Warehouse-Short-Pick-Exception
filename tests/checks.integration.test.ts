@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { closeDb, getDb } from "../src/db";
 import { appSettings, auditLog, caseEvents, caseMessages, checkTasks, orderCases, sessions, shortPickLines, users } from "../src/db/schema";
@@ -19,6 +19,7 @@ import { GET as listChecksRoute } from "../src/app/api/checks/route";
 import { GET as caseDetailRoute } from "../src/app/api/cases/[id]/route";
 import { POST as messageRoute } from "../src/app/api/cases/[id]/messages/route";
 import { getCurrentConfiguration } from "../src/server/configuration";
+import { PATCH as patchConfigurationRoute } from "../src/app/api/admin/configuration/route";
 
 const describeDatabase = process.env.DATABASE_URL ? describe : describe.skip;
 const request = (path: string, method: string, body?: unknown, cookie?: string) => new Request(`http://localhost${path}`, {
@@ -47,7 +48,6 @@ describeDatabase("Phase 3 checking, responsibility and staging against PostgreSQ
     userIds.push(user!.id);
     return user!;
   }
-
   async function makeCase(orderSuffix: string) {
     const response = await createCaseRoute(request("/api/cases", "POST", {
       orderNumber: `9${Date.now()}${orderSuffix}`, confirmedHistoricalCaseIds: [],
@@ -149,8 +149,8 @@ describeDatabase("Phase 3 checking, responsibility and staging against PostgreSQ
     const [firstState] = await getDb().select().from(checkTasks).where(eq(checkTasks.id, item.taskId));
     const pendingTask = firstState.status === "AVAILABLE" ? item.taskId : secondTask!.id;
     const pendingCookie = pendingTask === item.taskId ? checkerOneCookie : checkerTwoCookie;
-    // The legacy endpoint creates a new immutable configuration version. The existing case keeps its original capacity of one.
-    expect((await claimRoute(request(`/api/checks/${pendingTask}/claim`, "POST", undefined, pendingCookie), { params: Promise.resolve({ id: pendingTask }) })).status).toBe(409);
+    // Capacity is operational configuration: an open case created under an older snapshot follows the current cap.
+    expect((await claimRoute(request(`/api/checks/${pendingTask}/claim`, "POST", undefined, pendingCookie), { params: Promise.resolve({ id: pendingTask }) })).status).toBe(200);
 
     // A case created after the change receives capacity two and can claim both lines.
     const newCase = await makeCase("22");
@@ -168,8 +168,8 @@ describeDatabase("Phase 3 checking, responsibility and staging against PostgreSQ
     const [thirdTask] = await getDb().select().from(checkTasks).where(eq(checkTasks.shortPickLineId, thirdLine.id));
     expect((await claimRoute(request(`/api/checks/${thirdTask!.id}/claim`, "POST", undefined, checkerOneCookie), { params: Promise.resolve({ id: thirdTask!.id }) })).status).toBe(409);
     expect((await setCapacityRoute(request("/api/admin/check-capacity", "PUT", { maxSimultaneousChecksPerCase: null }, leaderCookie))).status).toBe(200);
-    // The case was created under capacity two; changing the current setting to unlimited does not migrate it.
-    expect((await claimRoute(request(`/api/checks/${thirdTask!.id}/claim`, "POST", undefined, checkerOneCookie), { params: Promise.resolve({ id: thirdTask!.id }) })).status).toBe(409);
+    // Current operational configuration is read at claim time, including for cases created under older snapshots.
+    expect((await claimRoute(request(`/api/checks/${thirdTask!.id}/claim`, "POST", undefined, checkerOneCookie), { params: Promise.resolve({ id: thirdTask!.id }) })).status).toBe(200);
   });
 
   it("keeps assigned checks unclaimable and records failed completion for a later retry", async () => {
@@ -200,6 +200,97 @@ describeDatabase("Phase 3 checking, responsibility and staging against PostgreSQ
     expect(record.pickingUserId).toBe(pickerId);
     expect(line.currentResponsibleUserId).toBe(checkerTwoId);
   });
+  it("returns every available check through cursor pages with a total", async () => {
+    for (let index = 0; index < 105; index += 1) await makeCase(String(index).padStart(3, "0"));
+    // Same-millisecond page-boundary fixture: four rows straddling the page-1 cursor share one
+    // millisecond with distinct microseconds. A cursor keeps millisecond ISO precision, so the
+    // keyset ordering MUST truncate to the same precision or rows between the truncated cursor
+    // and the full-precision cursor row are skipped.
+    const boundary = await getDb().select({ id: checkTasks.id, createdAt: checkTasks.createdAt }).from(checkTasks)
+      .innerJoin(shortPickLines, eq(checkTasks.shortPickLineId, shortPickLines.id))
+      .innerJoin(orderCases, eq(shortPickLines.caseId, orderCases.id))
+      .where(and(eq(checkTasks.status, "AVAILABLE"), eq(shortPickLines.state, "OPEN"), ne(orderCases.phase, "CLOSED")))
+      .orderBy(desc(sql`date_trunc('milliseconds', ${checkTasks.createdAt})`), desc(checkTasks.id)).limit(60);
+    expect(boundary).toHaveLength(60);
+    const anchor = new Date(Math.floor(new Date(boundary[49]!.createdAt!).getTime())).toISOString();
+    const cluster = [boundary[48]!, boundary[49]!, boundary[50]!, boundary[51]!];
+    for (const [offset, row] of cluster.entries()) {
+      await getDb().update(checkTasks).set({ createdAt: new Date(new Date(anchor).getTime() + offset) }).where(eq(checkTasks.id, row.id));
+    }
+    const first = await listChecksRoute(request("/api/checks?scope=available&limit=50", "GET", undefined, assistantCookie));
+    expect(first.status).toBe(200);
+    const firstBody = await first.json() as { items: Array<{ id: string }>; nextCursor: string | null; total: number; checks: Array<{ id: string }> };
+    expect(firstBody.items).toHaveLength(50);
+    expect(firstBody.checks).toHaveLength(50);
+    expect(firstBody.total).toBeGreaterThanOrEqual(105);
+    expect(firstBody.nextCursor).toEqual(expect.any(String));
+    const seen = firstBody.items.map((item) => item.id);
+    let cursor = firstBody.nextCursor;
+    let pages = 1;
+    while (cursor) {
+      const response = await listChecksRoute(request(`/api/checks?scope=available&limit=50&cursor=${encodeURIComponent(cursor)}`, "GET", undefined, assistantCookie));
+      expect(response.status).toBe(200);
+      const body = await response.json() as { items: Array<{ id: string }>; nextCursor: string | null; total: number };
+      expect(body.total).toBe(firstBody.total);
+      seen.push(...body.items.map((item) => item.id));
+      cursor = body.nextCursor;
+      pages += 1;
+    }
+    expect(pages).toBeGreaterThanOrEqual(3);
+    expect(seen).toHaveLength(firstBody.total);
+    expect(new Set(seen).size).toBe(firstBody.total);
+  });
+  it("completes FOUND_AT_ORIGINAL with COMPLETE_CHECK only and routes retrieval", async () => {
+    const item = await makeCase("991");
+    expect((await claimRoute(request(`/api/checks/${item.taskId}/claim`, "POST", undefined, checkerOneCookie), { params: Promise.resolve({ id: item.taskId }) })).status).toBe(200);
+    const completed = await completeRoute(request(`/api/checks/${item.taskId}/complete`, "POST", { code: "FOUND_AT_ORIGINAL" }, checkerOneCookie), { params: Promise.resolve({ id: item.taskId }) });
+    expect(completed.status).toBe(200);
+    const [line] = await getDb().select().from(shortPickLines).where(eq(shortPickLines.id, item.lineId));
+    expect(line).toMatchObject({ state: "FOUND", discoveredLocation: null, retrievalState: "PENDING", retrievalResponsibleUserId: pickerId });
+    const events = await getDb().select().from(caseEvents).where(eq(caseEvents.caseId, item.caseId));
+    expect(events.map((event) => event.eventType)).toEqual(expect.arrayContaining(["CHECK_COMPLETED", "FOUND_AT_ORIGINAL_VERIFIED", "RETRIEVAL_ASSIGNED"]));
+    const logs = await getDb().select().from(auditLog).where(and(eq(auditLog.actorUserId, checkerOneId), eq(auditLog.action, "CHECK_COMPLETED")));
+    expect(logs.some((log) => log.details.code === "FOUND_AT_ORIGINAL")).toBe(true);
+  });
+  it("completes under the case snapshot while claims follow the current capacity", async () => {
+    const current = await getCurrentConfiguration();
+    const withFao = current.values.ALLOWED_RESOLUTION_CODES.includes("FOUND_AT_ORIGINAL")
+      ? [...current.values.ALLOWED_RESOLUTION_CODES]
+      : [...current.values.ALLOWED_RESOLUTION_CODES, "FOUND_AT_ORIGINAL" as const];
+    const withoutFao = withFao.filter((code) => code !== "FOUND_AT_ORIGINAL");
+    expect(withoutFao.length).toBeGreaterThan(0);
+    const base = await getCurrentConfiguration();
+    expect((await patchConfigurationRoute(request("/api/admin/configuration", "PATCH",
+      { expectedVersion: base.version, values: { ALLOWED_RESOLUTION_CODES: withFao, MAX_SIMULTANEOUS_CHECKS_PER_CASE: 2 } }, leaderCookie))).status).toBe(200);
+    // Old case pinned to a snapshot allowing FOUND_AT_ORIGINAL; current capacity 2 governs claims.
+    const oldCase = await makeCase("9910");
+    const oldSecond = await addLineRoute(request(`/api/cases/${oldCase.caseId}/lines`, "POST", { location: "02.snap.1", sku: "sku-snap-1", quantity: 1 }, pickerCookie), { params: Promise.resolve({ id: oldCase.caseId }) });
+    expect(oldSecond.status).toBe(201);
+    const oldSecondLine = (await oldSecond.json()).line as { id: string };
+    const [oldSecondTask] = await getDb().select().from(checkTasks).where(eq(checkTasks.shortPickLineId, oldSecondLine.id));
+    expect((await claimRoute(request(`/api/checks/${oldCase.taskId}/claim`, "POST", undefined, checkerOneCookie), { params: Promise.resolve({ id: oldCase.taskId }) })).status).toBe(200);
+    expect((await claimRoute(request(`/api/checks/${oldSecondTask!.id}/claim`, "POST", undefined, checkerTwoCookie), { params: Promise.resolve({ id: oldSecondTask!.id }) })).status).toBe(200);
+    // Narrow the current configuration: forbid FOUND_AT_ORIGINAL and cap capacity at 1.
+    const narrowedBase = await getCurrentConfiguration();
+    expect((await patchConfigurationRoute(request("/api/admin/configuration", "PATCH",
+      { expectedVersion: narrowedBase.version, values: { ALLOWED_RESOLUTION_CODES: withoutFao, MAX_SIMULTANEOUS_CHECKS_PER_CASE: 1 } }, leaderCookie))).status).toBe(200);
+    // Snapshot still governs completion: the old case completes FOUND_AT_ORIGINAL though current forbids it.
+    expect((await completeRoute(request(`/api/checks/${oldCase.taskId}/complete`, "POST", { code: "FOUND_AT_ORIGINAL" }, checkerOneCookie), { params: Promise.resolve({ id: oldCase.taskId }) })).status).toBe(200);
+    // Current capacity governs claims on the old snapshot case: one active check remains, cap is 1.
+    const oldThird = await addLineRoute(request(`/api/cases/${oldCase.caseId}/lines`, "POST", { location: "03.snap.1", sku: "sku-snap-2", quantity: 1 }, pickerCookie), { params: Promise.resolve({ id: oldCase.caseId }) });
+    expect(oldThird.status).toBe(201);
+    const oldThirdLine = (await oldThird.json()).line as { id: string };
+    const [oldThirdTask] = await getDb().select().from(checkTasks).where(eq(checkTasks.shortPickLineId, oldThirdLine.id));
+    expect((await claimRoute(request(`/api/checks/${oldThirdTask!.id}/claim`, "POST", undefined, checkerOneCookie), { params: Promise.resolve({ id: oldThirdTask!.id }) })).status).toBe(409);
+    // A case created under the narrowed snapshot is forbidden from completing FOUND_AT_ORIGINAL.
+    const newCase = await makeCase("9911");
+    expect((await claimRoute(request(`/api/checks/${newCase.taskId}/claim`, "POST", undefined, checkerOneCookie), { params: Promise.resolve({ id: newCase.taskId }) })).status).toBe(200);
+    expect((await completeRoute(request(`/api/checks/${newCase.taskId}/complete`, "POST", { code: "FOUND_AT_ORIGINAL" }, checkerOneCookie), { params: Promise.resolve({ id: newCase.taskId }) })).status).toBe(400);
+    const restoreBase = await getCurrentConfiguration();
+    expect((await patchConfigurationRoute(request("/api/admin/configuration", "PATCH",
+      { expectedVersion: restoreBase.version, values: { ALLOWED_RESOLUTION_CODES: current.values.ALLOWED_RESOLUTION_CODES, MAX_SIMULTANEOUS_CHECKS_PER_CASE: current.values.MAX_SIMULTANEOUS_CHECKS_PER_CASE } }, leaderCookie))).status).toBe(200);
+  });
+
 
   it("requires explicit physical staging confirmation", async () => {
     const item = await makeCase("7");

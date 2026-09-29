@@ -167,6 +167,22 @@ export async function markNotificationRead(auth: AuthContext, notificationId: st
   return { id: updated.id, readAt: updated.readAt };
 }
 
+/**
+ * Marks every unread notification for the signed-in recipient read.
+ * Single UPDATE scoped to recipient + unread rows: atomic, idempotent, no row limit.
+ * Replenishment hook for domain owner: call insertNotification/insertResponsibilityNotification
+ * from the replenishment transaction with a REPLENISHMENT_* type (new enum values owned by domain).
+ */
+export async function markAllNotificationsRead(auth: AuthContext) {
+  const readAt = new Date();
+  const updated = await getDb().update(notifications).set({ readAt })
+    .where(and(eq(notifications.recipientUserId, auth.user.id), isNull(notifications.readAt)))
+    .returning({ id: notifications.id });
+  const unread = await getDb().select({ count: sql<number>`count(*)::int` }).from(notifications)
+    .where(and(eq(notifications.recipientUserId, auth.user.id), isNull(notifications.readAt)));
+  return { updated: updated.length, unreadCount: unread[0]?.count ?? 0 };
+}
+
 function requireMonitoringPermission(auth: AuthContext) {
   if (!hasAuthPermission(auth, "VIEW_ALL_OPEN_CASES")) throw new CaseApiError("CASE_ACCESS_DENIED", "Monitoring preferences require manager access", 403);
 }

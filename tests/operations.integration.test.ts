@@ -84,15 +84,16 @@ describeDatabase("Phase 4 operations against PostgreSQL", () => {
     expect(stored).toMatchObject({ phase: "STAGED", physicalState: "SHORT_PICK_HOLD", source: "ASSISTANT_MANUAL", pickingUserId: pickerId });
     const [task] = await getDb().select().from(checkTasks).where(eq(checkTasks.shortPickLineId, record.lines[0]!.id));
     expect(task.status).toBe("AVAILABLE");
-    const denied = await messageRoute(request(`/api/cases/${record.id}/messages`, "POST", { message: "Picker note" }, pickerCookie), { params: Promise.resolve({ id: record.id }) });
-    expect(denied.status).toBe(403);
+    const pickerNote = await messageRoute(request(`/api/cases/${record.id}/messages`, "POST", { message: "Picker note" }, pickerCookie), { params: Promise.resolve({ id: record.id }) });
+    expect(pickerNote.status).toBe(201);
     const note = await messageRoute(request(`/api/cases/${record.id}/messages`, "POST", { message: "Carton beside hold.", lineId: record.lines[0]!.id }, assistantCookie), { params: Promise.resolve({ id: record.id }) });
     expect(note.status).toBe(201);
-    const [saved] = await getDb().select().from(caseMessages).where(eq(caseMessages.caseId, record.id));
-    expect(saved).toMatchObject({ message: "Carton beside hold.", shortPickLineId: record.lines[0]!.id });
+    const saved = await getDb().select().from(caseMessages).where(eq(caseMessages.caseId, record.id));
+    expect(saved.map((row) => row.message)).toEqual(expect.arrayContaining(["Picker note", "Carton beside hold."]));
     const pickerDetail = await caseDetailRoute(request(`/api/cases/${record.id}`, "GET", undefined, pickerCookie), { params: Promise.resolve({ id: record.id }) });
     expect(pickerDetail.status).toBe(200);
-    expect((await pickerDetail.json()).case.messages).toEqual([]);
+    // Pickers read and write messages on accessible active cases; an unrelated picker stays denied (covered in cases access tests).
+    expect((await pickerDetail.json()).case.messages).toEqual(expect.arrayContaining([expect.objectContaining({ message: "Picker note" }), expect.objectContaining({ message: "Carton beside hold." })]));
     const assistantDetail = await caseDetailRoute(request(`/api/cases/${record.id}`, "GET", undefined, assistantCookie), { params: Promise.resolve({ id: record.id }) });
     expect((await assistantDetail.json()).case.messages).toEqual(expect.arrayContaining([expect.objectContaining({ message: "Carton beside hold." })]));
     const dashboard = await dashboardRoute(request("/api/operations/dashboard", "GET", undefined, assistantCookie));

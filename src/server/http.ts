@@ -17,7 +17,11 @@ export function handleRouteError(error: unknown) {
     else if (error.status >= 500) logServerEvent("error", "api.request.failed", { area: "api", code: error.code, status: error.status });
     return Response.json({ error: error.message, code: error.code, ...error.data }, { status: error.status });
   }
-  if (error instanceof ZodError) return jsonError(error.issues[0]?.message ?? "Invalid request", 400);
+  if (error instanceof ZodError) {
+    const reasonIssue = error.issues.find((issue) => issue.path.join(".") === "reason" || issue.path.join(".") === "administrativeResolutionReason");
+    if (reasonIssue) return Response.json({ error: reasonIssue.message ?? "A reason is required", code: "REPAIR_REASON_REQUIRED" }, { status: 400 });
+    return jsonError(error.issues[0]?.message ?? "Invalid request", 400);
+  }
   if (error instanceof SyntaxError) return jsonError("Invalid JSON body", 400);
   logServerError("api.request.failed", error, { area: "api", status: 500 });
   return jsonError("Internal server error", 500);

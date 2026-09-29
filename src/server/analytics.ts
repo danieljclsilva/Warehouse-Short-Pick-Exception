@@ -6,7 +6,6 @@ import { caseEvents, checkTasks, configurationVersions, orderCases, shortPickLin
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/case-errors";
-import { RESOLUTION_CODES } from "@/server/configuration";
 
 /** Dashboard and export limits. They protect the transactional database from unbounded analytical reads. */
 export const ANALYTICS_LIMITS = {
@@ -16,6 +15,12 @@ export const ANALYTICS_LIMITS = {
   maxDuplicateOrders: 1_000,
   maxDateRangeDays: 366,
 } as const;
+
+/** Conclusive check outcomes per FIELD_FEEDBACK_CONTRACTS.md §3. `OTHER` stays non-conclusive. */
+export const CONCLUSIVE_CHECK_OUTCOMES = ["FOUND_AT_ORIGINAL", "FOUND", "NOT_FOUND", "WRONG_LOCATION"] as const;
+export type ConclusiveCheckOutcome = (typeof CONCLUSIVE_CHECK_OUTCOMES)[number];
+/** Minimum eligible lines before a same-location-found percentage may be shown. */
+export const SAME_LOCATION_FOUND_MIN_DENOMINATOR = 20;
 
 const phaseSchema = z.enum(["PICKING", "STAGED", "CLOSED"]);
 const sourceSchema = z.enum(["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "ADMIN_MANUAL"]);
@@ -28,12 +33,15 @@ export const analyticsFilterSchema = z.object({
   location: z.string().trim().min(1).max(128).optional(),
   sku: z.string().trim().min(1).max(128).optional(),
   phase: phaseSchema.optional(),
-  resolution: z.enum(RESOLUTION_CODES).optional(),
+  // FOUND_AT_ORIGINAL is accepted here whether or not the DB enum migration has
+  // landed; predicates compare completion codes as text so the query never casts.
+  resolution: z.enum(["FOUND", "NOT_FOUND", "WRONG_LOCATION", "OTHER", "FOUND_AT_ORIGINAL"]).optional(),
   source: sourceSchema.optional(),
   configVersion: z.coerce.number().int().positive().max(2_147_483_647).optional(),
   pickerUserId: uuidParam.optional(),
   checkerUserId: uuidParam.optional(),
   troubleshooterUserId: uuidParam.optional(),
+  role: z.enum(["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "ADMIN"]).optional(),
 }).superRefine((value, ctx) => {
   if (value.to <= value.from) ctx.addIssue({ code: "custom", path: ["to"], message: "The end date must be after the start date" });
   const days = (value.to.getTime() - value.from.getTime()) / 86_400_000;
@@ -73,6 +81,7 @@ export function parseAnalyticsFilters(params: URLSearchParams, now = new Date())
     pickerUserId: params.get("pickerUserId") ?? undefined,
     checkerUserId: params.get("checkerUserId") ?? undefined,
     troubleshooterUserId: params.get("troubleshooterUserId") ?? undefined,
+    role: params.get("role") ?? undefined,
   };
   return { ...analyticsFilterSchema.parse({ ...raw, to: toExclusive }), to: selectedTo, toExclusive };
 }
@@ -143,6 +152,24 @@ export type AnalyticsResponseFilters = AnalyticsFilters & {
   configurations: Array<{ id: string; label: string; version: number }>;
 };
 
+export type SameLocationFoundSummary = {
+  numerator: number;
+  denominator: number;
+  percentage: number | null;
+  percentageSuppressed: boolean;
+  from: Date;
+  to: Date;
+  counts: Record<ConclusiveCheckOutcome, number>;
+};
+
+export type SameLocationFoundUser = SameLocationFoundSummary & {
+  userId: string;
+  displayName: string;
+  role: string;
+};
+
+export type AnalyticsUserDirectoryEntry = { id: string; displayName: string; role: string };
+
 export type AnalyticsData = {
   filters: AnalyticsResponseFilters;
   kpis: {
@@ -164,6 +191,9 @@ export type AnalyticsData = {
     reopenedCases: number;
     repeatedOrderNumbers: number;
     casesByConfigurationVersion: Array<{ version: number; label: string; cases: number; count: number }>;
+    sameLocationFound: SameLocationFoundSummary;
+    sameLocationFoundByUser: SameLocationFoundUser[];
+    userDirectory: AnalyticsUserDirectoryEntry[];
     metricsArePartial: boolean;
     partialMetrics: string[];
   };
@@ -210,17 +240,21 @@ function thresholdFor(values: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : Number(value) || 0;
 }
 
+function resolutionPredicate(db: Db, code: string) {
+  // completionCode is a DB enum; unknown values (e.g. FOUND_AT_ORIGINAL before the
+  // migration lands) are matched as text so the query never fails on a cast.
+  const matchingTask = db.select({ id: checkTasks.id }).from(checkTasks).where(and(
+    eq(checkTasks.shortPickLineId, shortPickLines.id), sql`${checkTasks.completionCode}::text = ${code}`,
+  ));
+  return or(eq(shortPickLines.resolutionCode, code), exists(matchingTask)) ?? sql`false`;
+}
+
 function linePredicate(db: Db, filters: AnalyticsFilters, caseIds?: string[]) {
   const predicates: SQL<unknown>[] = [];
   if (caseIds) predicates.push(inArray(shortPickLines.caseId, caseIds));
   if (filters.location) predicates.push(eq(shortPickLines.originalLocation, filters.location.trim().toUpperCase()));
   if (filters.sku) predicates.push(eq(shortPickLines.sku, filters.sku.trim().toUpperCase()));
-  if (filters.resolution) {
-    const matchingTask = db.select({ id: checkTasks.id }).from(checkTasks).where(and(
-      eq(checkTasks.shortPickLineId, shortPickLines.id), eq(checkTasks.completionCode, filters.resolution),
-    ));
-    predicates.push(or(eq(shortPickLines.resolutionCode, filters.resolution), exists(matchingTask)) ?? sql`false`);
-  }
+  if (filters.resolution) predicates.push(resolutionPredicate(db, filters.resolution));
   return and(...predicates) ?? sql`true`;
 }
 
@@ -236,12 +270,7 @@ function buildCasePredicates(db: Db, filters: AnalyticsFilters, includeCreatedDa
     const matchingLine = [eq(shortPickLines.caseId, orderCases.id)];
     if (filters.location) matchingLine.push(eq(shortPickLines.originalLocation, filters.location.trim().toUpperCase()));
     if (filters.sku) matchingLine.push(eq(shortPickLines.sku, filters.sku.trim().toUpperCase()));
-    if (filters.resolution) {
-      const matchingTask = db.select({ id: checkTasks.id }).from(checkTasks).where(and(
-        eq(checkTasks.shortPickLineId, shortPickLines.id), eq(checkTasks.completionCode, filters.resolution),
-      ));
-      matchingLine.push(or(eq(shortPickLines.resolutionCode, filters.resolution), exists(matchingTask)) ?? sql`false`);
-    }
+    if (filters.resolution) matchingLine.push(resolutionPredicate(db, filters.resolution));
     predicates.push(exists(db.select({ id: shortPickLines.id }).from(shortPickLines).where(and(...matchingLine))));
   }
   if (filters.checkerUserId) {
@@ -261,6 +290,61 @@ async function loadUsers(db: Db, ids: string[]) {
   if (!ids.length) return new Map<string, { id: string; displayName: string }>();
   const rows = await db.select({ id: users.id, displayName: users.displayName }).from(users).where(inArray(users.id, [...new Set(ids)]));
   return new Map(rows.map((row) => [row.id, row]));
+}
+
+function isConclusiveOutcome(code: unknown): code is ConclusiveCheckOutcome {
+  return typeof code === "string" && (CONCLUSIVE_CHECK_OUTCOMES as readonly string[]).includes(code);
+}
+
+function emptyOutcomeCounts(): Record<ConclusiveCheckOutcome, number> {
+  return { FOUND_AT_ORIGINAL: 0, FOUND: 0, NOT_FOUND: 0, WRONG_LOCATION: 0 };
+}
+
+function summarizeOutcomes(outcomes: ConclusiveCheckOutcome[], from: Date, to: Date): SameLocationFoundSummary {
+  const counts = emptyOutcomeCounts();
+  for (const outcome of outcomes) counts[outcome] += 1;
+  const denominator = outcomes.length;
+  const numerator = counts.FOUND_AT_ORIGINAL;
+  const suppressed = denominator > 0 && denominator < SAME_LOCATION_FOUND_MIN_DENOMINATOR;
+  return { numerator, denominator, percentage: !suppressed && denominator > 0 ? Math.round((numerator / denominator) * 1000) / 10 : null, percentageSuppressed: suppressed, from, to, counts };
+}
+
+export type SameLocationFoundLineInput = { id: string; reportedByUserId: string; reportedAt: Date };
+export type SameLocationFoundTaskInput = { shortPickLineId: string; completionCode: unknown; completedAt: Date | null; createdAt: Date };
+
+/**
+ * Same-location-found metric over already-fetched lines + tasks.
+ * denominator = unique reported lines with a final conclusive outcome;
+ * numerator = lines whose latest conclusive outcome is FOUND_AT_ORIGINAL.
+ * Latest wins (authorized corrections included); repeat checks never double-count.
+ * Excludes unfinished lines, OTHER, and cancelled lines without a conclusive check.
+ */
+export function computeSameLocationFound(
+  lines: SameLocationFoundLineInput[],
+  tasks: SameLocationFoundTaskInput[],
+  from: Date,
+  to: Date,
+): { overall: SameLocationFoundSummary; byReporter: Map<string, ConclusiveCheckOutcome[]> } {
+  const tasksByLine = new Map<string, SameLocationFoundTaskInput[]>();
+  for (const task of tasks) tasksByLine.set(task.shortPickLineId, [...(tasksByLine.get(task.shortPickLineId) ?? []), task]);
+  const latestOutcome = new Map<string, ConclusiveCheckOutcome>();
+  for (const line of lines) {
+    if (line.reportedAt < from || line.reportedAt >= to) continue;
+    const conclusive = (tasksByLine.get(line.id) ?? [])
+      .filter((task) => isConclusiveOutcome(task.completionCode))
+      .sort((a, b) => (a.completedAt ?? a.createdAt).getTime() - (b.completedAt ?? b.createdAt).getTime());
+    if (!conclusive.length) continue;
+    latestOutcome.set(line.id, conclusive[conclusive.length - 1]!.completionCode as ConclusiveCheckOutcome);
+  }
+  const byReporter = new Map<string, ConclusiveCheckOutcome[]>();
+  const overallOutcomes: ConclusiveCheckOutcome[] = [];
+  for (const line of lines) {
+    const outcome = latestOutcome.get(line.id);
+    if (!outcome) continue;
+    overallOutcomes.push(outcome);
+    byReporter.set(line.reportedByUserId, [...(byReporter.get(line.reportedByUserId) ?? []), outcome]);
+  }
+  return { overall: summarizeOutcomes(overallOutcomes, from, to), byReporter };
 }
 
 function ensurePermission(auth: AuthContext, permission: "VIEW_ANALYTICS" | "EXPORT_ANALYTICS") {
@@ -359,7 +443,11 @@ async function queryAnalytics(filters: AnalyticsFilters): Promise<AnalyticsData>
     resolutionDurations.push(...(function () { const value = dateSeconds(line.reportedAt, line.resolvedAt); return value === null ? [] : [value]; })());
   }
   const codeLines = new Map<string, Set<string>>();
-  for (const task of tasksRaw) if (task.completionCode) codeLines.set(task.completionCode, new Set([...(codeLines.get(task.completionCode) ?? []), task.shortPickLineId]));
+  for (const task of tasksRaw) {
+    const code = String(task.completionCode ?? "");
+    if (!code) continue;
+    codeLines.set(code, new Set([...(codeLines.get(code) ?? []), task.shortPickLineId]));
+  }
   const codeCounts = new Map([...codeLines.entries()].map(([code, lineIds]) => [code, lineIds.size]));
   const reopenedCases = new Set(eventRows.filter((event) => event.eventType === "CASE_REOPENED").map((event) => event.caseId)).size;
   const repeatedGroupsQuery = db.select({ orderNumber: orderCases.orderNumber, count: sql<number>`count(*)::int` }).from(orderCases)
@@ -380,6 +468,33 @@ async function queryAnalytics(filters: AnalyticsFilters): Promise<AnalyticsData>
   const duplicateOrdersTruncated = repeatedOrderCount > repeatedGrouped.length || duplicateOrders.length < duplicateDatesExpected;
   const repeatedOrderNumbers = repeatedOrderCount;
   const casesByConfigurationVersion = [...caseRows.reduce((map, row) => map.set(row.configurationVersion.version, (map.get(row.configurationVersion.version) ?? 0) + 1), new Map<number, number>())].map(([version, cases]) => ({ version, label: String(version), cases, count: cases })).sort((a, b) => a.version - b.version);
+  const toExclusive = filters.toExclusive ?? filters.to;
+  // Same-location-found runs over its own bounded line+task read so the metric stays
+  // exact even when the dashboard row caps truncate the visible tables.
+  const metricLineWhere = and(caseWhere, filters.location ? eq(shortPickLines.originalLocation, filters.location.trim().toUpperCase()) : undefined, filters.sku ? eq(shortPickLines.sku, filters.sku.trim().toUpperCase()) : undefined, filters.resolution ? resolutionPredicate(db, filters.resolution) : undefined, gte(shortPickLines.reportedAt, filters.from), lt(shortPickLines.reportedAt, toExclusive));
+  const metricLinesRaw = await db.select({ id: shortPickLines.id, reportedByUserId: shortPickLines.reportedByUserId, reportedAt: shortPickLines.reportedAt }).from(shortPickLines)
+    .innerJoin(orderCases, eq(shortPickLines.caseId, orderCases.id))
+    .innerJoin(configurationVersions, eq(orderCases.configurationVersionId, configurationVersions.id))
+    .where(metricLineWhere).limit(ANALYTICS_LIMITS.maxLines);
+  const metricLineIds = metricLinesRaw.map((line) => line.id);
+  // completionCode is a DB enum: read it as text so FOUND_AT_ORIGINAL survives whether
+  // or not the domain A1 enum migration has landed in this checkout.
+  const metricTasksRaw = metricLineIds.length ? await db.select({ shortPickLineId: checkTasks.shortPickLineId, completionCode: sql<string | null>`${checkTasks.completionCode}::text`, completedAt: checkTasks.completedAt, createdAt: checkTasks.createdAt }).from(checkTasks).where(inArray(checkTasks.shortPickLineId, metricLineIds)) : [];
+  const metric = computeSameLocationFound(metricLinesRaw, metricTasksRaw, filters.from, toExclusive);
+  const reporterIds = [...metric.byReporter.keys()];
+  const reporterRows = reporterIds.length ? await db.select({ id: users.id, displayName: users.displayName, role: users.role }).from(users).where(inArray(users.id, reporterIds)) : [];
+  const reporterById = new Map(reporterRows.map((row) => [row.id, row]));
+  const sameLocationFoundByUser: SameLocationFoundUser[] = [...metric.byReporter.entries()]
+    .map(([userId, outcomes]) => ({ userId, displayName: reporterById.get(userId)?.displayName ?? userId, role: reporterById.get(userId)?.role ?? "PICKER", ...summarizeOutcomes(outcomes, filters.from, toExclusive) }))
+    .filter((entry) => !filters.role || entry.role === filters.role)
+    .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  const directoryRows = await db.select({ id: users.id, displayName: users.displayName, role: users.role }).from(users).orderBy(asc(users.displayName)).limit(500);
+  const userDirectory: AnalyticsUserDirectoryEntry[] = directoryRows
+    .filter((row) => !filters.role || row.role === filters.role)
+    .map((row) => ({ id: row.id, displayName: row.displayName, role: row.role }));
+  const sameLocationFound = filters.role
+    ? summarizeOutcomes(sameLocationFoundByUser.flatMap((entry) => Object.entries(entry.counts).flatMap(([code, count]) => Array<ConclusiveCheckOutcome>(count).fill(code as ConclusiveCheckOutcome))), filters.from, toExclusive)
+    : metric.overall;
   const partialMetrics = new Set<string>();
   if (casesTruncated) for (const metric of ["casesByPeriod", "casesOverThreshold", "manualCases", "reopenedCases", "casesByConfigurationVersion"]) partialMetrics.add(metric);
   if (linesTruncated) for (const metric of ["linesByLocation", "linesBySku", "foundDuringCheck", "notFound", "wrongLocation", "retrieved", "medianReportToCheckClaimedSeconds", "medianReportToLocationFoundSeconds", "medianReportToRetrievalSeconds", "medianReportToResolutionSeconds"]) partialMetrics.add(metric);
@@ -388,11 +503,11 @@ async function queryAnalytics(filters: AnalyticsFilters): Promise<AnalyticsData>
   if (duplicateOrdersTruncated) partialMetrics.add("duplicates");
   const displayFilters = { ...filters };
   delete displayFilters.toExclusive;
-  const responseFilters: AnalyticsResponseFilters = { ...displayFilters, phases: ["PICKING", "STAGED", "CLOSED"], resolutions: ["FOUND", "NOT_FOUND", "WRONG_LOCATION", "OTHER"], sources: ["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "ADMIN_MANUAL"], configurations: caseRows.map((row) => ({ id: String(row.configurationVersion.version), label: String(row.configurationVersion.version), version: row.configurationVersion.version })).filter((row, index, all) => all.findIndex((item) => item.id === row.id) === index) };
+  const responseFilters: AnalyticsResponseFilters = { ...displayFilters, phases: ["PICKING", "STAGED", "CLOSED"], resolutions: ["FOUND", "NOT_FOUND", "WRONG_LOCATION", "OTHER", "FOUND_AT_ORIGINAL"], sources: ["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "ADMIN_MANUAL"], configurations: caseRows.map((row) => ({ id: String(row.configurationVersion.version), label: String(row.configurationVersion.version), version: row.configurationVersion.version })).filter((row, index, all) => all.findIndex((item) => item.id === row.id) === index) };
   return { filters: responseFilters, kpis: { totalCases, totalLines, casesByPeriod: [...groupedPeriods.values()].sort((a, b) => a.period.localeCompare(b.period)), linesByLocation: breakdown((line) => line.originalLocation), linesBySku: breakdown((line) => line.sku),
     foundDuringCheck: codeCounts.get("FOUND") ?? 0, notFound: codeCounts.get("NOT_FOUND") ?? 0, wrongLocation: codeCounts.get("WRONG_LOCATION") ?? 0, retrieved: lineRows.filter((line) => line.retrievalState === "RETRIEVED").length,
     medianReportToCheckClaimedSeconds: median(claimedDurations), medianReportToLocationFoundSeconds: median(foundDurations), medianReportToRetrievalSeconds: median(retrievalDurations), medianReportToResolutionSeconds: median(resolutionDurations),
-    casesOverThreshold: caseRows.filter((row) => row.overThreshold).length, manualCases: caseRows.filter((row) => row.source !== "PICKER_REPORT").length, reopenedCases, repeatedOrderNumbers, casesByConfigurationVersion, metricsArePartial: partialMetrics.size > 0, partialMetrics: [...partialMetrics] },
+    casesOverThreshold: caseRows.filter((row) => row.overThreshold).length, manualCases: caseRows.filter((row) => row.source !== "PICKER_REPORT").length, reopenedCases, repeatedOrderNumbers, casesByConfigurationVersion, sameLocationFound, sameLocationFoundByUser, userDirectory, metricsArePartial: partialMetrics.size > 0, partialMetrics: [...partialMetrics] },
     duplicates: { repeatedOrderCount: repeatedOrderNumbers, orders: duplicates }, rows: { cases: caseRows, lines: lineRows }, limits: { maxCases: ANALYTICS_LIMITS.maxCases, maxLines: ANALYTICS_LIMITS.maxLines, maxEvents: ANALYTICS_LIMITS.maxEvents, casesTruncated, linesTruncated, eventsTruncated, tasksTruncated, duplicateOrdersTruncated, derivedMetricsTruncated: partialMetrics.size > 0 },
   };
 }
@@ -433,7 +548,7 @@ export async function getAnalyticsEvents(auth: AuthContext, filters: AnalyticsFi
     actor: row.actorId ? { id: row.actorId, displayName: row.actorName! } : null, details: row.event.details, createdAt: row.event.createdAt })), truncated: casesTruncated || linesTruncated || Number(count[0]?.count ?? 0) > rows.length };
 }
 
-export type AnalyticsCsvDataset = "case" | "line" | "event";
+export type AnalyticsCsvDataset = "case" | "line" | "event" | "same-location-found" | "same-location-found-overall";
 
 export function csvCell(value: unknown): string {
   let text = value === null || value === undefined ? "" : value instanceof Date ? value.toISOString() : typeof value === "object" ? JSON.stringify(value) : String(value);
@@ -457,4 +572,18 @@ export function analyticsEventCsv(rows: AnalyticsEventRow[]): string {
   const headers = ["event_id", "case_id", "line_id", "order_number", "event_type", "actor_user_id", "actor_name", "details_json", "created_at"];
   return [headers, ...rows.map((row) => [row.id, row.caseId, row.lineId, row.orderNumber, row.eventType, row.actor?.id, row.actor?.displayName, row.details, row.createdAt])]
     .map((line) => line.map(csvCell).join(",")).join("\r\n") + "\r\n";
+}
+
+/** Per-user same-location-found CSV: one row per reporting picker with identical counts to the dashboard. */
+export function sameLocationFoundCsv(summary: SameLocationFoundUser[]): string {
+  const headers = ["user_id", "display_name", "role", "numerator_found_at_original", "denominator_eligible_lines", "percentage", "count_found_at_original", "count_found", "count_not_found", "count_wrong_location", "from", "to"];
+  const body = summary.map((row) => [row.userId, row.displayName, row.role, row.numerator, row.denominator, row.percentage ?? "", row.counts.FOUND_AT_ORIGINAL, row.counts.FOUND, row.counts.NOT_FOUND, row.counts.WRONG_LOCATION, row.from, row.to]);
+  return [headers, ...body].map((line) => line.map(csvCell).join(",")).join("\r\n") + "\r\n";
+}
+
+/** Overall same-location-found summary row for CSV export parity. */
+export function sameLocationFoundOverallCsv(summary: SameLocationFoundSummary): string {
+  const headers = ["numerator_found_at_original", "denominator_eligible_lines", "percentage", "count_found_at_original", "count_found", "count_not_found", "count_wrong_location", "from", "to"];
+  const body = [[summary.numerator, summary.denominator, summary.percentage ?? "", summary.counts.FOUND_AT_ORIGINAL, summary.counts.FOUND, summary.counts.NOT_FOUND, summary.counts.WRONG_LOCATION, summary.from, summary.to]];
+  return [headers, ...body].map((line) => line.map(csvCell).join(",")).join("\r\n") + "\r\n";
 }

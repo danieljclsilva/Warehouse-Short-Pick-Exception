@@ -9,7 +9,7 @@ export const physicalStateEnum = pgEnum("physical_state", ["WITH_PICKER", "SHORT
 export const caseSourceEnum = pgEnum("case_source", ["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "ADMIN_MANUAL"]);
 export const shortPickLineStateEnum = pgEnum("short_pick_line_state", ["OPEN", "CHECKING", "FOUND", "RETRIEVING", "RESOLVED", "CANCELLED"]);
 export const checkTaskStatusEnum = pgEnum("check_task_status", ["AVAILABLE", "CLAIMED", "ASSIGNED", "COMPLETED"]);
-export const checkCompletionCodeEnum = pgEnum("check_completion_code", ["FOUND", "NOT_FOUND", "WRONG_LOCATION", "OTHER"]);
+export const checkCompletionCodeEnum = pgEnum("check_completion_code", ["FOUND", "FOUND_AT_ORIGINAL", "NOT_FOUND", "WRONG_LOCATION", "OTHER"]);
 export const notificationTypeEnum = pgEnum("notification_type", [
   "RESPONSIBILITY_CASE_ASSIGNED", "RESPONSIBILITY_CHECK_ASSIGNED", "RESPONSIBILITY_RETRIEVAL_ASSIGNED",
   "RESPONSIBILITY_NEW_LOCATION", "RESPONSIBILITY_CASE_REOPENED",
@@ -177,6 +177,11 @@ export const shortPickLines = pgTable("short_pick_lines", {
   retrievalResponsibleUserId: uuid("retrieval_responsible_user_id").references(() => users.id),
   retrievedByUserId: uuid("retrieved_by_user_id").references(() => users.id),
   retrievedAt: timestamp("retrieved_at", { withTimezone: true }),
+  replenishmentState: text("replenishment_state").notNull().default("NONE"),
+  replenishmentNote: text("replenishment_note"),
+  replenishmentActorUserId: uuid("replenishment_actor_user_id").references(() => users.id),
+  replenishmentAt: timestamp("replenishment_at", { withTimezone: true }),
+  replenishmentRetrieverUserId: uuid("replenishment_retriever_user_id").references(() => users.id),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
   resolutionCode: text("resolution_code"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -188,9 +193,11 @@ export const shortPickLines = pgTable("short_pick_lines", {
   index("short_pick_lines_sku_idx").on(table.sku),
   index("short_pick_lines_retrieval_responsible_idx").on(table.retrievalResponsibleUserId),
   index("short_pick_lines_duplicate_idx").on(table.caseId, table.originalLocation, table.sku, table.state),
+  index("short_pick_lines_reporter_reported_idx").on(table.reportedByUserId, table.reportedAt),
   check("short_pick_lines_location_normalized_check", sql`${table.originalLocation} = upper(btrim(${table.originalLocation})) AND length(${table.originalLocation}) > 0`),
   check("short_pick_lines_sku_normalized_check", sql`${table.sku} = upper(btrim(${table.sku})) AND length(${table.sku}) > 0`),
   check("short_pick_lines_quantity_positive_check", sql`${table.missingQuantity} > 0`),
+  check("short_pick_lines_replenishment_state_check", sql`${table.replenishmentState} in ('NONE', 'WAITING', 'COMPLETED')`),
   check("short_pick_lines_version_positive_check", sql`${table.version} > 0`),
 ]);
 
