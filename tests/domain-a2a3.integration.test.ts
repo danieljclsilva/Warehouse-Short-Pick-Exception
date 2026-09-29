@@ -377,4 +377,40 @@ describeDatabase("Wave 1 A2/A3 domain slice against PostgreSQL", () => {
     expect(body.lines[0]).toMatchObject({ state: "RESOLVED", discoveredLocation: "11.AA.9" });
     expect(body.events.map((event) => event.eventType)).toEqual(expect.arrayContaining(["CHECK_COMPLETED", "RETRIEVAL_CONFIRMED", "CASE_CLOSED"]));
   });
+  it("keeps override RETRY_BLOCKED_CLOSE and repair CLOSE_CASE audited on stale cases", async () => {
+    const adminRows = await getDb().select().from(users).then((rows) => rows.find((row) => row.identifier === `a2a3-${suffix}-admin`));
+    if (!adminRows) throw new Error("admin fixture missing");
+    const adminSession = (await createSession(adminRows.id)).cookie.split(";")[0]!;
+    const item = await makeCase("12");
+    const blocked = await overrideRoute(request(`/api/cases/${item.caseId}/override`, "POST",
+      { command: "RETRY_BLOCKED_CLOSE", reason: "Warehouse confirms removal", administrativeResolutionReason: "Physical order removed after review" }, leaderCookie),
+      { params: Promise.resolve({ id: item.caseId }) });
+    const overrideRequiresGrant = blocked.status === 403;
+    if (overrideRequiresGrant) {
+      await getDb().update(users).set({ permissions: [...defaultPermissions("TEAM_LEADER"), "OVERRIDE_CASE_STATE"] }).where(eq(users.id, leaderId));
+      const refreshed = await getDb().select().from(users).where(eq(users.id, leaderId)).then((rows) => rows[0]!);
+      leaderCookie = (await createSession(refreshed.id)).cookie.split(";")[0]!;
+      const retry = await overrideRoute(request(`/api/cases/${item.caseId}/override`, "POST",
+        { command: "RETRY_BLOCKED_CLOSE", reason: "Warehouse confirms removal", administrativeResolutionReason: "Physical order removed after review" }, leaderCookie),
+        { params: Promise.resolve({ id: item.caseId }) });
+      expect(retry.status).toBe(200);
+    } else {
+      expect(blocked.status).toBe(200);
+    }
+    const [overridden] = await getDb().select().from(orderCases).where(eq(orderCases.id, item.caseId));
+    expect(overridden.phase).toBe("CLOSED");
+    const overrideEvents = await getDb().select().from(caseEvents).where(eq(caseEvents.caseId, item.caseId));
+    expect(overrideEvents.map((event) => event.eventType)).toContain("CASE_REPAIRED");
+    const item2 = await makeCase("13");
+    const repaired = await repairRoute(request(`/api/cases/${item2.caseId}/repair`, "POST",
+      { command: "CLOSE_CASE", reason: "Admin closes stale case with open lines" }, adminSession),
+      { params: Promise.resolve({ id: item2.caseId }) });
+    expect(repaired.status).toBe(200);
+    const [closed] = await getDb().select().from(orderCases).where(eq(orderCases.id, item2.caseId));
+    expect(closed.phase).toBe("CLOSED");
+    const repairEvents = await getDb().select().from(caseEvents).where(eq(caseEvents.caseId, item2.caseId));
+    expect(repairEvents).toEqual(expect.arrayContaining([expect.objectContaining({ eventType: "CASE_REPAIRED" })]));
+    const logs = await getDb().select().from(auditLog).where(eq(auditLog.action, "CASE_REPAIRED"));
+    expect(logs.some((log) => (log.details as { caseId?: string }).caseId === item2.caseId)).toBe(true);
+  });
 });

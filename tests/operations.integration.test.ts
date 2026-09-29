@@ -150,4 +150,32 @@ describeDatabase("Phase 4 operations against PostgreSQL", () => {
     expect(events).toEqual(expect.arrayContaining(["CASE_CLOSED", "CASE_REOPENED", "RESPONSIBILITY_CHANGED"]));
     expect((await getDb().select().from(checkTasks).where(eq(checkTasks.shortPickLineId, line.id))).map((task) => task.status)).toEqual(expect.arrayContaining(["COMPLETED", "AVAILABLE"]));
   });
+  it("lets a manager administratively close a stale case with reason while non-managers stay denied", async () => {
+    const orderNumber = `8${Date.now()}9`;
+    const created = await manualRoute(request("/api/cases/manual", "POST", { orderNumber, firstLine: { location: "hold.9", sku: "item-9", quantity: 1 } }, assistantCookie));
+    expect(created.status).toBe(201);
+    const record = (await created.json()).case as { id: string; lines: Array<{ id: string }> };
+    caseIds.push(record.id);
+    const closePath = `/api/cases/${record.id}/close`;
+    const params = { params: Promise.resolve({ id: record.id }) };
+    // The team leader is neither picker nor responsible on this stale case: closing without a reason stays blocked.
+    const blocked = await closeRoute(request(closePath, "POST", {}, leaderCookie), params);
+    expect(blocked.status).toBe(409);
+    expect((await blocked.json()).code).toBe("CASE_NOT_CLOSABLE");
+    // A non-manager who is not responsible stays denied even with a reason.
+    const denied = await closeRoute(request(closePath, "POST", { administrativeResolutionReason: "Stale lines cleared after warehouse review" }, resolverCookie), params);
+    expect(denied.status).toBe(403);
+    // The team leader closes with an administrative reason.
+    const closed = await closeRoute(request(closePath, "POST", { administrativeResolutionReason: "Stale lines cleared after warehouse review" }, leaderCookie), params);
+    expect(closed.status).toBe(200);
+    const [line] = await getDb().select().from(shortPickLines).where(eq(shortPickLines.id, record.lines[0]!.id));
+    expect(line).toMatchObject({ state: "CANCELLED", resolutionCode: "ADMINISTRATIVE" });
+    const events = await getDb().select().from(caseEvents).where(eq(caseEvents.caseId, record.id));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ eventType: "SHORT_PICK_LINE_ADMINISTRATIVELY_RESOLVED" }),
+      expect.objectContaining({ eventType: "CASE_CLOSED" }),
+    ]));
+    const logs = await getDb().select().from(auditLog).where(eq(auditLog.action, "CASE_CLOSED"));
+    expect(logs.some((log) => (log.details as { caseId?: string }).caseId === record.id)).toBe(true);
+  });
 });
