@@ -143,10 +143,18 @@ describeDatabase("same-location-found analytics against PostgreSQL", () => {
     expect(overallCsv).toContain("1,3,,1,0,1,1,");
     const dashboard = await (await analyticsRoute(request(`/api/analytics?${query}`, "GET", leaderCookie))).json();
     expect(dashboard.kpis.sameLocationFound).toMatchObject({ numerator: 1, denominator: 3, counts: { FOUND_AT_ORIGINAL: 1, NOT_FOUND: 1, WRONG_LOCATION: 1 } });
-    // PDF parity: the renderer consumes the same kpis object and emits the same counts section.
+    // PDF parity: the renderer consumes the same kpis object and emits a per-user table
+    // with the same rows the dashboard table and per-user CSV carry (PDF body text is
+    // font-subset encoded, so assert structural parity: byte growth + call-graph proof).
+    const pdfWithoutUsers = await renderAnalyticsPdf({ ...dashboard, kpis: { ...dashboard.kpis, sameLocationFoundByUser: [] } }, { generatedAt: new Date("2026-09-28T10:00:00Z") });
     const pdf = await renderAnalyticsPdf(dashboard, { generatedAt: new Date("2026-09-28T10:00:00Z") });
-    expect(Buffer.from(pdf).toString("latin1").startsWith("%PDF-")).toBe(true);
+    const pdfText = Buffer.from(pdf).toString("latin1");
+    expect(pdfText.startsWith("%PDF-")).toBe(true);
     expect(pdf.byteLength).toBeGreaterThan(5000);
-    expect(dashboard.kpis.sameLocationFoundByUser.find((row: { userId: string }) => row.userId === pickerOneId)).toMatchObject({ numerator: 1, denominator: 2 });
+    const pickerOne = dashboard.kpis.sameLocationFoundByUser.find((row: { userId: string }) => row.userId === pickerOneId);
+    expect(pickerOne).toMatchObject({ numerator: 1, denominator: 2, counts: { FOUND_AT_ORIGINAL: 1, FOUND: 0, NOT_FOUND: 1, WRONG_LOCATION: 0 } });
+    // The per-user table adds one drawTable row per reporter: output grows vs no-user render.
+    expect(pdf.byteLength).toBeGreaterThan(pdfWithoutUsers.byteLength);
+    expect(dashboard.kpis.sameLocationFoundByUser).toHaveLength(2);
   });
 });
