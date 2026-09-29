@@ -8,7 +8,7 @@ import { CaseApiError } from "@/server/cases";
 import { insertMonitoringNotifications, insertResponsibilityNotification } from "@/server/notifications";
 import { assertConfigurationPermission, getConfigurationVersion, getCurrentConfiguration, normalizeConfigurationValues } from "@/server/configuration";
 
-export const assignCheckSchema = z.object({ userId: z.string().uuid() });
+export const assignCheckSchema = z.object({ userId: z.string().uuid(), pickerRetrieval: z.boolean().default(false) });
 export const completeCheckSchema = z.object({
   code: z.enum(["FOUND", "FOUND_AT_ORIGINAL", "NOT_FOUND", "WRONG_LOCATION", "OTHER"]),
   discoveredLocation: z.string().trim().min(1).max(128).transform((value) => value.toUpperCase()).optional(),
@@ -148,7 +148,8 @@ export async function claimCheck(auth: AuthContext, taskId: string) {
   });
 }
 
-export async function assignCheck(auth: AuthContext, taskId: string, userId: string) {
+export async function assignCheck(auth: AuthContext, taskId: string, userId: string, options: { pickerRetrieval?: boolean } = {}) {
+  const pickerRetrieval = options.pickerRetrieval === true;
   const caseId = await taskCaseId(taskId);
   return getDb().transaction(async (tx) => {
     const [record] = await tx.select().from(orderCases).where(eq(orderCases.id, caseId)).for("update").limit(1);
@@ -175,11 +176,11 @@ export async function assignCheck(auth: AuthContext, taskId: string, userId: str
     await tx.update(shortPickLines).set({ state: "CHECKING", currentResponsibleUserId: userId, updatedAt: now, version: sql`${shortPickLines.version} + 1` }).where(eq(shortPickLines.id, line.id));
     await tx.update(orderCases).set({ updatedAt: now, version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
     const eventType = isReassignment ? "CHECK_REASSIGNED" : "CHECK_ASSIGNED";
-    await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType, details: { taskId, assignedToUserId: userId, previousUserId: task.assignedToUserId ?? task.claimedByUserId } });
-    await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: eventType, details: { caseId, lineId: line.id, taskId, userId } });
+    await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType, details: { taskId, assignedToUserId: userId, previousUserId: task.assignedToUserId ?? task.claimedByUserId, pickerRetrieval } });
+    await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: eventType, details: { caseId, lineId: line.id, taskId, userId, pickerRetrieval } });
     await insertResponsibilityNotification(tx, { recipientUserId: userId, type: "RESPONSIBILITY_CHECK_ASSIGNED", caseId,
-      shortPickLineId: line.id, payload: { taskId, orderNumber: record.orderNumber, reassigned: isReassignment } });
-    return { taskId, caseId, lineId: line.id, status: "ASSIGNED" as const, assignedToUserId: userId };
+      shortPickLineId: line.id, payload: { taskId, orderNumber: record.orderNumber, reassigned: isReassignment, pickerRetrieval } });
+    return { taskId, caseId, lineId: line.id, status: "ASSIGNED" as const, assignedToUserId: userId, pickerRetrieval };
   });
 }
 
@@ -261,12 +262,20 @@ export async function completeCheck(auth: AuthContext, taskId: string, input: z.
       : [];
     const stagedResponsible = stagedCaseResponsible?.role === "TROUBLESHOOTER" && stagedCaseResponsible.permissions.includes("CONFIRM_RETRIEVAL") ? stagedCaseResponsible.id
       : stagedChecker?.permissions.includes("CONFIRM_RETRIEVAL") ? stagedChecker.id : null;
+    // Assign-time picker-retrieval choice (additive event-details flag): when the latest
+    // CHECK_ASSIGNED/CHECK_REASSIGNED for this task requested picker retrieval, route the
+    // resulting retrieval ownership to the case picker. Absence of the flag keeps current behavior.
+    const [assignChoice] = await tx.select({ details: caseEvents.details }).from(caseEvents)
+      .where(and(eq(caseEvents.caseId, caseId), eq(caseEvents.shortPickLineId, line.id), inArray(caseEvents.eventType, ["CHECK_ASSIGNED", "CHECK_REASSIGNED"])))
+      .orderBy(sql`${caseEvents.createdAt} DESC`);
+    const assignDetails = assignChoice?.details && typeof assignChoice.details === "object" && !Array.isArray(assignChoice.details) ? assignChoice.details as Record<string, unknown> : {};
+    const pickerRetrieval = assignDetails.pickerRetrieval === true && (assignDetails.taskId === undefined || assignDetails.taskId === taskId);
     const checkerUserId = task.assignedToUserId ?? task.claimedByUserId;
     const [pickingChecker] = record.phase === "PICKING" && snapshot?.values.CHECKER_RETRIEVAL_DURING_PICKING_ENABLED && checkerUserId
       ? await tx.select({ id: users.id, permissions: users.permissions }).from(users).where(and(eq(users.id, checkerUserId), eq(users.status, "ACTIVE"))).limit(1)
       : [];
     const pickingResponsible = pickingChecker?.permissions.includes("CONFIRM_RETRIEVAL") ? pickingChecker.id : record.pickingUserId;
-    const retrievalUserId = found ? (record.phase === "PICKING" ? pickingResponsible : snapshot?.values.CHECKER_RETRIEVAL_WHEN_STAGED_ENABLED ? stagedResponsible : null) : null;
+    const retrievalUserId = found ? (pickerRetrieval ? record.pickingUserId : record.phase === "PICKING" ? pickingResponsible : snapshot?.values.CHECKER_RETRIEVAL_WHEN_STAGED_ENABLED ? stagedResponsible : null) : null;
     await tx.update(shortPickLines).set({
       state: found ? "FOUND" : "OPEN", currentResponsibleUserId: retrievalUserId,
       discoveredLocation: input.code === "FOUND" ? input.discoveredLocation ?? null : null,
@@ -275,7 +284,7 @@ export async function completeCheck(auth: AuthContext, taskId: string, input: z.
       retrievalResponsibleUserId: retrievalUserId, updatedAt: now, version: sql`${shortPickLines.version} + 1`,
     }).where(eq(shortPickLines.id, line.id));
     await tx.update(orderCases).set({ updatedAt: now, version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
-    await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType: "CHECK_COMPLETED", details: { taskId, code: input.code } });
+    await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType: "CHECK_COMPLETED", details: { taskId, code: input.code, pickerRetrieval } });
     if (foundAtOriginal) {
       await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType: "FOUND_AT_ORIGINAL_VERIFIED", details: { taskId, originalLocation: line.originalLocation } });
       await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType: "RETRIEVAL_ASSIGNED", details: { responsibleUserId: retrievalUserId, casePhase: record.phase } });
