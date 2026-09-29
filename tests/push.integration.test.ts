@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import webpush from "web-push";
 import { closeDb, getDb } from "../src/db";
-import { auditLog, notifications, pushOutbox, pushSubscriptions, sessions, users } from "../src/db/schema";
+import { auditLog, configurationVersions, notifications, pushOutbox, pushSubscriptions, sessions, users } from "../src/db/schema";
 import { defaultPermissions } from "../src/domain/permissions";
 import { createSession } from "../src/server/auth";
 import { hashPin } from "../src/server/security";
@@ -120,5 +120,29 @@ describeDatabase("Web Push subscriptions and durable outbox", () => {
     const [sent] = await getDb().select().from(pushOutbox).where(eq(pushOutbox.id, retryRow.id));
     expect(sent?.status).toBe("SENT");
     send.mockRestore();
+  });
+
+  it("returns zeros without throwing when PUSH_ENABLED=false", async () => {
+    const db = getDb();
+    const [current] = await db.select().from(configurationVersions).orderBy(desc(configurationVersions.version)).limit(1);
+    expect(current).toBeTruthy();
+    const originalValues = current!.values as Record<string, unknown>;
+    // History rows are immutable (UPDATE/DELETE blocked), but INSERT of a new
+    // version is the supported write path. Push the flag off, verify the
+    // short-circuit, then restore with a follow-up version so later suites
+    // still see the original effective configuration.
+    const [disabled] = await db.insert(configurationVersions)
+      .values({ version: current!.version + 1, values: { ...originalValues, PUSH_ENABLED: false } }).returning();
+    expect(disabled).toBeTruthy();
+    let result;
+    try {
+      result = await deliverPushBatch(10);
+    } finally {
+      await db.insert(configurationVersions)
+        .values({ version: disabled!.version + 1, values: originalValues });
+    }
+    expect(result).toMatchObject({ attempted: 0, sent: 0, retried: 0, disabled: 0, failed: 0 });
+    const [restored] = await db.select().from(configurationVersions).orderBy(desc(configurationVersions.version)).limit(1);
+    expect((restored!.values as Record<string, unknown>).PUSH_ENABLED).toBe(originalValues.PUSH_ENABLED);
   });
 });

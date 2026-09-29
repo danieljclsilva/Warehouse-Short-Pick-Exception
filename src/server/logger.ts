@@ -8,6 +8,7 @@ export type ServerLogContext = {
   outcome?: string;
   status?: number;
   errorType?: string;
+  issueCode?: string;
   userId?: string;
   caseId?: string;
   lineId?: string;
@@ -20,7 +21,7 @@ export type ServerLogContext = {
 };
 
 const safeContextKeys = new Set<keyof ServerLogContext>([
-  "area", "route", "code", "reason", "outcome", "status", "errorType", "userId", "caseId", "lineId", "checkId",
+  "area", "route", "code", "reason", "outcome", "status", "errorType", "issueCode", "userId", "caseId", "lineId", "checkId",
   "notificationId", "outboxId", "reportId", "attemptCount", "lockoutMinutes",
 ]);
 
