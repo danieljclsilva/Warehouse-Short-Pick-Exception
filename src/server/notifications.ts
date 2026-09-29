@@ -6,6 +6,7 @@ import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/cases";
 import { getCurrentConfiguration } from "@/server/configuration";
+import { logServerEvent } from "@/server/logger";
 
 export type NotificationType = typeof notifications.$inferInsert.type;
 export type PreferenceKey = typeof notificationPreferences.$inferInsert.key;
@@ -109,42 +110,110 @@ export async function insertMonitoringNotifications(tx: DbOperations, input: Omi
   return result;
 }
 
-/** Emits one threshold notification per recipient, case, and configured threshold. */
-export async function emitUnresolvedMonitoringNotifications() {
+/**
+ * Emits one threshold notification per recipient, case, and configured threshold.
+ *
+ * Bounded by design: eligible cases are processed in chunks of open cases per
+ * transaction (default {@link EMIT_CASE_CHUNK_SIZE}), so one 5-minute tick never
+ * holds locks over the full cases x recipients cross product. A failing chunk
+ * aborts only its own transaction; previously committed chunks are kept.
+ *
+ * Dedupe: (recipientUserId, dedupeKey) is a partial unique index
+ * (`notifications_recipient_dedupe_uq`), and dedupeKey covers case+threshold —
+ * but NOT recipient — so the first tick creates eligible x cases rows and every
+ * later tick is a quiet `onConflictDoNothing` no-op. Quiet under steady state is
+ * expected, not evidence of a stuck emitter.
+ */
+export const EMIT_CASE_CHUNK_SIZE = 100;
+
+/** Stateless eligibility pre-pass so chunk transactions only touch actionable cases. */
+export type UnresolvedEmitWorkItem = { id: string; orderNumber: string; ageMinutes: number };
+
+export function unresolvedEmitWorkItems(
+  cases: ReadonlyArray<{ id: string; orderNumber: string; createdAt: Date }>,
+  unresolvedCaseIds: ReadonlySet<string> | ReadonlyArray<string>,
+  now: Date = new Date(),
+): UnresolvedEmitWorkItem[] {
+  const unresolved = unresolvedCaseIds instanceof Set ? unresolvedCaseIds : new Set(unresolvedCaseIds);
+  const items: UnresolvedEmitWorkItem[] = [];
+  for (const item of cases) {
+    if (!unresolved.has(item.id)) continue;
+    items.push({ id: item.id, orderNumber: item.orderNumber, ageMinutes: Math.floor((now.getTime() - item.createdAt.getTime()) / 60_000) });
+  }
+  return items;
+}
+
+export type EmitEligibleRecipient = { id: string; thresholdMinutes: number };
+
+export function emitEligibleRecipients(
+  candidates: ReadonlyArray<{ id: string; permissions: readonly string[] }>,
+  savedPreferences: ReadonlyArray<{ userId: string; key: string; enabled: boolean; thresholdMinutes: number | null }>,
+): EmitEligibleRecipient[] {
+  const eligible = candidates.filter((user) => canReceiveMonitoring("UNRESOLVED_OVER_THRESHOLD", user.permissions));
+  if (!eligible.length) return [];
+  const prefs = new Map(savedPreferences.map((pref) => [`${pref.userId}:${pref.key}`, pref]));
+  const recipients: EmitEligibleRecipient[] = [];
+  for (const user of eligible) {
+    const preference = prefs.get(`${user.id}:UNRESOLVED_OVER_THRESHOLD`);
+    const enabled = preference?.enabled ?? preferenceDefaults.UNRESOLVED_OVER_THRESHOLD.enabled;
+    const threshold = preference?.thresholdMinutes ?? preferenceDefaults.UNRESOLVED_OVER_THRESHOLD.thresholdMinutes!;
+    if (!enabled || threshold < 1) continue;
+    recipients.push({ id: user.id, thresholdMinutes: threshold });
+  }
+  return recipients;
+}
+
+export async function emitUnresolvedMonitoringNotifications(chunkSize: number = EMIT_CASE_CHUNK_SIZE) {
+  const db = getDb();
   const now = new Date();
-  return getDb().transaction(async (tx) => {
-    const [cases, lines, candidates] = await Promise.all([
-      tx.select({ id: orderCases.id, orderNumber: orderCases.orderNumber, createdAt: orderCases.createdAt })
-        .from(orderCases).where(sql`${orderCases.phase} <> 'CLOSED'`),
-      tx.select({ caseId: shortPickLines.caseId, state: shortPickLines.state }).from(shortPickLines),
-      tx.select({ id: users.id, permissions: users.permissions }).from(users).where(eq(users.status, "ACTIVE")),
-    ]);
-    const eligible = candidates.filter((user) => canReceiveMonitoring("UNRESOLVED_OVER_THRESHOLD", user.permissions));
-    if (!eligible.length) return 0;
-    const unresolvedByCase = new Set(lines.filter((line) => line.state !== "RESOLVED" && line.state !== "CANCELLED").map((line) => line.caseId));
-    const saved = await tx.select().from(notificationPreferences).where(inArray(notificationPreferences.userId, eligible.map((user) => user.id)));
-    const prefs = new Map(saved.map((pref) => [`${pref.userId}:${pref.key}`, pref]));
-    let created = 0;
-    for (const item of cases) {
-      if (!unresolvedByCase.has(item.id)) continue;
-      const ageMinutes = Math.floor((now.getTime() - item.createdAt.getTime()) / 60_000);
-      for (const recipient of eligible) {
-        const preference = prefs.get(`${recipient.id}:UNRESOLVED_OVER_THRESHOLD`);
-        const enabled = preference?.enabled ?? preferenceDefaults.UNRESOLVED_OVER_THRESHOLD.enabled;
-        const threshold = preference?.thresholdMinutes ?? preferenceDefaults.UNRESOLVED_OVER_THRESHOLD.thresholdMinutes!;
-        if (!enabled || ageMinutes < threshold) continue;
-        let notification: Awaited<ReturnType<typeof insertNotification>> | undefined;
-        try {
-          notification = await tx.transaction(async (nested) => insertNotification(nested, { recipientUserId: recipient.id, type: "UNRESOLVED_OVER_THRESHOLD",
-            caseId: item.id, payload: { orderNumber: item.orderNumber, ageMinutes, thresholdMinutes: threshold }, dedupeKey: `unresolved:${item.id}:${threshold}` }));
-        } catch (error) {
-          if (!isMissingRecipientError(error)) throw error;
+  // Reads happen outside any transaction: snapshots only, no locks held.
+  const [cases, lines, candidates] = await Promise.all([
+    db.select({ id: orderCases.id, orderNumber: orderCases.orderNumber, createdAt: orderCases.createdAt })
+      .from(orderCases).where(sql`${orderCases.phase} <> 'CLOSED'`),
+    db.select({ caseId: shortPickLines.caseId, state: shortPickLines.state }).from(shortPickLines),
+    db.select({ id: users.id, permissions: users.permissions }).from(users).where(eq(users.status, "ACTIVE")),
+  ]);
+  const recipients = emitEligibleRecipients(candidates, candidates.length
+    ? await db.select().from(notificationPreferences).where(inArray(notificationPreferences.userId, candidates.map((user) => user.id)))
+    : []);
+  // Early exit before opening any transaction: nothing can be created.
+  if (!recipients.length || !cases.length) {
+    logServerEvent("info", "notification.monitoring.emit_completed", { area: "notifications", casesScanned: cases.length, eligibleRecipients: recipients.length, created: 0 });
+    return 0;
+  }
+  const unresolvedByCase = new Set(lines.filter((line) => line.state !== "RESOLVED" && line.state !== "CANCELLED").map((line) => line.caseId));
+  const work = unresolvedEmitWorkItems(cases, unresolvedByCase, now).filter((item) =>
+    recipients.some((recipient) => item.ageMinutes >= recipient.thresholdMinutes));
+  if (!work.length) {
+    logServerEvent("info", "notification.monitoring.emit_completed", { area: "notifications", casesScanned: cases.length, eligibleRecipients: recipients.length, created: 0 });
+    return 0;
+  }
+  const size = Number.isInteger(chunkSize) && chunkSize > 0 ? chunkSize : EMIT_CASE_CHUNK_SIZE;
+  let created = 0;
+  for (let offset = 0; offset < work.length; offset += size) {
+    const chunk = work.slice(offset, offset + size);
+    // One transaction per chunk: bounded lock scope, no nested savepoints.
+    // A chunk failure rolls back only that chunk; prior chunks stay committed.
+    created += await db.transaction(async (tx) => {
+      let chunkCreated = 0;
+      for (const item of chunk) {
+        for (const recipient of recipients) {
+          if (item.ageMinutes < recipient.thresholdMinutes) continue;
+          try {
+            const notification = await insertNotification(tx, { recipientUserId: recipient.id, type: "UNRESOLVED_OVER_THRESHOLD",
+              caseId: item.id, payload: { orderNumber: item.orderNumber, ageMinutes: item.ageMinutes, thresholdMinutes: recipient.thresholdMinutes },
+              dedupeKey: `unresolved:${item.id}:${recipient.thresholdMinutes}` });
+            if (notification) chunkCreated += 1;
+          } catch (error) {
+            if (!isMissingRecipientError(error)) throw error;
+          }
         }
-        if (notification) created += 1;
       }
-    }
-    return created;
-  });
+      return chunkCreated;
+    });
+  }
+  logServerEvent("info", "notification.monitoring.emit_completed", { area: "notifications", casesScanned: cases.length, eligibleRecipients: recipients.length, created });
+  return created;
 }
 
 export async function getNotifications(auth: AuthContext) {

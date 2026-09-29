@@ -1,8 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq, inArray, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { closeDb, getDb } from "../src/db";
-import { auditLog, caseEvents, checkTasks, notificationPreferences, notifications, orderCases, sessions, shortPickLines, users } from "../src/db/schema";
+import { auditLog, caseEvents, checkTasks, configurationVersions, notificationPreferences, notifications, orderCases, sessions, shortPickLines, users } from "../src/db/schema";
 import { defaultPermissions, type Role } from "../src/domain/permissions";
 import { createSession } from "../src/server/auth";
 import { hashPin } from "../src/server/security";
@@ -15,6 +15,7 @@ import { GET as notificationsRoute } from "../src/app/api/notifications/route";
 import { POST as readAllRoute } from "../src/app/api/notifications/read-all/route";
 import { POST as readRoute } from "../src/app/api/notifications/[id]/read/route";
 import { GET as preferencesRoute, PATCH as updatePreferencesRoute } from "../src/app/api/notifications/preferences/route";
+import { emitEligibleRecipients, emitUnresolvedMonitoringNotifications, insertNotification, unresolvedEmitWorkItems } from "../src/server/notifications";
 
 const describeDatabase = process.env.DATABASE_URL ? describe : describe.skip;
 const request = (path: string, method: string, body?: unknown, cookie?: string) => new Request(`http://localhost${path}`, {
@@ -207,5 +208,176 @@ describeDatabase("Wave 1 mark-all-read and >100-row recipient isolation", () => 
     expect(list[0]).toMatchObject({ caseId: null, shortPickLineId: null });
     expect((await readRoute(request(`/api/notifications/${list[0]!.id}/read`, "POST", undefined, otherCookie), { params: Promise.resolve({ id: list[0]!.id }) })).status).toBe(200);
     expect(await unreadCount(otherCookie)).toBe(3);
+  });
+});
+
+describeDatabase("Emitter bounded tick: many-user/many-case load, dedupe, early exit, chunk atomicity", () => {
+  const suffix = randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase();
+  const userIds: string[] = [];
+  const managerIds: string[] = [];
+  const caseIds: string[] = [];
+  // 15-digit numeric order numbers: unique per seed even within one millisecond,
+  // random start so a crashed run's leftovers cannot collide on retry.
+  let orderCounter = Math.floor(Math.random() * 1_000_000);
+
+  async function makeManager(name: string) {
+    const [user] = await getDb().insert(users).values({ identifier: `emit-${suffix}-${name}`, displayName: name,
+      pinHash: await hashPin("123456"), role: "TEAM_LEADER", permissions: defaultPermissions("TEAM_LEADER") }).returning();
+    userIds.push(user!.id);
+    managerIds.push(user!.id);
+    return user!;
+  }
+
+  async function seedOpenCases(count: number, reporterId: string, configId: string, ageMinutes: number) {
+    const agedAt = new Date(Date.now() - ageMinutes * 60_000);
+    const caseRows = Array.from({ length: count }, () => ({
+      orderNumber: `9${String(Date.now()).slice(-8)}${String(orderCounter++ % 1_000_000).padStart(6, "0")}`,
+      phase: "PICKING" as const, physicalState: "WITH_PICKER" as const, source: "PICKER_REPORT" as const,
+      createdByUserId: reporterId, pickingUserId: reporterId, configurationVersionId: configId,
+      createdAt: agedAt, updatedAt: agedAt,
+    }));
+    const inserted: string[] = [];
+    for (let offset = 0; offset < caseRows.length; offset += 100) {
+      const batch = await getDb().insert(orderCases).values(caseRows.slice(offset, offset + 100)).returning({ id: orderCases.id });
+      inserted.push(...batch.map((row) => row.id));
+    }
+    // Locations/SKUs must already be normalized: direct inserts bypass route normalization.
+    const lineRows = inserted.map((caseId) => ({ caseId, originalLocation: `EMIT${suffix}`, sku: "SKU-EMIT", missingQuantity: 1, reportedByUserId: reporterId }));
+    for (let offset = 0; offset < lineRows.length; offset += 100) {
+      await getDb().insert(shortPickLines).values(lineRows.slice(offset, offset + 100));
+    }
+    caseIds.push(...inserted);
+    return inserted;
+  }
+
+  afterAll(async () => {
+    const db = getDb();
+    if (caseIds.length) {
+      await db.delete(notifications).where(inArray(notifications.caseId, caseIds));
+      const lineIds = (await db.select({ id: shortPickLines.id }).from(shortPickLines).where(inArray(shortPickLines.caseId, caseIds))).map((row) => row.id);
+      if (lineIds.length) await db.delete(checkTasks).where(inArray(checkTasks.shortPickLineId, lineIds));
+      await db.delete(shortPickLines).where(inArray(shortPickLines.caseId, caseIds));
+      await db.delete(orderCases).where(inArray(orderCases.id, caseIds));
+    }
+    if (userIds.length) {
+      await db.delete(notificationPreferences).where(inArray(notificationPreferences.userId, userIds));
+      await db.delete(notifications).where(inArray(notifications.recipientUserId, userIds));
+      await db.delete(sessions).where(inArray(sessions.userId, userIds));
+      await db.delete(users).where(inArray(users.id, userIds));
+    }
+    await closeDb();
+  });
+
+  it("filters eligibility without a database: empty, unauthorized, disabled, custom threshold", () => {
+    expect(emitEligibleRecipients([], [])).toEqual([]);
+    const candidates = [
+      { id: "u1", permissions: ["VIEW_ALL_OPEN_CASES"] },
+      { id: "u2", permissions: ["VIEW_OWN_CASES"] },
+    ];
+    expect(emitEligibleRecipients(candidates, [])).toEqual([{ id: "u1", thresholdMinutes: 10 }]);
+    expect(emitEligibleRecipients(candidates,
+      [{ userId: "u1", key: "UNRESOLVED_OVER_THRESHOLD", enabled: false, thresholdMinutes: null }])).toEqual([]);
+    expect(emitEligibleRecipients(candidates,
+      [{ userId: "u1", key: "UNRESOLVED_OVER_THRESHOLD", enabled: true, thresholdMinutes: 45 }]))
+      .toEqual([{ id: "u1", thresholdMinutes: 45 }]);
+  });
+
+  it("builds tick work only for unresolved cases", () => {
+    const now = new Date("2026-09-29T12:00:00Z");
+    const cases = [
+      { id: "a", orderNumber: "1", createdAt: new Date("2026-09-29T11:00:00Z") },
+      { id: "b", orderNumber: "2", createdAt: new Date("2026-09-29T11:50:00Z") },
+    ];
+    expect(unresolvedEmitWorkItems(cases, new Set(["a"]), now)).toEqual([{ id: "a", orderNumber: "1", ageMinutes: 60 }]);
+    expect(unresolvedEmitWorkItems(cases, [], now)).toEqual([]);
+  });
+
+  it("completes a 30-manager x 50-case tick and dedupes the second tick to zero", async () => {
+    const [config] = await getDb().select().from(configurationVersions).orderBy(configurationVersions.version).limit(1);
+    expect(config).toBeDefined();
+    const managers = await Promise.all(Array.from({ length: 30 }, (_, index) => makeManager(`mgr-${index}`)));
+    const seeded = await seedOpenCases(50, managers[0]!.id, config!.id, 60);
+    expect(seeded).toHaveLength(50);
+    const first = await emitUnresolvedMonitoringNotifications();
+    expect(first).toBe(30 * 50);
+    const stored = await getDb().select({ count: sql<number>`count(*)::int` }).from(notifications)
+      .where(inArray(notifications.caseId, seeded));
+    expect(stored[0]?.count).toBe(30 * 50);
+    // Steady-state tick: every pair now conflicts on (recipientUserId, dedupeKey)
+    // and the unique index turns the whole tick into quiet no-ops.
+    const second = await emitUnresolvedMonitoringNotifications();
+    expect(second).toBe(0);
+    const storedAfter = await getDb().select({ count: sql<number>`count(*)::int` }).from(notifications)
+      .where(inArray(notifications.caseId, seeded));
+    expect(storedAfter[0]?.count).toBe(30 * 50);
+  }, 60_000);
+
+  it("keeps prior chunks committed when a later chunk fails (per-chunk atomicity)", async () => {
+    const [config] = await getDb().select().from(configurationVersions).orderBy(configurationVersions.version).limit(1);
+    expect(config).toBeDefined();
+    // Isolate: silence every previously seeded manager so the tick below only
+    // creates rows for the survivor's 3 fresh cases.
+    if (managerIds.length) {
+      await getDb().insert(notificationPreferences).values(managerIds.map((id) => ({
+        userId: id, key: "UNRESOLVED_OVER_THRESHOLD" as const, enabled: false }))).onConflictDoNothing();
+    }
+    const [survivor] = await getDb().insert(users).values({ identifier: `emit-${suffix}-survivor`, displayName: "survivor",
+      pinHash: await hashPin("123456"), role: "TEAM_LEADER", permissions: defaultPermissions("TEAM_LEADER") }).returning();
+    userIds.push(survivor!.id);
+    const seeded = await seedOpenCases(3, survivor!.id, config!.id, 60);
+    const before = await getDb().select({ count: sql<number>`count(*)::int` }).from(notifications)
+      .where(inArray(notifications.caseId, seeded));
+    expect(before[0]?.count).toBe(0);
+    // The survivor has no dedupe rows yet, so the tick creates one row per
+    // open case old enough to qualify — 53 independent single-case
+    // transactions (3 fresh + 50 load-test leftovers), each committing alone.
+    expect(await emitUnresolvedMonitoringNotifications(1)).toBeGreaterThanOrEqual(3);
+    await expect(getDb().transaction(async (tx) => {
+      await insertNotification(tx, { recipientUserId: survivor!.id, type: "UNRESOLVED_OVER_THRESHOLD",
+        caseId: seeded[0]!, dedupeKey: `atomic-${suffix}` });
+      throw new Error("simulated chunk failure");
+    })).rejects.toThrow("simulated chunk failure");
+    expect(await getDb().select().from(notifications).where(eq(notifications.dedupeKey, `atomic-${suffix}`))).toEqual([]);
+    const survived = await getDb().select({ count: sql<number>`count(*)::int` }).from(notifications)
+      .where(inArray(notifications.caseId, seeded));
+    expect(survived[0]?.count).toBe(3);
+  }, 60_000);
+
+  it("emits an INFO tick summary with cases scanned, eligible, and created", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    let summary: Record<string, unknown> | undefined;
+    try {
+      await emitUnresolvedMonitoringNotifications();
+      summary = info.mock.calls.map(([line]) => {
+        try { return JSON.parse(String(line)); } catch { return null; }
+      }).find((record) => record?.event === "notification.monitoring.emit_completed");
+    } finally {
+      info.mockRestore();
+    }
+    expect(summary).toMatchObject({ level: "info", area: "notifications" });
+    expect(typeof summary!.casesScanned).toBe("number");
+    expect(typeof summary!.eligibleRecipients).toBe("number");
+    expect(summary!.created).toBe(0);
+  });
+
+  it("exits early with zero when no recipient is eligible (empty-eligible path)", async () => {
+    const actives = await getDb().select({ id: users.id }).from(users).where(eq(users.status, "ACTIVE"));
+    for (let offset = 0; offset < actives.length; offset += 100) {
+      await getDb().insert(notificationPreferences).values(actives.slice(offset, offset + 100).map((row) => ({
+        userId: row.id, key: "UNRESOLVED_OVER_THRESHOLD" as const, enabled: false }))).onConflictDoNothing();
+    }
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    let created = -1;
+    let summary: Record<string, unknown> | undefined;
+    try {
+      created = await emitUnresolvedMonitoringNotifications();
+      summary = info.mock.calls.map(([line]) => {
+        try { return JSON.parse(String(line)); } catch { return null; }
+      }).find((record) => record?.event === "notification.monitoring.emit_completed");
+    } finally {
+      info.mockRestore();
+    }
+    expect(created).toBe(0);
+    expect(summary).toMatchObject({ level: "info", eligibleRecipients: 0, created: 0 });
   });
 });
