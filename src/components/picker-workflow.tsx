@@ -5,6 +5,8 @@ import type { Locale, MessageKey } from "@/i18n/messages";
 import { LiveRefreshStatus } from "@/components/live-refresh-status";
 import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
+import { CaseStatusBadge } from "@/components/case-status-badge";
+import { CaseTimeline, type CaseTimelineEvent, type CaseTimelineMessage } from "@/components/case-timeline";
 
 type ShortPickLine = { id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation?: string | null; retrievalState?: string; retrievalResponsibleUserId?: string | null };
 type OrderCase = {
@@ -14,6 +16,8 @@ type OrderCase = {
   physicalState: string;
   createdAt: string;
   lines: ShortPickLine[];
+  events?: CaseTimelineEvent[];
+  messages?: CaseTimelineMessage[];
 };
 type CaseSummary = Omit<OrderCase, "lines"> & { lines?: ShortPickLine[]; missingCount?: number; foundCount?: number; checkingCount?: number };
 type PriorCase = { id: string; createdAt: string; phase: string };
@@ -318,14 +322,14 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
           <button className="case-back-button" type="button" onClick={closeDetail} disabled={busy}>‹ {tr("backToMyOrders")}</button>
           <div className="case-detail-heading">
             <div><p className="case-eyebrow">{tr("orderLabel")}</p><h2 id="case-detail-title">{displayCase.orderNumber}</h2></div>
-            <span className="case-phase">{tr("casePhase", { phase: phaseLabel(displayCase.phase, tr) })}</span>
+            <span className="case-badges"><span className="case-phase">{tr("casePhase", { phase: phaseLabel(displayCase.phase, tr) })}</span><CaseStatusBadge status={displayCase.phase === "CLOSED" ? "CLOSED" : (displayCase.lines[0]?.state ?? displayCase.phase)} retrievalState={displayCase.lines[0]?.retrievalState ?? null} tr={tr} /></span>
           </div>
           <p className="case-physical-state">{tr("physicalState", { state: physicalStateLabel(displayCase.physicalState, tr) })}</p>
           <div className="case-line-list" aria-label={tr("reportedItems")}>
             {displayCase.lines.length === 0 ? <p className="case-empty-lines">{tr("noItemsYet")}</p> : displayCase.lines.map((line) => (
               <article className="case-line" key={line.id}>
                 <div className="case-line-primary"><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></div>
-                <span className={`case-line-status state-${line.state.toLowerCase()}`}>{statusKey(line.state, tr)}</span>
+                <span className="case-badges"><span className={`case-line-status state-${line.state.toLowerCase()}`}>{statusKey(line.state, tr)}</span><CaseStatusBadge status={line.state} retrievalState={line.retrievalState ?? null} tr={tr} kind="line" /></span>
                 {line.discoveredLocation && <p className="case-discovered-location">{tr("newLocation")}: <strong>{line.discoveredLocation}</strong></p>}
                 {canConfirmRetrieval && line.state === "FOUND" && line.retrievalResponsibleUserId === userId && ["PENDING", "FAILED"].includes(line.retrievalState || "") && <div className="case-retrieval-actions"><button type="button" className="secondary-button" disabled={busy} onClick={() => void confirmLineRetrieval(line.id, "FAILED")}>{tr("reportRetrievalFailed")}</button><button type="button" className="primary-button" disabled={busy} onClick={() => void confirmLineRetrieval(line.id, "RETRIEVED")}>{tr("confirmRetrieved")}</button></div>}
               </article>
@@ -345,6 +349,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
               {!duplicateLine && <button className="primary-button" type="submit" disabled={busy}>{busy ? tr("savingLine") : tr("saveMissingItem")}</button>}
             </form>
           ))}
+          {displayCase.id && (displayCase.events?.length || displayCase.messages?.length) ? <section className="case-timeline-section" aria-label={tr("caseTimeline")}><h3>{tr("caseTimeline")}</h3><CaseTimeline events={displayCase.events || []} messages={displayCase.messages || []} tr={tr} formatDate={(value) => formatDate(value, locale)} className="case-shared-timeline" /></section> : null}
           {activeCase && canStage && activeCase.phase === "PICKING" && <div className="case-stage-panel">{stageConfirm ? <><p>{tr("stagingConfirm")}</p><div className="case-stage-actions"><button className="secondary-button" type="button" onClick={() => setStageConfirm(false)} disabled={busy}>{tr("cancel")}</button><button className="primary-button" type="button" onClick={() => void stageOrder()} disabled={busy}>{tr("stagingConfirmButton")}</button></div></> : <button className="secondary-button" type="button" onClick={() => setStageConfirm(true)} disabled={busy}>{tr("stagingAction")}</button>}</div>}
           {activeCase && canClose && activeCase.phase !== "CLOSED" && activeCase.lines.length > 0 && activeCase.lines.every((line) => ["RESOLVED", "CANCELLED"].includes(line.state)) && <button className="secondary-button case-close-button" type="button" disabled={busy} onClick={() => void closeResolvedCase()}>{tr("closeCase")}</button>}
         </section>
@@ -369,7 +374,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
               const missing = item.missingCount ?? lines.reduce((sum, line) => sum + (line.state.toUpperCase() === "OPEN" || line.state.toUpperCase() === "CHECKING" ? line.quantity : 0), 0);
               const found = item.foundCount ?? lines.reduce((sum, line) => sum + (line.state.toUpperCase() === "FOUND" || line.state.toUpperCase() === "RETRIEVED" ? line.quantity : 0), 0);
               const checking = item.checkingCount ?? lines.filter((line) => line.state.toUpperCase() === "CHECKING").length;
-              return <article className="picker-case-row" key={item.id}><div className="picker-case-main"><strong>{item.orderNumber}</strong><span>{tr("missingCount", { count: String(missing) })}{found > 0 ? ` · ${tr("foundCount", { count: String(found) })}` : ""}{checking > 0 ? ` · ${tr("checkingCount", { count: String(checking) })}` : ""}</span></div><button className="case-open-button" type="button" onClick={() => void openCase(item.id)} disabled={busy}>{tr("openCase")}</button></article>;
+              return <article className="picker-case-row" key={item.id}><div className="picker-case-main"><strong>{item.orderNumber}</strong><CaseStatusBadge status={(item.lines?.[0]?.state ?? (checking > 0 ? "CHECKING" : found > 0 ? "FOUND" : "OPEN"))} tr={tr} /><span>{tr("missingCount", { count: String(missing) })}{found > 0 ? ` · ${tr("foundCount", { count: String(found) })}` : ""}{checking > 0 ? ` · ${tr("checkingCount", { count: String(checking) })}` : ""}</span></div><button className="case-open-button" type="button" onClick={() => void openCase(item.id)} disabled={busy}>{tr("openCase")}</button></article>;
             })}</div>}
           </section>}
         </>

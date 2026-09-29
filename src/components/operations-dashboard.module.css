@@ -65,6 +65,10 @@
 .attentionBadgeCritical { background: var(--coral-wash); color: var(--error-ink); }
 .phase { background: var(--green-wash); border-radius: 999px; color: var(--green); font-size: 11px; font-weight: 800; padding: 5px 9px; }.phaseStaged { background: var(--hover); color: var(--ink-soft); }
 .phaseClosed { background: var(--hover); color: var(--muted); }.closedCard { border-left-color: var(--muted); }
+.caseStatusBadge { display: inline-flex; max-width: 100%; flex-wrap: wrap; gap: 6px; }
+.caseStatusBadge > span { max-width: 100%; overflow-wrap: anywhere; }
+.timelineResolution { color: var(--green); font-weight: 700; }
+.timelineFallback { color: var(--ops-muted); font-style: italic; }
 .caseData { color: var(--ops-muted); flex-wrap: wrap; gap: 17px; font-size: 12px; }.caseData b { color: var(--ops-ink); }.age { color: var(--green); font-weight: 850; margin-left: auto; }
 .caseFoot { border-top: 1px solid var(--line); color: var(--ops-muted); font-size: 12px; gap: 16px; padding-top: 9px; }.caseFoot > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.caseFoot > span:first-child { color: var(--ops-ink); font-weight: 700; }.caseFoot > span:last-child { margin-left: auto; }.issue { color: var(--ink-soft); }
 .empty { color: var(--ops-muted); margin: 0; padding: 24px 4px; text-align: center; }

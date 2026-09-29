@@ -145,3 +145,25 @@ describe("Integration i18n: four languages with English fallback", () => {
     expect(translate(messages, "caseDeepLinkForbidden")).toBe(trFor("en")("caseDeepLinkForbidden"));
   });
 });
+
+describe("Timeline completion codes (appended)", () => {
+  it("renders every new timeline/badge key in en, nl, pl, and es without blanks", () => {
+    const keys = [
+      "timelineResolutionFOUND", "timelineResolutionFOUND_AT_ORIGINAL", "timelineResolutionNOT_FOUND",
+      "timelineResolutionWRONG_LOCATION", "timelineResolutionOTHER", "timelineResolutionUnknown",
+      "timelineCompletedAtOriginal", "timelineCompletedAtNew", "timelineSparseCompletion",
+      "badgeStatusWaiting", "badgeStatusReady", "badgeStatusDone",
+      "timelineCaseStatusLabel", "timelineLineStatusLabel",
+    ] as const;
+    for (const locale of supportedLocales) {
+      const tr = trFor(locale);
+      for (const key of keys) {
+        const text = tr(key);
+        expect(text.length).toBeGreaterThan(0);
+        expect(text).not.toBe(key);
+      }
+      // Location placeholders interpolate real location codes (never translated away).
+      expect(tr("timelineCompletedAtNew", { location: "02.BB.2" })).toContain("02.BB.2");
+    }
+  });
+});
