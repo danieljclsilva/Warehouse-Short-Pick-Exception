@@ -179,4 +179,10 @@ Wave 0 (2026-09-28) delivered docs-only contracts: PRD amendments plus the bindi
 - New `MANAGER` role above Team Leader and below Admin with Admin-only `EDIT_MANAGER_PERMISSIONS`; only Admin creates/manages Manager accounts; Managers cannot touch Admin accounts; Admin/Manager hidden from picker/team-leader/assistant/troubleshooter surfaces (Managers see Managers, never Admins).
 - Migration `0019_hot_wildside` adds `MANAGER` to `user_role` and `MANAGER_MANUAL` to `case_source`. PRD §5–§7 amended; four-language labels added.
 - Local gates: 208/208 tests (32 files), typecheck, lint, `db:check`, production build pass. Live TEST/PROD deployment and migration not yet run.
-- Deployed 2026-09-30 (`main` @ `a385f4e`): PROD web `c27c9362` SUCCESS with `/api/health` 200 and login 200 (pre-deploy `npm run db:migrate` applied 0019); TEST `web-test` `feedb962` SUCCESS with `/api/health` 200 + `/api/environment` test. No live Manager login QA yet.
+## Troubleshooter reporting parity + order status control (2026-09-30, `main` @ `29caaa9`)
+
+- Troubleshooters report like pickers: defaults gain `REPORT_SHORT_PICK`/`VIEW_OWN_CASES`/`MARK_ORDER_STAGED` (Assistant gains staging default); `POST /api/cases`, My Work nav, and notification routing include troubleshooters.
+- Manual case creation stays manager-scoped but now accepts an active picker or troubleshooter as original picker, plus a selectable `PICKING`/`STAGED` phase that persists matching physical state, audit, and `CASE_CREATED` details.
+- Reversible order status: new `PATCH /api/cases/[id]/phase`; staging reuses the existing guarded flow, return-to-picking writes audited `ORDER_RETURNED_TO_PICKING`; operations drawer exposes an obvious order-status dropdown for `MARK_ORDER_STAGED` holders. i18n added en/nl/pl/es.
+- Gates: 211/211 tests (32 files), typecheck, lint, production build, `db:check` pass. CI `36762021084` SUCCESS (tests/typecheck/lint/build/db:check/migrations/backup/e2e).
+- Deployed: PROD web `b815f8c3` SUCCESS (`/api/health` 200, login page 200, pre-deploy `npm run db:migrate` applied cleanly); TEST `web-test` `f157d341` SUCCESS (`/api/health` 200, `/api/environment` test). No schema change, no migration needed.
