@@ -187,6 +187,12 @@ Wave 0 (2026-09-28) delivered docs-only contracts: PRD amendments plus the bindi
 - Gates: 214/214 tests (33 files), typecheck, lint, production build, `db:check` pass. No schema change, no migration needed.
 - Deployed: PROD `/api/health` 200 `{status:ok,database:ok}`, login page 200, new `GET /api/users/directory` returns 401 unauthenticated (live at ~20:08 UTC after the push build). TEST web not verified in this pass.
 
+## Drawer line-card restack (2026-09-30, `main` @ `465c7ad`)
+
+- Fixes the scattered mobile layout from the screenshot: line badge now uses the coded projection (`lineProjections[].displayStatus`), the status sentence spans full width below the title row, and Record-replenishment / Report-new-location stack full-width in a dedicated actions block. No behavior or permission change.
+- Gates: 214/214 tests (33 files), typecheck, lint, production build pass.
+- Deployed: PROD `/api/health` 200, new `lineActions` marker live in production JS chunks.
+
 ## State-only replenishment + retrieval routing + stage-aware statuses (2026-09-30, `main` @ `b3a8f04`)
 
 - Replenishment is state-only: `POST .../replenishment` takes `{state}` only (no note, no assignment); Admin/Manager excluded from the directory (route kept, unused by replenishment); pickers AND troubleshooters hold no `RECORD_REPLENISHMENT` — writer lives on Checks detail + operations drawer for manager roles only, My Work keeps badge + retrieval + location reporter.
