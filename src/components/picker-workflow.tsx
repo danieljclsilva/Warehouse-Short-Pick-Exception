@@ -161,6 +161,8 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
     void openCase(focusedCaseId).finally(() => { onFocusConsumed?.(); });
   }, [focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, openCase]);
   const focusOverlay = focusOverlayNonce !== 0;
+  const detailRef = useRef<HTMLElement | null>(null);
+  const openedCaseKey = useRef<string | null>(null);
 
   const stageOrder = async () => {
     if (!activeCase) return;
@@ -329,13 +331,22 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
   const displayCase: OrderCase | null = activeCase ?? (pendingOrder
     ? { id: "", orderNumber: pendingOrder, phase: "PICKING", physicalState: "WITH_PICKER", createdAt: "", lines: [] }
     : null);
+  const displayCaseKey = activeCase ? activeCase.id : pendingOrder ? `pending:${pendingOrder}` : null;
+  useEffect(() => {
+    if (!displayCaseKey || openedCaseKey.current === displayCaseKey) return;
+    openedCaseKey.current = displayCaseKey;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    detailRef.current?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+    detailRef.current?.focus({ preventScroll: true });
+  }, [displayCaseKey]);
+  useEffect(() => { if (!displayCaseKey) openedCaseKey.current = null; }, [displayCaseKey]);
 
   return (
     <div className="picker-workflow">
       {error && <p className="case-alert" role="alert">{error}</p>}
       {actionNotice && <p className="check-notice" role="status">{actionNotice}</p>}
       {displayCase ? (
-        <section className={`case-detail${focusOverlay ? " case-notification-overlay" : ""}`} aria-labelledby="case-detail-title">
+        <section ref={detailRef} tabIndex={-1} className={`case-detail${focusOverlay ? " case-notification-overlay" : ""}`} aria-labelledby="case-detail-title">
           <button className="case-back-button" type="button" onClick={closeDetail} disabled={busy}>‹ {tr("backToMyOrders")}</button>
           <div className="case-detail-heading">
             <div><p className="case-eyebrow">{tr("orderLabel")}</p><h2 id="case-detail-title">{displayCase.orderNumber}</h2></div>

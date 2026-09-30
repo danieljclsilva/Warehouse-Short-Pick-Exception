@@ -49,9 +49,9 @@ type Props = {
   canReassign: boolean;
   canRetrieve: boolean;
   canMessage: boolean;
+  canViewAllOpenCases?: boolean;
   focusedCaseId?: string | null;
   focusedNonce?: number;
-  focusFromNotification?: boolean;
   onFocusConsumed?: () => void;
   onFocusedClose?: () => void;
 };
@@ -62,7 +62,7 @@ async function readJson(response: Response) {
   };
 }
 
-export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canComplete, canAssign, canReassign, canRetrieve, canMessage, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: Props) {
+export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canComplete, canAssign, canReassign, canRetrieve, canMessage, canViewAllOpenCases = false, focusedCaseId, focusedNonce, onFocusConsumed, onFocusedClose }: Props) {
   const [available, setAvailable] = useState<Check[]>([]);
   const [mine, setMine] = useState<Check[]>([]);
   const [active, setActive] = useState<Check[]>([]);
@@ -78,6 +78,8 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
   const [notice, setNotice] = useState("");
   const [detail, setDetail] = useState<CaseDetail | null>(null);
   const [message, setMessage] = useState("");
+  const detailRef = useRef<HTMLElement | null>(null);
+  const scrolledDetailId = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     const requests: Array<Promise<[string, Response]>> = [];
@@ -130,17 +132,20 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
     } catch { setError(tr("caseLoadError")); }
   }, [tr]);
   const focusConsumedRef = useRef(0);
-  const [focusOverlayNonce, setFocusOverlayNonce] = useState(0);
   useEffect(() => {
     if (!focusedCaseId || !focusedNonce || focusConsumedRef.current === focusedNonce) return;
     focusConsumedRef.current = focusedNonce;
-    queueMicrotask(() => { if (focusFromNotification) setFocusOverlayNonce(focusedNonce); });
     void openDetails(focusedCaseId).finally(() => { onFocusConsumed?.(); });
-  }, [focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, openDetails]);
+  }, [focusedCaseId, focusedNonce, onFocusConsumed, openDetails]);
   useEffect(() => {
-    if (detail && focusFromNotification) document.getElementById("notification-case-detail")?.scrollIntoView({ block: "start" });
-  }, [detail, focusFromNotification]);
-  const focusOverlay = focusOverlayNonce !== 0;
+    if (!detail || scrolledDetailId.current === detail.id) return;
+    scrolledDetailId.current = detail.id;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    detailRef.current?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+    detailRef.current?.focus({ preventScroll: true });
+  }, [detail]);
+  useEffect(() => { if (!detail) scrolledDetailId.current = null; }, [detail]);
+  const closeDetail = () => { setDetail(null); onFocusedClose?.(); };
 
   const mutate = async (id: string, path: string, method: "POST" | "PATCH", body?: unknown) => {
     setBusyId(id);
@@ -172,11 +177,12 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
     </select>
   );
 
-  const checkCard = (check: Check, mode: "available" | "mine" | "active") => (
-    <article className="check-card" key={check.id}>
+  const checkCard = (check: Check, mode: "available" | "mine" | "active") => {
+    const canOpenCase = mode !== "available" || canViewAllOpenCases;
+    return <article className="check-card" key={check.id}>
       <div className="check-card-head"><strong>{tr("orderLabel")} {check.orderNumber}</strong><span>{check.casePhase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span></div>
       <p className="check-card-item"><strong>{check.location}</strong><span>{check.sku} ×{check.quantity}</span></p>
-      <button className="check-detail-button" type="button" onClick={() => void openDetails(check.caseId)}>{tr("openCase")}</button>
+      {canOpenCase && <button className="check-detail-button" type="button" onClick={() => void openDetails(check.caseId)}>{tr("openCase")}</button>}
       {mode === "available" && canClaim && <button type="button" className="primary-button" disabled={Boolean(busyId)} onClick={() => void mutate(check.id, `/api/checks/${check.id}/claim`, "POST")}>{tr("claimCheck")}</button>}
       {mode === "available" && canAssign && <div className="check-assign-row">{workerSelect(check.id)}<button type="button" className="secondary-button" disabled={Boolean(busyId) || !selectedWorkers[check.id]} onClick={() => void mutate(check.id, `/api/checks/${check.id}/assign`, "PATCH", { userId: selectedWorkers[check.id] })}>{tr("assignCheck")}</button></div>}
       {mode === "active" && canReassign && <div className="check-assign-row">{workerSelect(check.id)}<button type="button" className="secondary-button" disabled={Boolean(busyId) || !selectedWorkers[check.id]} onClick={() => void mutate(check.id, `/api/checks/${check.id}/assign`, "PATCH", { userId: selectedWorkers[check.id] })}>{tr("reassignCheck")}</button></div>}
@@ -189,9 +195,23 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
           <div className="check-card-actions"><button type="button" className="secondary-button" onClick={() => setCompletionTaskId("")}>{tr("cancel")}</button><button type="submit" className="primary-button" disabled={Boolean(busyId)}>{tr("completeCheck")}</button></div>
         </form>
       ) : <button type="button" className="primary-button" onClick={() => { setCompletionTaskId(check.id); setCompletionCode("FOUND"); setDiscoveredLocation(""); }}>{tr("completeCheck")}</button>)}
-    </article>
-  );
+    </article>;
+  };
 
+  if (detail) return <div className="check-workflow">
+    {error && <p className="case-alert" role="alert">{error}</p>}
+    {notice && <p className="check-notice" role="status">{notice}</p>}
+    <button className="case-back-button" type="button" onClick={closeDetail}>‹ {tr("backToChecks")}</button>
+    <section ref={detailRef} id="check-case-detail" tabIndex={-1} className="check-detail-panel" aria-label={tr("caseDetails")}>
+      <div className="check-detail-heading"><div><span>{tr("orderLabel")}</span><h2>{detail.orderNumber}</h2><span className="case-badges"><CaseStatusBadge status={detail.lines[0]?.state ?? detail.phase} tr={tr} /></span></div></div>
+      <p className="check-detail-state">{detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · {detail.physicalState === "SHORT_PICK_HOLD" ? tr("physicalShortPickHold") : detail.physicalState === "WITH_PICKER" ? tr("physicalWithPicker") : detail.physicalState === "OTHER_KNOWN_LOCATION" ? tr("physicalOtherLocation") : tr("physicalUnknown")}{detail.physicalLocation ? ` · ${detail.physicalLocation}` : ""}</p>
+      <h3>{tr("reportedItems")}</h3>
+      <div className="check-detail-lines">{detail.lines.map((line) => <div key={line.id}><strong>{line.location} · {line.sku} ×{line.quantity}</strong><span>{line.discoveredLocation || (line.state === "CHECKING" ? tr("caseChecking") : line.state === "FOUND" ? tr("caseFound") : line.state === "RESOLVED" ? tr("caseRetrieved") : tr("caseOpen"))}</span><small>{detail.checks.filter((check) => check.shortPickLineId === line.id).map((check) => check.completionCode ? `${tr(({ FOUND: "timelineResolutionFOUND", FOUND_AT_ORIGINAL: "timelineResolutionFOUND_AT_ORIGINAL", NOT_FOUND: "timelineResolutionNOT_FOUND", WRONG_LOCATION: "timelineResolutionWRONG_LOCATION", OTHER: "timelineResolutionOTHER" } as const)[check.completionCode as "FOUND" | "FOUND_AT_ORIGINAL" | "NOT_FOUND" | "WRONG_LOCATION" | "OTHER"] ?? "timelineResolutionUnknown")} · ${new Date(check.completedAt || "").toLocaleString(locale)}` : check.status === "AVAILABLE" ? tr("availableChecks") : tr("caseChecking")).join(" / ")}</small></div>)}</div>
+      <h3>{tr("caseTimeline")}</h3>
+      <CaseTimeline events={detail.events as CaseTimelineEvent[]} messages={detail.messages} tr={tr} formatDate={(value) => new Date(value).toLocaleString(locale)} className="check-detail-timeline" />
+      {canMessage && <form className="check-detail-message" onSubmit={async (event) => { event.preventDefault(); if (!message.trim()) return; const saved = await mutate(detail.id, `/api/cases/${detail.id}/messages`, "POST", { message: message.trim() }); if (saved) setMessage(""); }}><label className="form-field"><span>{tr("caseMessageLabel")}</span><textarea value={message} onChange={(event) => setMessage(event.target.value)} maxLength={2000} rows={3} required /></label><button className="primary-button" type="submit" disabled={Boolean(busyId)}>{tr("sendCaseMessage")}</button></form>}
+    </section>
+  </div>;
   return <div className="check-workflow">
     <div className="content-heading"><div><h1>{tr("checks")}</h1></div><div className="live-refresh-controls"><LiveRefreshStatus state={liveState} tr={tr} /><button type="button" className="refresh-cases-button" onClick={() => void load()}>{tr("refresh")}</button></div></div>
     {error && <p className="case-alert" role="alert">{error}</p>}
@@ -206,14 +226,5 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
     </article>)}</div> : <p className="check-empty">{tr("noRetrievals")}</p>}</section>}
     {canViewAvailable && <section className="check-section"><h2>{tr("availableChecks")}</h2>{loading ? <p>{tr("loading")}</p> : available.length ? <div className="check-card-grid">{available.map((check) => checkCard(check, "available"))}</div> : <p className="check-empty">{tr("noAvailableChecks")}</p>}</section>}
     {canReassign && <section className="check-section"><h2>{tr("activeChecks")}</h2>{loading ? <p>{tr("loading")}</p> : active.length ? <div className="check-card-grid">{active.map((check) => checkCard(check, "active"))}</div> : <p className="check-empty">{tr("noActiveChecks")}</p>}</section>}
-    {detail && <section id={focusOverlay ? "notification-case-detail" : undefined} className={`check-detail-panel${focusOverlay ? " case-notification-overlay" : ""}`} aria-label={tr("caseDetails")}>
-      <div className="check-detail-heading"><div><span>{tr("orderLabel")}</span><h2>{detail.orderNumber}</h2><span className="case-badges"><CaseStatusBadge status={detail.lines[0]?.state ?? detail.phase} tr={tr} /></span></div><button className="secondary-button" type="button" onClick={() => { setDetail(null); setFocusOverlayNonce(0); onFocusedClose?.(); }}>{tr("closePanel")}</button></div>
-      <p className="check-detail-state">{detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · {detail.physicalState === "SHORT_PICK_HOLD" ? tr("physicalShortPickHold") : detail.physicalState === "WITH_PICKER" ? tr("physicalWithPicker") : detail.physicalState === "OTHER_KNOWN_LOCATION" ? tr("physicalOtherLocation") : tr("physicalUnknown")}{detail.physicalLocation ? ` · ${detail.physicalLocation}` : ""}</p>
-      <h3>{tr("reportedItems")}</h3>
-      <div className="check-detail-lines">{detail.lines.map((line) => <div key={line.id}><strong>{line.location} · {line.sku} ×{line.quantity}</strong><span>{line.discoveredLocation || (line.state === "CHECKING" ? tr("caseChecking") : line.state === "FOUND" ? tr("caseFound") : line.state === "RESOLVED" ? tr("caseRetrieved") : tr("caseOpen"))}</span><small>{detail.checks.filter((check) => check.shortPickLineId === line.id).map((check) => check.completionCode ? `${tr(({ FOUND: "timelineResolutionFOUND", FOUND_AT_ORIGINAL: "timelineResolutionFOUND_AT_ORIGINAL", NOT_FOUND: "timelineResolutionNOT_FOUND", WRONG_LOCATION: "timelineResolutionWRONG_LOCATION", OTHER: "timelineResolutionOTHER" } as const)[check.completionCode as "FOUND" | "FOUND_AT_ORIGINAL" | "NOT_FOUND" | "WRONG_LOCATION" | "OTHER"] ?? "timelineResolutionUnknown")} · ${new Date(check.completedAt || "").toLocaleString(locale)}` : check.status === "AVAILABLE" ? tr("availableChecks") : tr("caseChecking")).join(" / ")}</small></div>)}</div>
-      <h3>{tr("caseTimeline")}</h3>
-      <CaseTimeline events={detail.events as CaseTimelineEvent[]} messages={detail.messages} tr={tr} formatDate={(value) => new Date(value).toLocaleString(locale)} className="check-detail-timeline" />
-      {canMessage && <form className="check-detail-message" onSubmit={async (event) => { event.preventDefault(); if (!message.trim()) return; const saved = await mutate(detail.id, `/api/cases/${detail.id}/messages`, "POST", { message: message.trim() }); if (saved) setMessage(""); }}><label className="form-field"><span>{tr("caseMessageLabel")}</span><textarea value={message} onChange={(event) => setMessage(event.target.value)} maxLength={2000} rows={3} required /></label><button className="primary-button" type="submit" disabled={Boolean(busyId)}>{tr("sendCaseMessage")}</button></form>}
-    </section>}
   </div>;
 }
