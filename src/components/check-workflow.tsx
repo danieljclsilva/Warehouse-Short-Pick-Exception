@@ -7,6 +7,7 @@ import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import { CaseStatusBadge } from "@/components/case-status-badge";
 import { CaseTimeline, type CaseTimelineEvent } from "@/components/case-timeline";
+import { ReplenishmentForm } from "@/components/replenishment-form";
 
 type Check = {
   id: string;
@@ -34,7 +35,7 @@ type Retrieval = {
 type Worker = { id: string; displayName: string; status: string; permissions: string[] };
 type CaseDetail = {
   id: string; orderNumber: string; phase: string; physicalState: string; physicalLocation: string | null;
-  lines: Array<{ id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation: string | null }>;
+  lines: Array<{ id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation: string | null; replenishmentState?: string | null; replenishmentNote?: string | null }>;
   checks: Array<{ id: string; shortPickLineId: string; status: string; completionCode: string | null; completedAt: string | null }>;
   events: Array<{ id: string; eventType: string; actorName: string | null; createdAt: string; completionCode?: string | null; discoveredLocation?: string | null; originalLocation?: string | null; taskId?: string | null }>;
   messages: Array<{ id: string; authorName: string; message: string; createdAt: string }>;
@@ -49,6 +50,7 @@ type Props = {
   canReassign: boolean;
   canRetrieve: boolean;
   canMessage: boolean;
+  canRecordReplenishment?: boolean;
   canViewAllOpenCases?: boolean;
   focusedCaseId?: string | null;
   focusedNonce?: number;
@@ -62,7 +64,7 @@ async function readJson(response: Response) {
   };
 }
 
-export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canComplete, canAssign, canReassign, canRetrieve, canMessage, canViewAllOpenCases = false, focusedCaseId, focusedNonce, onFocusConsumed, onFocusedClose }: Props) {
+export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canComplete, canAssign, canReassign, canRetrieve, canMessage, canRecordReplenishment = false, canViewAllOpenCases = false, focusedCaseId, focusedNonce, onFocusConsumed, onFocusedClose }: Props) {
   const [available, setAvailable] = useState<Check[]>([]);
   const [mine, setMine] = useState<Check[]>([]);
   const [active, setActive] = useState<Check[]>([]);
@@ -128,7 +130,13 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       const response = await fetch(`/api/cases/${caseId}`, { cache: "no-store" });
       const body = await readJson(response);
       if (!response.ok || !body.case) throw new Error(tr("caseLoadError"));
-      setDetail(body.case);
+      const raw = body.case as CaseDetail & { lineProjections?: Array<{ lineId: string; replenishment?: { state?: string; note?: string | null } }> };
+      const projections = new Map((raw.lineProjections ?? []).map((entry) => [entry.lineId, entry.replenishment]));
+      setDetail(raw.lineProjections ? { ...raw, lines: raw.lines.map((line) => {
+        const projected = projections.get(line.id);
+        if (!projected?.state) return line;
+        return { ...line, replenishmentState: projected.state, replenishmentNote: projected.note ?? line.replenishmentNote ?? null };
+      }) } : raw);
     } catch { setError(tr("caseLoadError")); }
   }, [tr]);
   const focusConsumedRef = useRef(0);
@@ -207,6 +215,7 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       <p className="check-detail-state">{detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · {detail.physicalState === "SHORT_PICK_HOLD" ? tr("physicalShortPickHold") : detail.physicalState === "WITH_PICKER" ? tr("physicalWithPicker") : detail.physicalState === "OTHER_KNOWN_LOCATION" ? tr("physicalOtherLocation") : tr("physicalUnknown")}{detail.physicalLocation ? ` · ${detail.physicalLocation}` : ""}</p>
       <h3>{tr("reportedItems")}</h3>
       <div className="check-detail-lines">{detail.lines.map((line) => <div key={line.id}><strong>{line.location} · {line.sku} ×{line.quantity}</strong><span>{line.discoveredLocation || (line.state === "CHECKING" ? tr("caseChecking") : line.state === "FOUND" ? tr("caseFound") : line.state === "RESOLVED" ? tr("caseRetrieved") : tr("caseOpen"))}</span><small>{detail.checks.filter((check) => check.shortPickLineId === line.id).map((check) => check.completionCode ? `${tr(({ FOUND: "timelineResolutionFOUND", FOUND_AT_ORIGINAL: "timelineResolutionFOUND_AT_ORIGINAL", NOT_FOUND: "timelineResolutionNOT_FOUND", WRONG_LOCATION: "timelineResolutionWRONG_LOCATION", OTHER: "timelineResolutionOTHER" } as const)[check.completionCode as "FOUND" | "FOUND_AT_ORIGINAL" | "NOT_FOUND" | "WRONG_LOCATION" | "OTHER"] ?? "timelineResolutionUnknown")} · ${new Date(check.completedAt || "").toLocaleString(locale)}` : check.status === "AVAILABLE" ? tr("availableChecks") : tr("caseChecking")).join(" / ")}</small></div>)}</div>
+      {canRecordReplenishment && detail.phase !== "CLOSED" ? <section aria-label={tr("lineReplenishmentState")}>{detail.lines.filter((line) => !["RESOLVED", "CANCELLED"].includes(line.state) && (line.replenishmentState ?? "NONE") !== "COMPLETED").map((line) => <div key={line.id}><p className="check-card-item"><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></p><ReplenishmentForm tr={tr} caseId={detail.id} lineId={line.id} currentState={line.replenishmentState ?? "NONE"} compact onSaved={async () => { await openDetails(detail.id); setNotice(tr("replenishmentSaved")); }} /></div>)}</section> : null}
       <h3>{tr("caseTimeline")}</h3>
       <CaseTimeline events={detail.events as CaseTimelineEvent[]} messages={detail.messages} tr={tr} formatDate={(value) => new Date(value).toLocaleString(locale)} className="check-detail-timeline" />
       {canMessage && <form className="check-detail-message" onSubmit={async (event) => { event.preventDefault(); if (!message.trim()) return; const saved = await mutate(detail.id, `/api/cases/${detail.id}/messages`, "POST", { message: message.trim() }); if (saved) setMessage(""); }}><label className="form-field"><span>{tr("caseMessageLabel")}</span><textarea value={message} onChange={(event) => setMessage(event.target.value)} maxLength={2000} rows={3} required /></label><button className="primary-button" type="submit" disabled={Boolean(busyId)}>{tr("sendCaseMessage")}</button></form>}

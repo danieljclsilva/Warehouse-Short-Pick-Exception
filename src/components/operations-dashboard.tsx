@@ -8,6 +8,7 @@ import { useLiveRefresh } from "@/components/use-live-refresh";
 import styles from "./operations-dashboard.module.css";
 import { CaseStatusBadge } from "@/components/case-status-badge";
 import { CaseTimeline, type CaseTimelineEvent } from "@/components/case-timeline";
+import { ReplenishmentForm } from "@/components/replenishment-form";
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
 type Metrics = {
@@ -26,6 +27,9 @@ type CaseLine = {
   state: string;
   retrievalState?: string;
   discoveredLocation?: string | null;
+  replenishmentState?: string | null;
+  replenishmentNote?: string | null;
+  replenishmentActorName?: string | null;
 };
 type CaseEvent = { id: string; eventType: string; createdAt: string; actorName?: string | null; payload?: Record<string, unknown>; completionCode?: string | null; discoveredLocation?: string | null; originalLocation?: string | null; taskId?: string | null };
 type CaseMessage = { id: string; message: string; createdAt: string; authorName: string; shortPickLineId?: string | null };
@@ -43,7 +47,7 @@ type CaseSummary = {
   physicalState?: string;
   physicalLocation?: string | null;
   lines?: CaseLine[];
-  lineProjections?: Array<{ displayStatus: string }>;
+  lineProjections?: Array<{ lineId: string; displayStatus: string; replenishment?: { state: string; note: string | null; actorName: string | null; at: string | null }; nextActionCode?: string; actionOwnerName?: string | null; blockingReasonCode?: string | null }>;
   projection?: { lines?: Array<{ displayStatus: string }> };
   events?: CaseEvent[];
   messages?: CaseMessage[];
@@ -73,6 +77,7 @@ type Props = {
   canClose: boolean;
   canReopen: boolean;
   canChangePhase: boolean;
+  canRecordReplenishment?: boolean;
   focusedCaseId?: string | null;
   focusedNonce?: number;
   focusFromNotification?: boolean;
@@ -143,7 +148,7 @@ function attentionLabel(level: CaseSummary["attentionLevel"], tr: Translator) {
   return tr(keys[level ?? "NORMAL"]);
 }
 
-export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, canAssign, canClose, canReopen, canChangePhase, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: Props) {
+export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, canAssign, canClose, canReopen, canChangePhase, canRecordReplenishment = false, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: Props) {
   const dashboardRequestInFlight = useRef(false);
   const [metrics, setMetrics] = useState<Metrics>(EMPTY_METRICS);
   const [attentionThresholdMinutes, setAttentionThresholdMinutes] = useState(15);
@@ -424,7 +429,16 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
         <p className={styles.drawerSummary}>{selected.phase === "CLOSED" ? `${tr("caseClosed")} · ${tr("caseClosedOn", { date: formatDate(selected.resolvedAt || selected.createdAt, locale) })}` : `${selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · ${formatAge(selected.createdAt)}`} · {selected.pickerName || tr("unknownPicker")}</p>
         <p className={styles.drawerPhysical}>{tr("physicalState", { state: physicalStateLabel(selected.physicalState, tr) })}{selected.physicalLocation ? ` · ${selected.physicalLocation}` : ""}</p>
         <div className={styles.detailGrid}><div><span>{tr("caseResponsible")}</span><strong>{selected.responsibleName || "—"}</strong></div><div><span>{tr("caseSource")}</span><strong>{tr(`source_${selected.source}` as MessageKey)}</strong></div><div><span>{tr("missingItemsLabel")}</span><strong>{selected.missingCount}</strong></div></div>
-        <section className={styles.detailSection}><h3>{tr("reportedItems")}</h3>{selected.lines?.length ? <div className={styles.lineList}>{selected.lines.map((line) => <article className={styles.line} key={line.id}><div><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></div><span className={styles.caseStatusBadge}><CaseStatusBadge status={line.state} retrievalState={line.retrievalState ?? null} tr={tr} kind="line" /></span><span className={styles.lineState}>{lineStateLabel(line.state, tr)}{line.retrievalState ? ` · ${retrievalStateLabel(line.retrievalState, tr)}` : ""}</span>{line.discoveredLocation && <small>{tr("newLocation")}: {line.discoveredLocation}</small>}</article>)}</div> : <p>{tr("noItemsYet")}</p>}</section>
+        <section className={styles.detailSection}><h3>{tr("reportedItems")}</h3>{selected.lines?.length ? <div className={styles.lineList}>{(() => {
+          const projections = new Map((selected.lineProjections ?? []).map((entry) => [entry.lineId, entry]));
+          return selected.lines.map((line) => {
+            const projection = projections.get(line.id);
+            const replenishment = projection?.replenishment;
+            const replenishmentState = replenishment?.state ?? line.replenishmentState ?? "NONE";
+            const replenishmentNote = replenishment?.note ?? line.replenishmentNote ?? null;
+            return <article className={styles.line} key={line.id}><div><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></div><span className={styles.caseStatusBadge}><CaseStatusBadge status={line.state} retrievalState={line.retrievalState ?? null} tr={tr} kind="line" /></span><span className={styles.lineState}>{lineStateLabel(line.state, tr)}{line.retrievalState ? ` · ${retrievalStateLabel(line.retrievalState, tr)}` : ""}{replenishmentState !== "NONE" ? ` · ${tr(`replenishmentState${replenishmentState}` as MessageKey)}` : ""}</span>{line.discoveredLocation && <small>{tr("newLocation")}: {line.discoveredLocation}</small>}{replenishmentState !== "NONE" ? <small>{tr("lineReplenishmentState")}: {tr(`replenishmentState${replenishmentState}` as MessageKey)}{replenishmentNote ? ` · ${replenishmentNote}` : ""}{projection?.actionOwnerName ? ` · ${projection.actionOwnerName}` : ""}</small> : null}{canRecordReplenishment && selected.phase !== "CLOSED" && !selected.closedAt && !["RESOLVED", "CANCELLED"].includes(line.state) && replenishmentState !== "COMPLETED" ? <ReplenishmentForm tr={tr} caseId={selected.id} lineId={line.id} currentState={replenishmentState} compact onSaved={async () => { setNotice(tr("replenishmentSaved")); await fetchDashboard(); await loadCase(selected.id); }} /> : null}</article>;
+          });
+        })()}</div> : <p>{tr("noItemsYet")}</p>}</section>
         {(selected.events?.length || selected.messages?.length) ? <section className={styles.detailSection}><h3>{tr("caseTimeline")}</h3><CaseTimeline events={(selected.events || []) as CaseTimelineEvent[]} messages={selected.messages || []} tr={tr} formatDate={(value) => formatDate(value, locale)} className={styles.timeline} /></section> : null}
         {canMessage && selected.phase !== "CLOSED" && !selected.closedAt && <form className={styles.messageForm} onSubmit={postMessage}><label><span>{tr("caseMessageLabel")}</span><textarea required maxLength={2000} rows={3} value={messageText} onChange={(event) => setMessageText(event.target.value)} placeholder={tr("caseMessagePlaceholder")} /></label><button type="submit" className={styles.primary} disabled={busy || !messageText.trim()}>{tr("sendCaseMessage")}</button></form>}
         <div className={styles.caseActions}>

@@ -393,7 +393,12 @@ button { color: inherit; }
 .check-worker-select { width: 100%; min-width: 0; max-width: 100%; min-height: 48px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--input); color: var(--ink); text-overflow: ellipsis; overflow: hidden; }
 .check-complete-form { display: grid; gap: 12px; min-width: 0; }
 .check-complete-form select { min-width: 0; max-width: 100%; min-height: 48px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--input); color: var(--ink); text-overflow: ellipsis; overflow: hidden; }
-.check-notice { margin: 0 0 15px; padding: 11px 13px; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--green); background: var(--green-wash); }
+.replenishment-form { display: grid; gap: 12px; min-width: 0; margin-top: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.replenishment-form select, .replenishment-form textarea { width: 100%; min-height: 48px; padding: 10px 11px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--input); color: var(--ink); font-size: 14px; }
+.replenishment-form textarea { min-height: 64px; resize: vertical; }
+.replenishment-form small { color: var(--muted); font-size: 12px; }
+.replenishment-badge { display: inline-block; margin-top: 6px; padding: 3px 9px; border-radius: 999px; background: var(--warn-wash); color: var(--warn-ink); font-size: 11px; font-weight: 750; }
+.replenishment-badge[data-state="COMPLETED"] { background: var(--green-wash); color: var(--green); }
 .check-empty { margin: 0; padding: 19px; border: 1px dashed var(--line-strong); border-radius: 8px; color: var(--muted); background: var(--surface); }
 .case-discovered-location { width: 100%; margin: 0; color: var(--ink-soft); font-size: 12px; }
 .case-retrieval-actions { width: 100%; }

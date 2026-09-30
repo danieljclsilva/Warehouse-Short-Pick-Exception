@@ -179,6 +179,13 @@ Wave 0 (2026-09-28) delivered docs-only contracts: PRD amendments plus the bindi
 - New `MANAGER` role above Team Leader and below Admin with Admin-only `EDIT_MANAGER_PERMISSIONS`; only Admin creates/manages Manager accounts; Managers cannot touch Admin accounts; Admin/Manager hidden from picker/team-leader/assistant/troubleshooter surfaces (Managers see Managers, never Admins).
 - Migration `0019_hot_wildside` adds `MANAGER` to `user_role` and `MANAGER_MANUAL` to `case_source`. PRD §5–§7 amended; four-language labels added.
 - Local gates: 208/208 tests (32 files), typecheck, lint, `db:check`, production build pass. Live TEST/PROD deployment and migration not yet run.
+## Replenishment status writer (2026-09-30, uncommitted)
+
+- The replenishment backend existed without any UI: `POST .../replenishment` enforced `RECORD_REPLENISHMENT`, transitions, and active-retriever validation, but no surface rendered the NONE/WAITING/COMPLETED badge or offered the state/note/named-retriever form. New shared `ReplenishmentForm` posts the existing `{ state, note, retrieverUserId }` contract and renders the badge distinctly from the main-state badge.
+- Wired into all three case surfaces, gated on `RECORD_REPLENISHMENT` (permission stays the availability switch; no `replenishment_enabled` key): operations drawer per-line writer + badge with coded-projection owner, checks case-detail writer, picker/troubleshooter My Work writer with projection fold-in. COMPLETED hides the writer; WAITING offers COMPLETED only; writes reload the case and show the `replenishmentSaved` confirmation with the next action/owner.
+- New scoped `GET /api/users/directory` (requires `RECORD_REPLENISHMENT`, id/displayName/role only) names the retriever; the form no longer touches `/api/admin/users`, so Troubleshooters without `VIEW_USERS` can still record. Timeline renders `REPLENISHMENT_WAITING`/`REPLENISHMENT_COMPLETED` via new en/nl/pl/es keys plus writer/notice strings.
+- Gates: 214/214 tests (33 files), typecheck, lint, production build, `db:check` pass. Live TEST/PROD deployment not yet run. No schema change, no migration needed.
+
 ## Troubleshooter reporting parity + order status control (2026-09-30, `main` @ `29caaa9`)
 
 - Troubleshooters report like pickers: defaults gain `REPORT_SHORT_PICK`/`VIEW_OWN_CASES`/`MARK_ORDER_STAGED` (Assistant gains staging default); `POST /api/cases`, My Work nav, and notification routing include troubleshooters.

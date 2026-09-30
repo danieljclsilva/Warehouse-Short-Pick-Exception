@@ -7,8 +7,9 @@ import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import { CaseStatusBadge } from "@/components/case-status-badge";
 import { CaseTimeline, type CaseTimelineEvent, type CaseTimelineMessage } from "@/components/case-timeline";
+import { ReplenishmentForm } from "@/components/replenishment-form";
 
-type ShortPickLine = { id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation?: string | null; retrievalState?: string; retrievalResponsibleUserId?: string | null };
+type ShortPickLine = { id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation?: string | null; retrievalState?: string; retrievalResponsibleUserId?: string | null; replenishmentState?: string | null; replenishmentNote?: string | null };
 type OrderCase = {
   id: string;
   orderNumber: string;
@@ -16,12 +17,13 @@ type OrderCase = {
   physicalState: string;
   createdAt: string;
   lines: ShortPickLine[];
+  lineProjections?: Array<{ lineId: string; replenishment?: { state?: string; note?: string | null } }>;
   events?: CaseTimelineEvent[];
   messages?: CaseTimelineMessage[];
 };
 type CaseSummary = Omit<OrderCase, "lines"> & { lines?: ShortPickLine[]; missingCount?: number; foundCount?: number; checkingCount?: number };
 type PriorCase = { id: string; createdAt: string; phase: string };
-type ApiError = { code?: string; error?: string; case?: OrderCase; history?: PriorCase[]; line?: ShortPickLine };
+type ApiError = { code?: string; error?: string; case?: OrderCase & { lines?: ShortPickLine[] }; history?: PriorCase[]; line?: ShortPickLine };
 
 type PickerWorkflowProps = {
   userId: string;
@@ -33,6 +35,7 @@ type PickerWorkflowProps = {
   canStage: boolean;
   canConfirmRetrieval: boolean;
   canClose: boolean;
+  canRecordReplenishment?: boolean;
   focusedCaseId?: string | null;
   focusedNonce?: number;
   focusFromNotification?: boolean;
@@ -73,7 +76,7 @@ async function readBody(response: Response) {
   return (await response.json().catch(() => ({}))) as ApiError & { kind?: string; normalizedOrderNumber?: string; history?: PriorCase[]; cases?: CaseSummary[]; case?: OrderCase; line?: ShortPickLine };
 }
 
-export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canViewOwnCases, canOverrideDuplicateLine, canStage, canConfirmRetrieval, canClose, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: PickerWorkflowProps) {
+export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canViewOwnCases, canOverrideDuplicateLine, canStage, canConfirmRetrieval, canClose, canRecordReplenishment = false, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: PickerWorkflowProps) {
   const [cases, setCases] = useState<CaseSummary[]>([]);
   const [loading, setLoading] = useState(canViewOwnCases);
   const [busy, setBusy] = useState(false);
@@ -142,7 +145,13 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
       const response = await fetch(`/api/cases/${encodeURIComponent(id)}`, { credentials: "same-origin", cache: "no-store" });
       const body = await readBody(response);
       if (!response.ok || !body.case) throw new Error(tr("caseLoadError"));
-      setActiveCase(body.case);
+      const projections = new Map(((body.case.lineProjections ?? []) as Array<{ lineId: string; replenishment?: { state?: string; note?: string | null } }>).map((entry) => [entry.lineId, entry.replenishment]));
+      const merged = { ...body.case, lines: (body.case.lines ?? []).map((line: ShortPickLine) => {
+        const projected = projections.get(line.id);
+        if (!projected?.state) return line;
+        return { ...line, replenishmentState: projected.state, replenishmentNote: projected.note ?? line.replenishmentNote ?? null };
+      }) };
+      setActiveCase(merged);
       setHistory([]);
       setShowLineForm(false);
       setStageConfirm(false);
@@ -359,6 +368,8 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
                 <div className="case-line-primary"><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></div>
                 <span className="case-badges"><span className={`case-line-status state-${line.state.toLowerCase()}`}>{statusKey(line.state, tr)}</span><CaseStatusBadge status={line.state} retrievalState={line.retrievalState ?? null} tr={tr} kind="line" /></span>
                 {line.discoveredLocation && <p className="case-discovered-location">{tr("newLocation")}: <strong>{line.discoveredLocation}</strong></p>}
+                {line.replenishmentState && line.replenishmentState !== "NONE" ? <p className="replenishment-badge" data-state={line.replenishmentState}>{tr(`replenishmentState${line.replenishmentState}` as MessageKey)}{line.replenishmentNote ? ` · ${line.replenishmentNote}` : ""}</p> : null}
+                {canRecordReplenishment && activeCase && activeCase.phase !== "CLOSED" && !["RESOLVED", "CANCELLED"].includes(line.state) && (line.replenishmentState ?? "NONE") !== "COMPLETED" ? <ReplenishmentForm tr={tr} caseId={activeCase.id} lineId={line.id} currentState={line.replenishmentState ?? "NONE"} compact onSaved={async () => { await openCase(activeCase.id); await loadCases(); setActionNotice(tr("replenishmentSaved")); }} /> : null}
                 {canConfirmRetrieval && line.state === "FOUND" && line.retrievalResponsibleUserId === userId && ["PENDING", "FAILED"].includes(line.retrievalState || "") && <div className="case-retrieval-actions"><button type="button" className="secondary-button" disabled={busy} onClick={() => void confirmLineRetrieval(line.id, "FAILED")}>{tr("reportRetrievalFailed")}</button><button type="button" className="primary-button" disabled={busy} onClick={() => void confirmLineRetrieval(line.id, "RETRIEVED")}>{tr("confirmRetrieved")}</button></div>}
               </article>
             ))}
