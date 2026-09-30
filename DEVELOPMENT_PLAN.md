@@ -210,3 +210,10 @@ Wave 0 (2026-09-28) delivered docs-only contracts: PRD amendments plus the bindi
 - Reversible order status: new `PATCH /api/cases/[id]/phase`; staging reuses the existing guarded flow, return-to-picking writes audited `ORDER_RETURNED_TO_PICKING`; operations drawer exposes an obvious order-status dropdown for `MARK_ORDER_STAGED` holders. i18n added en/nl/pl/es.
 - Gates: 211/211 tests (32 files), typecheck, lint, production build, `db:check` pass. CI `36762021084` SUCCESS (tests/typecheck/lint/build/db:check/migrations/backup/e2e).
 - Deployed: PROD web `b815f8c3` SUCCESS (`/api/health` 200, login page 200, pre-deploy `npm run db:migrate` applied cleanly); TEST `web-test` `f157d341` SUCCESS (`/api/health` 200, `/api/environment` test). No schema change, no migration needed.
+
+## Transient confirmations + toast layering (2026-10-01, `main` @ `7921c9c`)
+
+- Replenishment save closes the expanded form and surfaces the confirmation notice; success notices in Checks, My Work, and Operations auto-dismiss after 4s while errors stay sticky until the next action.
+- Notices render as a fixed bottom-center toast (z-index 120, above scan dialog/drawers/backdrops) instead of inline below the fold; errors stay inline next to the failing action.
+- Gates: 219/219 tests (34 files), typecheck, lint, production build, `db:check` pass. No schema change, no migration needed.
+- Deployed: PROD web `841f9d6c` SUCCESS (`/api/health` 200 `{status:ok,database:ok}`, login page 200, pre-deploy `npm run db:migrate` applied cleanly); TEST `web-test` `0d47422c` SUCCESS (`/api/health` 200, `/api/environment` test).
