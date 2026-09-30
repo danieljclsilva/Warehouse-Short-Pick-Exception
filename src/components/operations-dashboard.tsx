@@ -226,6 +226,13 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  // Success confirmations dismiss themselves; errors stay until the next action.
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 4000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
   const [showManual, setShowManual] = useState(false);
   const [manualOrder, setManualOrder] = useState("");
   const [manualLocation, setManualLocation] = useState("");

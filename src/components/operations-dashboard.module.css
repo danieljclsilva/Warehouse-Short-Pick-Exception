@@ -30,8 +30,9 @@
 .metric span { color: var(--ops-muted); font-size: 12px; font-weight: 800; letter-spacing: .03em; line-height: 1.25; text-transform: uppercase; }
 .metric strong { font-size: 30px; letter-spacing: -.05em; line-height: 1; }
 .toneBlue { border-top: 3px solid var(--tone-blue); }.toneMint { border-top: 3px solid var(--tone-mint); }.toneAmber { border-top: 3px solid var(--tone-amber); }.toneLavender { border-top: 3px solid var(--tone-lavender); }.toneRose { border-top: 3px solid var(--tone-rose); }.toneGray { border-top: 3px solid var(--tone-gray); }
-.alert, .notice { border-radius: 10px; margin: 0; padding: 12px 14px; }
-.alert { background: var(--coral-wash); color: var(--error-ink); }.notice { background: var(--green-wash); color: var(--green); }
+.alert { border-radius: 10px; margin: 0; padding: 12px 14px; }
+.alert { background: var(--coral-wash); color: var(--error-ink); }
+.notice { position: fixed; z-index: 120; bottom: calc(20px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); width: min(calc(100% - 32px), 480px); margin: 0; padding: 12px 14px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--green-wash); color: var(--green); box-shadow: 0 16px 48px var(--shadow-strong); text-align: center; }
 .manualPanel, .queue { background: var(--ops-surface); border: 1px solid var(--ops-line); border-radius: 18px; box-shadow: 0 12px 32px var(--shadow-strong); padding: clamp(17px, 2.4vw, 26px); }
 .manualPanel > p { color: var(--ops-muted); margin: -3px 0 19px; }
 .sectionTitle h2, .queueHeader h2 { font-size: 20px; letter-spacing: -.025em; margin: 0; }

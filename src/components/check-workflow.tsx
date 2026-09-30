@@ -97,6 +97,13 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
   const [message, setMessage] = useState("");
   const [reportLocationLineId, setReportLocationLineId] = useState<string | null>(null);
   const [reportLocationValue, setReportLocationValue] = useState("");
+  // Success confirmations dismiss themselves; errors stay until the next action.
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 4000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
   const detailRef = useRef<HTMLElement | null>(null);
   const scrolledDetailId = useRef<string | null>(null);
 

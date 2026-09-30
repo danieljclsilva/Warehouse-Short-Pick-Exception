@@ -46,7 +46,7 @@ export function ReplenishmentForm({ tr, caseId, lineId, currentState, compact = 
         body: JSON.stringify({ state }),
       });
       if (!response.ok) throw new Error(tr("replenishmentFailed"));
-      setOpen(compact);
+      setOpen(false);
       await onSaved();
     } catch {
       setError(tr("replenishmentFailed"));

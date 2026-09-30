@@ -330,6 +330,7 @@ button { color: inherit; }
 .case-open-button:disabled { opacity: .6; cursor: wait; }
 .case-list-empty { margin: 0; padding: 24px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); background: var(--surface); text-align: center; }
 .case-alert { margin: 0 0 16px; padding: 12px 14px; border: 1px solid var(--error-line); border-radius: 8px; color: var(--error-ink); background: var(--coral-wash); font-size: 13px; }
+.check-notice { position: fixed; z-index: 120; bottom: calc(20px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); width: min(calc(100% - 32px), 480px); margin: 0; padding: 12px 16px; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--green); background: var(--green-wash); box-shadow: 0 16px 48px var(--shadow-strong); font-size: 13px; text-align: center; }
 .case-back-button { min-height: 44px; margin: -7px 0 18px; padding: 0 5px; border: 0; color: var(--green); background: transparent; font-size: 13px; font-weight: 650; cursor: pointer; }
 .case-back-button:disabled { opacity: .6; cursor: wait; }
 .case-detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }

@@ -155,6 +155,12 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
   const [duplicateLine, setDuplicateLine] = useState<ShortPickLine | null>(null);
   const [stageConfirm, setStageConfirm] = useState(false);
   const [actionNotice, setActionNotice] = useState("");
+  // Success confirmations dismiss themselves; errors stay until the next action.
+  useEffect(() => {
+    if (!actionNotice) return;
+    const timer = window.setTimeout(() => setActionNotice(""), 4000);
+    return () => window.clearTimeout(timer);
+  }, [actionNotice]);
 
   const loadCases = useCallback(async () => {
     if (!canViewOwnCases) { setCases([]); setLoading(false); return; }
