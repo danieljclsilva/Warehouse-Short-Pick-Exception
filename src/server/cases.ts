@@ -56,12 +56,15 @@ type ShortPickLineRow = typeof shortPickLines.$inferSelect;
 type CheckTaskRow = typeof checkTasks.$inferSelect;
 
 function displayStatusForLine(line: ShortPickLineRow, latestCompletionCode: string | null): LineDisplayStatus {
-  if (line.state === "RESOLVED") return "RESOLVED";
+  if (line.state === "RESOLVED") return line.retrievalState === "RETRIEVED" ? "RETRIEVED" : "RESOLVED";
   if (line.state === "CANCELLED") return "CANCELLED";
   if (line.state === "CHECKING") return "CHECKING";
   if (line.state === "RETRIEVING") return "RETRIEVING";
   if (line.state === "FOUND") {
     if (latestCompletionCode === "FOUND_AT_ORIGINAL" && !line.discoveredLocation) return "FOUND_AT_ORIGINAL";
+    if (line.retrievalState === "IN_PROGRESS") return "RETRIEVING";
+    if (line.retrievalState === "RETRIEVED") return "RETRIEVED";
+    if (line.retrievalState === "PENDING" || line.retrievalState === "FAILED") return "WAITING_RETRIEVAL";
     return "FOUND";
   }
   if (line.state === "OPEN") {
@@ -80,7 +83,7 @@ function nextActionForLine(line: ShortPickLineRow, phase: "PICKING" | "STAGED" |
   if (line.state === "CHECKING" || hasActiveCheck) {
     return { nextActionCode: "COMPLETE_CHECK", nextActionParams: { lineId: line.id }, actionOwnerUserId: line.currentResponsibleUserId, blockingReasonCode: "CHECK_CLAIMED" };
   }
-  if (line.state === "FOUND" && (line.retrievalState === "PENDING" || line.retrievalState === "FAILED")) {
+  if ((line.state === "FOUND" && (line.retrievalState === "PENDING" || line.retrievalState === "FAILED" || line.retrievalState === "IN_PROGRESS")) || line.state === "RETRIEVING") {
     return { nextActionCode: "RETRIEVE", nextActionParams: { lineId: line.id }, actionOwnerUserId: line.retrievalResponsibleUserId, blockingReasonCode: "AWAITING_RETRIEVAL" };
   }
   if (line.state === "OPEN" && line.replenishmentState !== "NONE") {

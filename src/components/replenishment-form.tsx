@@ -1,10 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { MessageKey } from "@/i18n/messages";
-
-/** Active directory user usable as the named replenishment retriever. */
-export type ReplenishmentWorker = { id: string; displayName: string; role: string };
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
 
@@ -20,54 +17,25 @@ type Props = {
 };
 
 /**
- * One shared replenishment writer for every case surface: the server stays the
- * authorization boundary (`RECORD_REPLENISHMENT`, transition + active-retriever
- * validation in `recordReplenishment`). The form posts `{ state, note,
- * retrieverUserId }` to the existing replenishment route and reports the
- * consequence + next action through `onSaved` + the confirmation notice.
+ * One shared state-only replenishment writer for the manager-role surfaces.
+ * The server stays the authorization boundary (`RECORD_REPLENISHMENT` +
+ * transition checks in `recordReplenishment`). The form posts `{ state }` to
+ * the existing replenishment route and reports the consequence through
+ * `onSaved` + the confirmation notice. Pickers never render this writer.
  */
 export function ReplenishmentForm({ tr, caseId, lineId, currentState, compact = false, onSaved }: Props) {
   const normalized = (currentState || "NONE").toUpperCase();
   const options = normalized === "WAITING" ? (["COMPLETED"] as const) : (["WAITING", "COMPLETED"] as const);
   const [open, setOpen] = useState(!compact);
   const [state, setState] = useState<"WAITING" | "COMPLETED">(normalized === "WAITING" ? "COMPLETED" : "WAITING");
-  const [note, setNote] = useState("");
-  const [retrieverUserId, setRetrieverUserId] = useState("");
-  const [workers, setWorkers] = useState<ReplenishmentWorker[]>([]);
-  const [workersFailed, setWorkersFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    fetch("/api/users/directory", { credentials: "same-origin", cache: "no-store" })
-      .then(async (response) => {
-        const body = (await response.json().catch(() => ({}))) as { users?: ReplenishmentWorker[] };
-        if (!response.ok) throw new Error("users");
-        const active = (body.users || []).filter((worker) => worker && typeof worker.id === "string");
-        if (!cancelled) {
-          setWorkers(active);
-          setWorkersFailed(false);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setWorkersFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open ]);
 
   if (normalized === "COMPLETED") return null;
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const trimmed = note.trim();
-    if (!trimmed || !retrieverUserId || busy) {
-      if (!trimmed || !retrieverUserId) setError(tr("replenishmentFailed"));
-      return;
-    }
+    if (busy) return;
     setBusy(true);
     setError("");
     try {
@@ -75,11 +43,9 @@ export function ReplenishmentForm({ tr, caseId, lineId, currentState, compact = 
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state, note: trimmed, retrieverUserId }),
+        body: JSON.stringify({ state }),
       });
       if (!response.ok) throw new Error(tr("replenishmentFailed"));
-      setNote("");
-      setRetrieverUserId("");
       setOpen(compact);
       await onSaved();
     } catch {
@@ -109,29 +75,6 @@ export function ReplenishmentForm({ tr, caseId, lineId, currentState, compact = 
           ))}
         </select>
       </label>
-      <label className="form-field">
-        <span>{tr("replenishmentNoteLabel")}</span>
-        <textarea
-          rows={2}
-          required
-          value={note}
-          onChange={(event) => setNote(event.target.value)}
-          placeholder={tr("replenishmentNotePlaceholder")}
-          disabled={busy}
-        />
-      </label>
-      <label className="form-field">
-        <span>{tr("replenishmentRetrieverLabel")}</span>
-        <select value={retrieverUserId} onChange={(event) => setRetrieverUserId(event.target.value)} required disabled={busy}>
-          <option value="">{tr("selectWorker")}</option>
-          {workers.map((worker) => (
-            <option key={worker.id} value={worker.id}>
-              {worker.displayName}
-            </option>
-          ))}
-        </select>
-        {workersFailed ? <small>{tr("usersLoadError")}</small> : null}
-      </label>
       {error ? (
         <p className="case-alert" role="alert">
           {error}
@@ -143,7 +86,7 @@ export function ReplenishmentForm({ tr, caseId, lineId, currentState, compact = 
             {tr("cancel")}
           </button>
         ) : null}
-        <button type="submit" className="primary-button" disabled={busy || !note.trim() || !retrieverUserId}>
+        <button type="submit" className="primary-button" disabled={busy}>
           {tr("replenishmentAction")}
         </button>
       </div>

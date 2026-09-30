@@ -15,8 +15,6 @@ export const assignRetrievalSchema = z.object({ userId: z.uuid() });
 
 export const replenishmentSchema = z.object({
   state: z.enum(["WAITING", "COMPLETED"]),
-  note: z.string().trim().min(1).max(500),
-  retrieverUserId: z.uuid(),
 });
 
 export async function listMyRetrievals(auth: AuthContext) {
@@ -146,21 +144,15 @@ export async function recordReplenishment(auth: AuthContext, caseId: string, lin
     const allowed = (current === "NONE" && (input.state === "WAITING" || input.state === "COMPLETED"))
       || (current === "WAITING" && input.state === "COMPLETED");
     if (!allowed) throw new CaseApiError("REPLENISHMENT_FORBIDDEN", `Replenishment cannot move from ${current} to ${input.state}`, 409, { current, requested: input.state });
-    const [retriever] = await tx.select({ id: users.id, displayName: users.displayName }).from(users).where(and(eq(users.id, input.retrieverUserId), eq(users.status, "ACTIVE"))).limit(1);
-    if (!retriever) throw new CaseApiError("REPLENISHMENT_FORBIDDEN", "Retriever must be an active user", 400);
     const now = new Date();
     await tx.update(shortPickLines).set({
-      replenishmentState: input.state, replenishmentNote: input.note, replenishmentActorUserId: auth.user.id,
-      replenishmentAt: now, replenishmentRetrieverUserId: retriever.id, updatedAt: now, version: sql`${shortPickLines.version} + 1`,
+      replenishmentState: input.state, replenishmentNote: null, replenishmentActorUserId: auth.user.id,
+      replenishmentAt: now, replenishmentRetrieverUserId: null, updatedAt: now, version: sql`${shortPickLines.version} + 1`,
     }).where(eq(shortPickLines.id, lineId));
     const eventType = input.state === "WAITING" ? "REPLENISHMENT_WAITING" : "REPLENISHMENT_COMPLETED";
     await tx.insert(caseEvents).values({ caseId, shortPickLineId: lineId, actorUserId: auth.user.id, eventType,
-      details: { previousState: current, state: input.state, note: input.note, retrieverUserId: retriever.id, casePhase: record.phase } });
-    await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: eventType, details: { caseId, lineId, previousState: current, state: input.state, note: input.note, retrieverUserId: retriever.id } });
-    if (input.state === "COMPLETED") {
-      await insertResponsibilityNotification(tx, { recipientUserId: retriever.id, type: "RESPONSIBILITY_RETRIEVAL_ASSIGNED",
-        caseId, shortPickLineId: lineId, payload: { orderNumber: record.orderNumber, replenishmentCompleted: true, note: input.note, casePhase: record.phase } });
-    }
-    return { caseId, lineId, previousState: current, state: input.state, note: input.note, retrieverUserId: retriever.id, at: now.toISOString() };
+      details: { previousState: current, state: input.state, casePhase: record.phase } });
+    await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: eventType, details: { caseId, lineId, previousState: current, state: input.state } });
+    return { caseId, lineId, previousState: current, state: input.state, at: now.toISOString() };
   });
 }

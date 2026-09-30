@@ -1,15 +1,15 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, notInArray } from "drizzle-orm";
 import { getDb } from "@/db";
 import { users } from "@/db/schema";
 import { authenticate, hasAuthPermission } from "@/server/auth";
 import { handleRouteError, jsonError } from "@/server/http";
 
 /**
- * Minimal active-user directory for action forms that name another worker
- * (currently the replenishment named retriever). Requires
- * `RECORD_REPLENISHMENT`: anyone who may record replenishment may see the
- * names they can assign it to. Returns id/displayName/role only — never
- * credentials, sessions, or contact details.
+ * Minimal active-user directory (Admin/Manager excluded). Currently unused:
+ * replenishment is state-only with no assignment. Kept for a future
+ * assignment affordance; requires `RECORD_REPLENISHMENT`. Returns
+ * id/displayName/role only — never credentials, sessions, or contact
+ * details.
  */
 export async function GET(request: Request) {
   try {
@@ -19,7 +19,7 @@ export async function GET(request: Request) {
     const rows = await getDb()
       .select({ id: users.id, displayName: users.displayName, role: users.role })
       .from(users)
-      .where(eq(users.status, "ACTIVE"))
+      .where(and(eq(users.status, "ACTIVE"), notInArray(users.role, ["ADMIN", "MANAGER"])))
       .orderBy(asc(users.displayName))
       .limit(500);
     return Response.json({ users: rows }, { headers: { "cache-control": "private, no-store" } });

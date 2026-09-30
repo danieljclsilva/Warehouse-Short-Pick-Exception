@@ -35,7 +35,7 @@ type Retrieval = {
 type Worker = { id: string; displayName: string; status: string; permissions: string[] };
 type CaseDetail = {
   id: string; orderNumber: string; phase: string; physicalState: string; physicalLocation: string | null;
-  lines: Array<{ id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation: string | null; replenishmentState?: string | null; replenishmentNote?: string | null }>;
+  lines: Array<{ id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation: string | null; retrievalState?: string | null; retrievalResponsibleUserId?: string | null; replenishmentState?: string | null }>;
   checks: Array<{ id: string; shortPickLineId: string; status: string; completionCode: string | null; completedAt: string | null }>;
   events: Array<{ id: string; eventType: string; actorName: string | null; createdAt: string; completionCode?: string | null; discoveredLocation?: string | null; originalLocation?: string | null; taskId?: string | null }>;
   messages: Array<{ id: string; authorName: string; message: string; createdAt: string }>;
@@ -51,6 +51,7 @@ type Props = {
   canRetrieve: boolean;
   canMessage: boolean;
   canRecordReplenishment?: boolean;
+  canReportLocation?: boolean;
   canViewAllOpenCases?: boolean;
   focusedCaseId?: string | null;
   focusedNonce?: number;
@@ -64,7 +65,21 @@ async function readJson(response: Response) {
   };
 }
 
-export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canComplete, canAssign, canReassign, canRetrieve, canMessage, canRecordReplenishment = false, canViewAllOpenCases = false, focusedCaseId, focusedNonce, onFocusConsumed, onFocusedClose }: Props) {
+function withReplenishmentProjection(caseDetail: CaseDetail): CaseDetail {
+  const raw = caseDetail as CaseDetail & { lineProjections?: Array<{ lineId: string; replenishment?: { state?: string } }> };
+  if (!raw.lineProjections) return caseDetail;
+  const projectedByLineId: Record<string, string | undefined> = {};
+  for (const entry of raw.lineProjections) {
+    if (entry && typeof entry.lineId === "string") projectedByLineId[entry.lineId] = entry.replenishment?.state;
+  }
+  return { ...raw, lines: raw.lines.map((line) => {
+    const projected = projectedByLineId[line.id];
+    if (!projected) return line;
+    return { ...line, replenishmentState: projected };
+  }) };
+}
+
+export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canComplete, canAssign, canReassign, canRetrieve, canMessage, canRecordReplenishment = false, canReportLocation = false, canViewAllOpenCases = false, focusedCaseId, focusedNonce, onFocusConsumed, onFocusedClose }: Props) {
   const [available, setAvailable] = useState<Check[]>([]);
   const [mine, setMine] = useState<Check[]>([]);
   const [active, setActive] = useState<Check[]>([]);
@@ -80,6 +95,8 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
   const [notice, setNotice] = useState("");
   const [detail, setDetail] = useState<CaseDetail | null>(null);
   const [message, setMessage] = useState("");
+  const [reportLocationLineId, setReportLocationLineId] = useState<string | null>(null);
+  const [reportLocationValue, setReportLocationValue] = useState("");
   const detailRef = useRef<HTMLElement | null>(null);
   const scrolledDetailId = useRef<string | null>(null);
 
@@ -119,7 +136,7 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       const response = await fetch(`/api/cases/${encodeURIComponent(detail.id)}`, { cache: "no-store" });
       const body = await readJson(response);
       if (!response.ok || !body.case) throw new Error("refresh failed");
-      setDetail(body.case);
+      setDetail(withReplenishmentProjection(body.case));
     }
   }, [detail, load]);
   const liveState = useLiveRefresh(refreshLiveData);
@@ -130,13 +147,7 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       const response = await fetch(`/api/cases/${caseId}`, { cache: "no-store" });
       const body = await readJson(response);
       if (!response.ok || !body.case) throw new Error(tr("caseLoadError"));
-      const raw = body.case as CaseDetail & { lineProjections?: Array<{ lineId: string; replenishment?: { state?: string; note?: string | null } }> };
-      const projections = new Map((raw.lineProjections ?? []).map((entry) => [entry.lineId, entry.replenishment]));
-      setDetail(raw.lineProjections ? { ...raw, lines: raw.lines.map((line) => {
-        const projected = projections.get(line.id);
-        if (!projected?.state) return line;
-        return { ...line, replenishmentState: projected.state, replenishmentNote: projected.note ?? line.replenishmentNote ?? null };
-      }) } : raw);
+      setDetail(withReplenishmentProjection(body.case));
     } catch { setError(tr("caseLoadError")); }
   }, [tr]);
   const focusConsumedRef = useRef(0);
@@ -153,7 +164,7 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
     detailRef.current?.focus({ preventScroll: true });
   }, [detail]);
   useEffect(() => { if (!detail) scrolledDetailId.current = null; }, [detail]);
-  const closeDetail = () => { setDetail(null); onFocusedClose?.(); };
+  const closeDetail = () => { setDetail(null); setReportLocationLineId(null); setReportLocationValue(""); onFocusedClose?.(); };
 
   const mutate = async (id: string, path: string, method: "POST" | "PATCH", body?: unknown) => {
     setBusyId(id);
@@ -214,8 +225,22 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       <div className="check-detail-heading"><div><span>{tr("orderLabel")}</span><h2>{detail.orderNumber}</h2><span className="case-badges"><CaseStatusBadge status={detail.lines[0]?.state ?? detail.phase} tr={tr} /></span></div></div>
       <p className="check-detail-state">{detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · {detail.physicalState === "SHORT_PICK_HOLD" ? tr("physicalShortPickHold") : detail.physicalState === "WITH_PICKER" ? tr("physicalWithPicker") : detail.physicalState === "OTHER_KNOWN_LOCATION" ? tr("physicalOtherLocation") : tr("physicalUnknown")}{detail.physicalLocation ? ` · ${detail.physicalLocation}` : ""}</p>
       <h3>{tr("reportedItems")}</h3>
-      <div className="check-detail-lines">{detail.lines.map((line) => <div key={line.id}><strong>{line.location} · {line.sku} ×{line.quantity}</strong><span>{line.discoveredLocation || (line.state === "CHECKING" ? tr("caseChecking") : line.state === "FOUND" ? tr("caseFound") : line.state === "RESOLVED" ? tr("caseRetrieved") : tr("caseOpen"))}</span><small>{detail.checks.filter((check) => check.shortPickLineId === line.id).map((check) => check.completionCode ? `${tr(({ FOUND: "timelineResolutionFOUND", FOUND_AT_ORIGINAL: "timelineResolutionFOUND_AT_ORIGINAL", NOT_FOUND: "timelineResolutionNOT_FOUND", WRONG_LOCATION: "timelineResolutionWRONG_LOCATION", OTHER: "timelineResolutionOTHER" } as const)[check.completionCode as "FOUND" | "FOUND_AT_ORIGINAL" | "NOT_FOUND" | "WRONG_LOCATION" | "OTHER"] ?? "timelineResolutionUnknown")} · ${new Date(check.completedAt || "").toLocaleString(locale)}` : check.status === "AVAILABLE" ? tr("availableChecks") : tr("caseChecking")).join(" / ")}</small></div>)}</div>
-      {canRecordReplenishment && detail.phase !== "CLOSED" ? <section aria-label={tr("lineReplenishmentState")}>{detail.lines.filter((line) => !["RESOLVED", "CANCELLED"].includes(line.state) && (line.replenishmentState ?? "NONE") !== "COMPLETED").map((line) => <div key={line.id}><p className="check-card-item"><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></p><ReplenishmentForm tr={tr} caseId={detail.id} lineId={line.id} currentState={line.replenishmentState ?? "NONE"} compact onSaved={async () => { await openDetails(detail.id); setNotice(tr("replenishmentSaved")); }} /></div>)}</section> : null}
+      <div className="check-detail-lines">{detail.lines.map((line) => {
+        const replenishment = (line.replenishmentState ?? "NONE").toUpperCase();
+        const retrieval = (line.retrievalState ?? "NOT_REQUIRED").toUpperCase();
+        const reportable = canReportLocation && detail.phase !== "CLOSED" && !["RESOLVED", "CANCELLED"].includes(line.state);
+        const retrievalPending = canRetrieve && line.state === "FOUND" && (retrieval === "PENDING" || retrieval === "FAILED");
+        return <div key={line.id}>
+          <strong>{line.location} · {line.sku} ×{line.quantity}</strong>
+          <span>{line.discoveredLocation || (line.state === "CHECKING" ? tr("caseChecking") : line.state === "FOUND" ? tr("caseFound") : line.state === "RESOLVED" ? tr("caseRetrieved") : tr("caseOpen"))}</span>
+          <small>{detail.checks.filter((check) => check.shortPickLineId === line.id).map((check) => check.completionCode ? `${tr(({ FOUND: "timelineResolutionFOUND", FOUND_AT_ORIGINAL: "timelineResolutionFOUND_AT_ORIGINAL", NOT_FOUND: "timelineResolutionNOT_FOUND", WRONG_LOCATION: "timelineResolutionWRONG_LOCATION", OTHER: "timelineResolutionOTHER" } as const)[check.completionCode as "FOUND" | "FOUND_AT_ORIGINAL" | "NOT_FOUND" | "WRONG_LOCATION" | "OTHER"] ?? "timelineResolutionUnknown")} · ${new Date(check.completedAt || "").toLocaleString(locale)}` : check.status === "AVAILABLE" ? tr("availableChecks") : tr("caseChecking")).join(" / ")}</small>
+          {replenishment !== "NONE" ? <p className="replenishment-badge" data-state={replenishment}>{tr(`replenishmentState${replenishment}` as MessageKey)}</p> : null}
+          {(line.retrievalState ?? "").toUpperCase() === "NOT_REQUIRED" && detail.phase !== "STAGED" ? <p className="retrieval-badge" data-state="NOT_REQUIRED">{tr("retrievalNotRequired")}</p> : null}
+          {canRecordReplenishment && replenishment !== "COMPLETED" && !["RESOLVED", "CANCELLED"].includes(line.state) && detail.phase !== "CLOSED" ? <ReplenishmentForm tr={tr} caseId={detail.id} lineId={line.id} currentState={replenishment} compact onSaved={async () => { await openDetails(detail.id); setNotice(tr("replenishmentSaved")); }} /> : null}
+          {retrievalPending ? <div className="check-card-actions"><button className="secondary-button" type="button" disabled={Boolean(busyId)} onClick={() => void mutate(line.id, `/api/cases/${detail.id}/lines/${line.id}/retrieve`, "POST", { result: "FAILED" })}>{tr("reportRetrievalFailed")}</button><button className="primary-button" type="button" disabled={Boolean(busyId)} onClick={() => void mutate(line.id, `/api/cases/${detail.id}/lines/${line.id}/retrieve`, "POST", { result: "RETRIEVED" })}>{tr("confirmRetrieved")}</button></div> : null}
+          {reportable ? (reportLocationLineId === line.id ? <form className="check-complete-form" onSubmit={(event) => { event.preventDefault(); void (async () => { setBusyId(line.id); setError(""); setNotice(""); try { const response = await fetch(`/api/cases/${encodeURIComponent(detail.id)}/lines/${encodeURIComponent(line.id)}/discovered-location`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ location: reportLocationValue.trim().toUpperCase() }), cache: "no-store" }); if (!response.ok) throw new Error(tr("reportLocationFailed")); setReportLocationLineId(null); setReportLocationValue(""); await load(); await openDetails(detail.id); setNotice(tr("reportLocationSaved")); } catch { setError(tr("reportLocationFailed")); } finally { setBusyId(""); } })(); }}><label className="form-field"><span>{tr("reportLocationAction")}</span><ScanInput required autoCapitalize="characters" value={reportLocationValue} onChange={setReportLocationValue} tr={tr} scanKind="location" fieldLabel={tr("reportLocationAction")} /></label><div className="check-card-actions"><button type="button" className="secondary-button" onClick={() => { setReportLocationLineId(null); setReportLocationValue(""); }}>{tr("cancel")}</button><button type="submit" className="primary-button" disabled={Boolean(busyId) || !reportLocationValue.trim()}>{tr("reportLocationAction")}</button></div></form> : <button type="button" className="secondary-button" disabled={Boolean(busyId)} onClick={() => { setReportLocationLineId(line.id); setReportLocationValue(""); }}>{tr("reportLocationAction")}</button>) : null}
+        </div>;
+      })}</div>
       <h3>{tr("caseTimeline")}</h3>
       <CaseTimeline events={detail.events as CaseTimelineEvent[]} messages={detail.messages} tr={tr} formatDate={(value) => new Date(value).toLocaleString(locale)} className="check-detail-timeline" />
       {canMessage && <form className="check-detail-message" onSubmit={async (event) => { event.preventDefault(); if (!message.trim()) return; const saved = await mutate(detail.id, `/api/cases/${detail.id}/messages`, "POST", { message: message.trim() }); if (saved) setMessage(""); }}><label className="form-field"><span>{tr("caseMessageLabel")}</span><textarea value={message} onChange={(event) => setMessage(event.target.value)} maxLength={2000} rows={3} required /></label><button className="primary-button" type="submit" disabled={Boolean(busyId)}>{tr("sendCaseMessage")}</button></form>}

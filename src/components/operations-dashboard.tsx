@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { MessageKey } from "@/i18n/messages";
 import { LiveRefreshStatus } from "@/components/live-refresh-status";
 import { ScanInput } from "@/components/scan-input";
@@ -78,6 +78,7 @@ type Props = {
   canReopen: boolean;
   canChangePhase: boolean;
   canRecordReplenishment?: boolean;
+  canReportLocation?: boolean;
   focusedCaseId?: string | null;
   focusedNonce?: number;
   focusFromNotification?: boolean;
@@ -148,7 +149,62 @@ function attentionLabel(level: CaseSummary["attentionLevel"], tr: Translator) {
   return tr(keys[level ?? "NORMAL"]);
 }
 
-export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, canAssign, canClose, canReopen, canChangePhase, canRecordReplenishment = false, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: Props) {
+function LocationReporter({ tr, caseId, lineId, onReported }: { tr: Translator; caseId: string; lineId: string; onReported: () => void | Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [location, setLocation] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const value = location.trim();
+    if (!value || busy) return;
+    setBusy(true);
+    setFailed(false);
+    try {
+      const response = await fetch(`/api/cases/${encodeURIComponent(caseId)}/lines/${encodeURIComponent(lineId)}/discovered-location`, {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ location: value }),
+      });
+      if (!response.ok) throw new Error("location");
+      setLocation("");
+      setOpen(false);
+      await onReported();
+    } catch {
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!open) {
+    return (
+      <button type="button" className={styles.secondary} onClick={() => { setFailed(false); setOpen(true); }}>
+        {tr("reportLocationAction")}
+      </button>
+    );
+  }
+  return (
+    <form className={styles.messageForm} onSubmit={submit}>
+      <label>
+        <span>{tr("reportLocationAction")}</span>
+        <ScanInput required autoCapitalize="characters" value={location} onChange={setLocation} tr={tr} scanKind="location" fieldLabel={tr("reportLocationAction")} placeholder={tr("reportLocationPlaceholder")} />
+      </label>
+      {failed ? <p className={styles.alert} role="alert">{tr("reportLocationFailed")}</p> : null}
+      <div className={styles.formActions}>
+        <button type="button" className={styles.secondary} onClick={() => { setOpen(false); setFailed(false); }} disabled={busy}>
+          {tr("cancel")}
+        </button>
+        <button type="submit" className={styles.primary} disabled={busy || !location.trim()}>
+          {tr("reportLocationAction")}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, canAssign, canClose, canReopen, canChangePhase, canRecordReplenishment = false, canReportLocation = false, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: Props) {
   const dashboardRequestInFlight = useRef(false);
   const [metrics, setMetrics] = useState<Metrics>(EMPTY_METRICS);
   const [attentionThresholdMinutes, setAttentionThresholdMinutes] = useState(15);
@@ -405,7 +461,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
           const attentionClass = level === "CRITICAL" ? styles.critical : level === "ATTENTION" ? styles.attention : level === "WARNING" ? styles.warning : "";
           const badgeClass = level === "CRITICAL" ? styles.attentionBadgeCritical : level === "ATTENTION" ? styles.attentionBadgeAttention : level === "WARNING" ? styles.attentionBadgeWarning : styles.attentionBadgeNormal;
           return <button type="button" className={`${styles.caseCard} ${attentionClass}`} key={item.id} onClick={() => void loadCase(item.id)}>
-            <div className={styles.caseTop}><strong>{tr("orderLabel")} {item.orderNumber}</strong><span className={styles.caseBadges}><span className={styles.caseStatusBadge}><CaseStatusBadge status={item.lineProjections?.[0]?.displayStatus ?? item.projection?.lines?.[0]?.displayStatus ?? item.lines?.[0]?.state ?? item.currentIssue ?? item.phase} retrievalState={item.lines?.[0]?.retrievalState ?? null} tr={tr} /></span><span className={`${styles.attentionBadge} ${badgeClass}`} aria-label={`${tr("attentionLevelLabel")}: ${attentionLabel(level, tr)}`}>{attentionLabel(level, tr)}</span><span className={`${styles.phase} ${item.phase === "STAGED" ? styles.phaseStaged : ""}`}>{item.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span></span></div>
+            <div className={styles.caseTop}><strong>{tr("orderLabel")} {item.orderNumber}</strong><span className={styles.caseBadges}><span className={styles.caseStatusBadge}><CaseStatusBadge status={item.lineProjections?.[0]?.displayStatus ?? item.projection?.lines?.[0]?.displayStatus ?? item.lines?.[0]?.state ?? item.currentIssue ?? item.phase} retrievalState={item.lines?.[0]?.retrievalState ?? null} tr={tr} /></span><span className={`${styles.attentionBadge} ${badgeClass}`} aria-label={`${tr("attentionLevelLabel")}: ${attentionLabel(level, tr)}`}>{attentionLabel(level, tr)}</span><span className={`${styles.phase} ${item.phase === "STAGED" ? styles.phaseStaged : ""}`}>{item.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span>{(() => { const queueReplenishment = item.lineProjections?.[0]?.replenishment?.state ?? item.lines?.[0]?.replenishmentState ?? "NONE"; return queueReplenishment !== "NONE" ? <span className={styles.phase}>{tr(`replenishmentState${queueReplenishment}` as MessageKey)}</span> : null; })()}</span></div>
             <div className={styles.caseData}><span><b>{item.missingCount}</b> {tr("missingItemsLabel")}</span><span>{item.checkingCount} {tr("checkingLabel")}</span><span className={styles.age}>{formatAge(item.createdAt)}</span></div>
             <div className={styles.caseFoot}><span>{item.pickerName || tr("unknownPicker")}</span><span className={styles.issue}>{item.currentIssue ? tr(`issue_${item.currentIssue}` as MessageKey) : tr("caseNoCurrentIssue")}</span><span>{item.responsibleName || "—"}</span></div>
           </button>;
@@ -435,8 +491,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
             const projection = projections.get(line.id);
             const replenishment = projection?.replenishment;
             const replenishmentState = replenishment?.state ?? line.replenishmentState ?? "NONE";
-            const replenishmentNote = replenishment?.note ?? line.replenishmentNote ?? null;
-            return <article className={styles.line} key={line.id}><div><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></div><span className={styles.caseStatusBadge}><CaseStatusBadge status={line.state} retrievalState={line.retrievalState ?? null} tr={tr} kind="line" /></span><span className={styles.lineState}>{lineStateLabel(line.state, tr)}{line.retrievalState ? ` · ${retrievalStateLabel(line.retrievalState, tr)}` : ""}{replenishmentState !== "NONE" ? ` · ${tr(`replenishmentState${replenishmentState}` as MessageKey)}` : ""}</span>{line.discoveredLocation && <small>{tr("newLocation")}: {line.discoveredLocation}</small>}{replenishmentState !== "NONE" ? <small>{tr("lineReplenishmentState")}: {tr(`replenishmentState${replenishmentState}` as MessageKey)}{replenishmentNote ? ` · ${replenishmentNote}` : ""}{projection?.actionOwnerName ? ` · ${projection.actionOwnerName}` : ""}</small> : null}{canRecordReplenishment && selected.phase !== "CLOSED" && !selected.closedAt && !["RESOLVED", "CANCELLED"].includes(line.state) && replenishmentState !== "COMPLETED" ? <ReplenishmentForm tr={tr} caseId={selected.id} lineId={line.id} currentState={replenishmentState} compact onSaved={async () => { setNotice(tr("replenishmentSaved")); await fetchDashboard(); await loadCase(selected.id); }} /> : null}</article>;
+            return <article className={styles.line} key={line.id}><div><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></div><span className={styles.caseStatusBadge}><CaseStatusBadge status={line.state} retrievalState={line.retrievalState ?? null} tr={tr} kind="line" /></span><span className={styles.lineState}>{lineStateLabel(line.state, tr)}{line.retrievalState && (line.retrievalState !== "NOT_REQUIRED" || selected.phase !== "STAGED") ? ` · ${retrievalStateLabel(line.retrievalState, tr)}` : ""}{replenishmentState !== "NONE" ? ` · ${tr(`replenishmentState${replenishmentState}` as MessageKey)}` : ""}</span>{line.discoveredLocation && <small>{tr("newLocation")}: {line.discoveredLocation}</small>}{replenishmentState !== "NONE" ? <small>{tr("lineReplenishmentState")}: {tr(`replenishmentState${replenishmentState}` as MessageKey)}</small> : null}{canRecordReplenishment && selected.phase !== "CLOSED" && !selected.closedAt && !["RESOLVED", "CANCELLED"].includes(line.state) && replenishmentState !== "COMPLETED" ? <ReplenishmentForm tr={tr} caseId={selected.id} lineId={line.id} currentState={replenishmentState} compact onSaved={async () => { setNotice(tr("replenishmentSaved")); await fetchDashboard(); await loadCase(selected.id); }} /> : null}{canReportLocation && selected.phase !== "CLOSED" && !selected.closedAt && !["RESOLVED", "CANCELLED"].includes(line.state) ? <LocationReporter tr={tr} caseId={selected.id} lineId={line.id} onReported={async () => { setNotice(tr("reportLocationSaved")); await fetchDashboard(); await loadCase(selected.id); }} /> : null}</article>;
           });
         })()}</div> : <p>{tr("noItemsYet")}</p>}</section>
         {(selected.events?.length || selected.messages?.length) ? <section className={styles.detailSection}><h3>{tr("caseTimeline")}</h3><CaseTimeline events={(selected.events || []) as CaseTimelineEvent[]} messages={selected.messages || []} tr={tr} formatDate={(value) => formatDate(value, locale)} className={styles.timeline} /></section> : null}

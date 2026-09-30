@@ -20,13 +20,16 @@ describe("Integration slice: new-permission grant and revoke bounds", () => {
     }
   });
 
-  it("matches the shipped role presets: picker needs a grant, others hold defaults", () => {
+  it("matches the shipped role presets: picker and troubleshooter never record replenishment", () => {
     expect(defaultPermissions("PICKER")).not.toContain("RECORD_REPLENISHMENT");
     expect(defaultPermissions("PICKER")).not.toContain("REPORT_NEW_LOCATION");
     expect(defaultPermissions("PICKER")).not.toContain("OVERRIDE_CASE_STATE");
     expect(defaultPermissions("PICKER")).not.toContain("REPAIR_CASE_DATA");
-    for (const role of ["TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "MANAGER", "ADMIN"] as const) {
+    expect(defaultPermissions("TROUBLESHOOTER")).not.toContain("RECORD_REPLENISHMENT");
+    for (const role of ["ASSISTANT", "TEAM_LEADER", "MANAGER", "ADMIN"] as const) {
       expect(defaultPermissions(role)).toContain("RECORD_REPLENISHMENT");
+    }
+    for (const role of ["TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "MANAGER", "ADMIN"] as const) {
       expect(defaultPermissions(role)).toContain("REPORT_NEW_LOCATION");
     }
     expect(defaultPermissions("TEAM_LEADER")).not.toContain("OVERRIDE_CASE_STATE");

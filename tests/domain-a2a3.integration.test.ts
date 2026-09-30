@@ -158,36 +158,42 @@ describeDatabase("Wave 1 A2/A3 domain slice against PostgreSQL", () => {
     expect((await messageRoute(request(`/api/cases/${item.caseId}/messages`, "POST", { message: "Outsider note" }, otherPickerCookie), { params: Promise.resolve({ id: item.caseId }) })).status).toBe(403);
   });
 
-  it("runs replenishment transitions, routes completion, and stays visible without a notification read", async () => {
+  it("runs state-only replenishment transitions and stays visible without a notification read", async () => {
     const item = await makeCase("03");
     // Picker without the grant is forbidden.
     const forbidden = await replenishmentRoute(request(`/api/cases/${item.caseId}/lines/${item.lineId}/replenishment`, "POST",
-      { state: "WAITING", note: "Waiting on inbound", retrieverUserId: pickerId }, pickerCookie),
+      { state: "WAITING" }, pickerCookie),
       { params: Promise.resolve({ id: item.caseId, lineId: item.lineId }) });
     expect(forbidden.status).toBe(403);
     expect((await forbidden.json()).code).toBe("REPLENISHMENT_FORBIDDEN");
 
+    // Troubleshooter holds no replenishment grant either.
+    const troubleshooterDenied = await replenishmentRoute(request(`/api/cases/${item.caseId}/lines/${item.lineId}/replenishment`, "POST",
+      { state: "WAITING" }, troubleshooterCookie),
+      { params: Promise.resolve({ id: item.caseId, lineId: item.lineId }) });
+    expect(troubleshooterDenied.status).toBe(403);
+
     const waiting = await replenishmentRoute(request(`/api/cases/${item.caseId}/lines/${item.lineId}/replenishment`, "POST",
-      { state: "WAITING", note: "Waiting on inbound", retrieverUserId: pickerId }, troubleshooterCookie),
+      { state: "WAITING" }, assistantCookie),
       { params: Promise.resolve({ id: item.caseId, lineId: item.lineId }) });
     expect(waiting.status).toBe(201);
     const [waitingLine] = await getDb().select().from(shortPickLines).where(eq(shortPickLines.id, item.lineId));
-    expect(waitingLine).toMatchObject({ replenishmentState: "WAITING", state: "OPEN" });
+    expect(waitingLine).toMatchObject({ replenishmentState: "WAITING", state: "OPEN", replenishmentNote: null, replenishmentRetrieverUserId: null });
 
     // Invalid repeat of WAITING is rejected.
     const repeat = await replenishmentRoute(request(`/api/cases/${item.caseId}/lines/${item.lineId}/replenishment`, "POST",
-      { state: "WAITING", note: "Again", retrieverUserId: pickerId }, troubleshooterCookie),
+      { state: "WAITING" }, assistantCookie),
       { params: Promise.resolve({ id: item.caseId, lineId: item.lineId }) });
     expect(repeat.status).toBe(409);
 
     const completed = await replenishmentRoute(request(`/api/cases/${item.caseId}/lines/${item.lineId}/replenishment`, "POST",
-      { state: "COMPLETED", note: "Stock arrived", retrieverUserId: pickerId }, troubleshooterCookie),
+      { state: "COMPLETED" }, assistantCookie),
       { params: Promise.resolve({ id: item.caseId, lineId: item.lineId }) });
     expect(completed.status).toBe(201);
     const [doneLine] = await getDb().select().from(shortPickLines).where(eq(shortPickLines.id, item.lineId));
     expect(doneLine).toMatchObject({ replenishmentState: "COMPLETED", state: "OPEN" });
 
-    // Completion routes a responsibility notification to the named retriever; main line state is unchanged.
+    // State transitions persist without assignment; main line state is unchanged.
     const notes = await getDb().select().from(caseEvents).where(eq(caseEvents.caseId, item.caseId));
     expect(notes.map((event) => event.eventType)).toEqual(expect.arrayContaining(["REPLENISHMENT_WAITING", "REPLENISHMENT_COMPLETED"]));
 
@@ -210,7 +216,7 @@ describeDatabase("Wave 1 A2/A3 domain slice against PostgreSQL", () => {
   it("supports NONE→COMPLETED directly and keeps events plus audit atomic", async () => {
     const item = await makeCase("04");
     const completed = await replenishmentRoute(request(`/api/cases/${item.caseId}/lines/${item.lineId}/replenishment`, "POST",
-      { state: "COMPLETED", note: "Direct completion", retrieverUserId: pickerId }, assistantCookie),
+      { state: "COMPLETED" }, assistantCookie),
       { params: Promise.resolve({ id: item.caseId, lineId: item.lineId }) });
     expect(completed.status).toBe(201);
     const events = await getDb().select().from(caseEvents).where(eq(caseEvents.caseId, item.caseId));
