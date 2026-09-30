@@ -19,3 +19,12 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - Sessions have no automatic time expiry under the PRD. Revocation and disabled or archived accounts must still invalidate access.
 - Keep user-facing text in translation dictionaries with English fallback and English, Dutch, Polish, and Spanish language support. Do not translate order numbers, locations, or SKUs.
 - At the end of each phase, run tests, type checking, linting, verify migrations, and document known limitations. Do not claim later-phase features are complete before their acceptance conditions are met.
+
+# Railway agent setup (workstation, 2026-09-30)
+
+- CLI authenticated via `railway login` ("Already logged in" at setup time). MCP auth reuses the CLI session through a proxy; no Railway token lives in this repo.
+- Detected agents at setup: universal, claude-code, codex, opencode, pi.
+- Skills: `use-railway` installed for Universal (.agents), Claude Code, OpenAI Codex, OpenCode, Pi → `~/.agents/skills/use-railway`, `~/.claude/skills/use-railway`, `~/.codex/skills/use-railway`, `~/.config/opencode/skills/use-railway`, `~/.pi/agent/skills/use-railway`.
+- MCP: remote `https://mcp.railway.com` via CLI proxy configured for Claude Code (`~/.claude.json`), OpenAI Codex (`~/.codex/config.toml`), OpenCode (`~/.config/opencode/opencode.json`), Pi (`~/.pi/agent/mcp.json`).
+- Restart the tool(s) after install for skills/MCP to register.
+- Reference: https://docs.railway.com/agents
