@@ -9,6 +9,7 @@ import { hashPin } from "../src/server/security";
 import { POST as manualRoute } from "../src/app/api/cases/manual/route";
 import { POST as createCaseRoute } from "../src/app/api/cases/route";
 import { POST as messageRoute } from "../src/app/api/cases/[id]/messages/route";
+import { PATCH as phaseRoute } from "../src/app/api/cases/[id]/phase/route";
 import { POST as closeRoute } from "../src/app/api/cases/[id]/close/route";
 import { POST as reopenRoute } from "../src/app/api/cases/[id]/reopen/route";
 import { POST as responsibilityRoute } from "../src/app/api/cases/[id]/responsibility/route";
@@ -99,6 +100,35 @@ describeDatabase("Phase 4 operations against PostgreSQL", () => {
     const dashboard = await dashboardRoute(request("/api/operations/dashboard", "GET", undefined, assistantCookie));
     expect(dashboard.status).toBe(200);
     expect(((await dashboard.json()).cases as Array<{ id: string }>).some((item) => item.id === record.id)).toBe(true);
+  });
+  it("creates a picking manual case with a troubleshooter as the original picker", async () => {
+    const response = await manualRoute(request("/api/cases/manual", "POST", { orderNumber: `8${Date.now()}6`, phase: "PICKING",
+      originalPickerUserId: resolverId, firstLine: { location: "pick.6", sku: "item-6", quantity: 1 } }, assistantCookie));
+    expect(response.status).toBe(201);
+    const record = (await response.json()).case as { id: string };
+    caseIds.push(record.id);
+    const [stored] = await getDb().select().from(orderCases).where(eq(orderCases.id, record.id));
+    expect(stored).toMatchObject({ phase: "PICKING", physicalState: "WITH_PICKER", physicalLocation: null, pickingUserId: resolverId });
+  });
+  it("lets an authorized manager move an order between picking and staged while others stay denied", async () => {
+    const created = await createCaseRoute(request("/api/cases", "POST", { orderNumber: `8${Date.now()}5`,
+      confirmedHistoricalCaseIds: [], firstLine: { location: "pick.5", sku: "item-5", quantity: 1 } }, pickerCookie));
+    expect(created.status).toBe(201);
+    const record = (await created.json()).case as { id: string };
+    caseIds.push(record.id);
+    const params = { params: Promise.resolve({ id: record.id }) };
+    expect((await phaseRoute(request(`/api/cases/${record.id}/phase`, "PATCH", { phase: "STAGED", confirmedPhysicalPlacement: true }, pickerCookie), params)).status).toBe(200);
+    const [staged] = await getDb().select().from(orderCases).where(eq(orderCases.id, record.id));
+    expect(staged).toMatchObject({ phase: "STAGED", physicalState: "SHORT_PICK_HOLD" });
+    expect((await phaseRoute(request(`/api/cases/${record.id}/phase`, "PATCH", { phase: "PICKING" }, pickerCookie), params)).status).toBe(403);
+    expect((await phaseRoute(request(`/api/cases/${record.id}/phase`, "PATCH", { phase: "PICKING" }, leaderCookie), params)).status).toBe(200);
+    const [picking] = await getDb().select().from(orderCases).where(eq(orderCases.id, record.id));
+    expect(picking).toMatchObject({ phase: "PICKING", physicalState: "WITH_PICKER", physicalLocation: null });
+    const events = await getDb().select().from(caseEvents).where(eq(caseEvents.caseId, record.id));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ eventType: "ORDER_STAGED" }),
+      expect.objectContaining({ eventType: "ORDER_RETURNED_TO_PICKING" }),
+    ]));
   });
 
   it("allows a picker to close a case after retrieval resolves every line", async () => {

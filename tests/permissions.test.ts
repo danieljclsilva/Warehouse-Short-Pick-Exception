@@ -10,6 +10,8 @@ describe("role and permission hierarchy", () => {
     }
     expect(defaultPermissions("PICKER")).toEqual(expect.arrayContaining(["ADD_CASE_MESSAGE", "VIEW_CASE_MESSAGES"]));
     expect(defaultPermissions("ASSISTANT")).toContain("REPORT_NEW_LOCATION");
+    expect(defaultPermissions("TROUBLESHOOTER")).toEqual(expect.arrayContaining(["REPORT_SHORT_PICK", "VIEW_OWN_CASES", "MARK_ORDER_STAGED"]));
+    expect(defaultPermissions("ASSISTANT")).toContain("MARK_ORDER_STAGED");
   });
 
   it("enforces grant bounds for override and repair permissions", () => {

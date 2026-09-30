@@ -15,6 +15,7 @@ export const manualCaseSchema = z.object({
   orderNumber: createCaseSchema.shape.orderNumber,
   firstLine: addLineSchema.omit({ confirmDuplicate: true }),
   originalPickerUserId: z.uuid().optional(),
+  phase: z.enum(["PICKING", "STAGED"]).default("STAGED"),
   reason: z.string().trim().min(1).max(500).default("PHYSICAL_HOLD_WITHOUT_DIGITAL_REPORT"),
   confirmedHistoricalCaseIds: z.array(z.uuid()).max(1000).default([]),
 });
@@ -108,22 +109,23 @@ export async function createManualCase(auth: AuthContext, input: z.infer<typeof 
     const confirmed = [...new Set(input.confirmedHistoricalCaseIds)].sort();
     if (expected.length !== confirmed.length || expected.some((id, index) => id !== confirmed[index])) return { kind: "HISTORY" as const, history };
     if (input.originalPickerUserId) {
-      const [picker] = await tx.select({ id: users.id }).from(users).where(and(eq(users.id, input.originalPickerUserId), eq(users.role, "PICKER"), eq(users.status, "ACTIVE"))).limit(1);
+      const [picker] = await tx.select({ id: users.id }).from(users).where(and(eq(users.id, input.originalPickerUserId), inArray(users.role, ["PICKER", "TROUBLESHOOTER"]), eq(users.status, "ACTIVE"))).limit(1);
       if (!picker) throw new CaseApiError("CASE_ACCESS_DENIED", "Original picker must be an active picker", 400);
     }
     const configuration = await getCurrentConfiguration(tx);
     if (!configuration.values.MANUAL_CASE_CREATION_ENABLED) throw new CaseApiError("CASE_ACCESS_DENIED", "Manual case creation is disabled", 403);
     const physicalLocation = configuration.values.SHORT_PICK_HOLD_LOCATION_NAME;
     const source = auth.user.role === "ADMIN" ? "ADMIN_MANUAL" : auth.user.role === "MANAGER" ? "MANAGER_MANUAL" : auth.user.role === "TEAM_LEADER" ? "TL_MANUAL" : "ASSISTANT_MANUAL";
-    const [record] = await tx.insert(orderCases).values({ orderNumber, phase: "STAGED", physicalState: "SHORT_PICK_HOLD", physicalLocation,
-      stagedAt: new Date(), pickingUserId: input.originalPickerUserId ?? null, currentCaseResponsibleUserId: auth.user.id,
+    const phase = input.phase === "PICKING" ? "PICKING" as const : "STAGED" as const;
+    const [record] = await tx.insert(orderCases).values({ orderNumber, phase, physicalState: phase === "STAGED" ? "SHORT_PICK_HOLD" : "WITH_PICKER", physicalLocation: phase === "STAGED" ? physicalLocation : null,
+      stagedAt: phase === "STAGED" ? new Date() : null, pickingUserId: input.originalPickerUserId ?? null, currentCaseResponsibleUserId: auth.user.id,
       createdByUserId: auth.user.id, source, manualReason: input.reason, configurationVersionId: configuration.id }).returning({ id: orderCases.id });
     const [line] = await tx.insert(shortPickLines).values({ caseId: record!.id, originalLocation: input.firstLine.location, sku: input.firstLine.sku,
       missingQuantity: input.firstLine.quantity, reportedByUserId: auth.user.id }).returning({ id: shortPickLines.id });
     await tx.insert(checkTasks).values({ shortPickLineId: line!.id });
-    await tx.insert(caseEvents).values({ caseId: record!.id, actorUserId: auth.user.id, eventType: "CASE_CREATED", details: { orderNumber, source, reason: input.reason, originalPickerUserId: input.originalPickerUserId ?? null } });
+    await tx.insert(caseEvents).values({ caseId: record!.id, actorUserId: auth.user.id, eventType: "CASE_CREATED", details: { orderNumber, source, phase, reason: input.reason, originalPickerUserId: input.originalPickerUserId ?? null } });
     await tx.insert(caseEvents).values({ caseId: record!.id, shortPickLineId: line!.id, actorUserId: auth.user.id, eventType: "SHORT_PICK_LINE_ADDED", details: { location: input.firstLine.location, sku: input.firstLine.sku, quantity: input.firstLine.quantity } });
-    await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CASE_CREATED", details: { caseId: record!.id, source, reason: input.reason } });
+    await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CASE_CREATED", details: { caseId: record!.id, source, phase, reason: input.reason } });
     await insertMonitoringNotifications(tx, { type: "NEW_SHORT_PICK", caseId: record!.id, shortPickLineId: line!.id,
       payload: { orderNumber, location: input.firstLine.location, sku: input.firstLine.sku, quantity: input.firstLine.quantity }, excludeUserId: auth.user.id });
     return { kind: "CREATED" as const, id: record!.id };

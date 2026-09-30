@@ -62,7 +62,7 @@ const navigation = [
 ] as const satisfies { key: MessageKey; permission: string[] }[];
 
 function navigationFor(user: AuthUser) {
-  return navigation.filter((item) => item.key === "notifications" || item.key === "profile" || (item.key === "configuration" && user.canManageConfiguration === true) || ((item.key !== "myWork" || user.role === "PICKER") && item.permission.some((permission) => user.permissions.includes(permission))));
+  return navigation.filter((item) => item.key === "notifications" || item.key === "profile" || (item.key === "configuration" && user.canManageConfiguration === true) || ((item.key !== "myWork" || ["PICKER", "TROUBLESHOOTER"].includes(user.role)) && item.permission.some((permission) => user.permissions.includes(permission))));
 }
 
 const roleKeys: Record<InviteRole | "ADMIN", MessageKey> = {
@@ -345,7 +345,7 @@ export function liveSectionForUser(
   if (permissions.includes("VIEW_ALL_OPEN_CASES")) return "openCases";
   const canUseChecks = ["VIEW_AVAILABLE_CHECKS", "CLAIM_CHECK", "COMPLETE_CHECK", "ASSIGN_CHECK", "REASSIGN_CHECK"]
     .some((permission) => permissions.includes(permission));
-  const canUsePickerWorkflow = account?.role === "PICKER"
+  const canUsePickerWorkflow = ["PICKER", "TROUBLESHOOTER"].includes(account?.role ?? "")
     && (permissions.includes("REPORT_SHORT_PICK") || permissions.includes("VIEW_OWN_CASES"));
   if (canUsePickerWorkflow) {
     if ((notificationType ?? "").toUpperCase().includes(CHECK_NOTIFICATION_MARKER) && canUseChecks) return "checks";
@@ -601,7 +601,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
   }, [user, view, activeSection]);
 
   const canCreateInvites = user?.role === "ADMIN" || Boolean(user?.permissions.includes("CREATE_INVITES"));
-  const canUsePickerWorkflow = user?.role === "PICKER" && Boolean(user.permissions.some((permission) => permission === "REPORT_SHORT_PICK" || permission === "VIEW_OWN_CASES"));
+  const canUsePickerWorkflow = Boolean(user && ["PICKER", "TROUBLESHOOTER"].includes(user.role) && user.permissions.some((permission) => permission === "REPORT_SHORT_PICK" || permission === "VIEW_OWN_CASES"));
   const canOverrideDuplicateLine = Boolean(user?.permissions.includes("OVERRIDE_DUPLICATE_SHORT_PICK_LINE"));
   const assignableRoles = user ? inviteRolesByActor[user.role] ?? [] : [];
   const openCaseFromNotification = useCallback((caseId: string, lineId: string | null, notification?: { notification?: { type?: string | null; payload?: Record<string, unknown> | null } | null }) => {
@@ -953,6 +953,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
                 canAssign={user.permissions.includes("ASSIGN_TROUBLESHOOTER")}
                 canClose={user.permissions.includes("RESOLVE_CASE")}
                 canReopen={user.permissions.includes("REOPEN_CASE")}
+                canChangePhase={user.permissions.includes("MARK_ORDER_STAGED")}
                 focusedCaseId={liveFocus?.section === "openCases" ? liveFocus.caseId : null}
                 focusedNonce={liveFocus?.section === "openCases" ? liveFocus.nonce : 0}
                 focusFromNotification={liveFocus?.section === "openCases"}

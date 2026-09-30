@@ -115,6 +115,7 @@ describe("timeline surfaces render badges and codes", () => {
     canAssign: false,
     canClose: false,
     canReopen: false,
+    canChangePhase: false,
   } as const;
 
   it("dashboard renders (case cards fetch client-side; badge unit covered separately)", () => {

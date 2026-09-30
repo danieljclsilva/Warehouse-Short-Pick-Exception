@@ -36,6 +36,7 @@ describeDatabase("Wave 1 A2/A3 domain slice against PostgreSQL", () => {
   let pickerId = "";
   let otherPickerCookie = "";
   let troubleshooterCookie = "";
+  let troubleshooterId = "";
   let assistantCookie = "";
   let leaderCookie = "";
   let leaderId = "";
@@ -70,7 +71,7 @@ describeDatabase("Wave 1 A2/A3 domain slice against PostgreSQL", () => {
     await makeUser("ASSISTANT", "assistant");
     const leader = await makeUser("TEAM_LEADER", "leader");
     const admin = await makeUser("ADMIN", "admin");
-    pickerId = picker.id; leaderId = leader.id; adminId = admin.id;
+    pickerId = picker.id; troubleshooterId = troubleshooter.id; leaderId = leader.id; adminId = admin.id;
     pickerCookie = (await createSession(picker.id)).cookie.split(";")[0]!;
     otherPickerCookie = (await createSession((await getDb().select().from(users).then((rows) => rows.find((row) => row.identifier === `a2a3-${suffix}-other-picker`)))!.id)).cookie.split(";")[0]!;
     troubleshooterCookie = (await createSession(troubleshooter.id)).cookie.split(";")[0]!;
@@ -412,5 +413,10 @@ describeDatabase("Wave 1 A2/A3 domain slice against PostgreSQL", () => {
     expect(repairEvents).toEqual(expect.arrayContaining([expect.objectContaining({ eventType: "CASE_REPAIRED" })]));
     const logs = await getDb().select().from(auditLog).where(eq(auditLog.action, "CASE_REPAIRED"));
     expect(logs.some((log) => (log.details as { caseId?: string }).caseId === item2.caseId)).toBe(true);
+  });
+  it("lets a troubleshooter report a case the same way a picker does", async () => {
+    const item = await makeCase("14", troubleshooterCookie);
+    const [stored] = await getDb().select().from(orderCases).where(eq(orderCases.id, item.caseId));
+    expect(stored).toMatchObject({ pickingUserId: troubleshooterId, source: "PICKER_REPORT" });
   });
 });

@@ -9,6 +9,7 @@ import { insertResponsibilityNotification } from "@/server/notifications";
 import { getConfigurationVersion } from "@/server/configuration";
 
 export const stageCaseSchema = z.object({ confirmedPhysicalPlacement: z.boolean().default(false) });
+export const phaseCaseSchema = z.object({ phase: z.enum(["PICKING", "STAGED"]), confirmedPhysicalPlacement: z.boolean().default(false) });
 export const retrievalSchema = z.object({ result: z.enum(["RETRIEVED", "FAILED"]) });
 export const assignRetrievalSchema = z.object({ userId: z.uuid() });
 
@@ -36,7 +37,7 @@ export async function stageCase(auth: AuthContext, caseId: string, confirmedPhys
     const [record] = await tx.select().from(orderCases).where(eq(orderCases.id, caseId)).for("update").limit(1);
     if (!record) throw new CaseApiError("CASE_NOT_FOUND", "Case not found", 404);
     if (record.phase !== "PICKING") throw new CaseApiError("CASE_NOT_OPEN", "Only a picking case can be staged", 409);
-    if (record.pickingUserId !== auth.user.id && !hasAuthPermission(auth, "VIEW_ALL_OPEN_CASES")) throw new CaseApiError("CASE_ACCESS_DENIED", "This case belongs to another picker", 403);
+    if (record.pickingUserId !== auth.user.id && record.currentCaseResponsibleUserId !== auth.user.id && !hasAuthPermission(auth, "VIEW_ALL_OPEN_CASES")) throw new CaseApiError("CASE_ACCESS_DENIED", "This case belongs to another picker", 403);
     const configuration = await getConfigurationVersion(tx, record.configurationVersionId);
     if (!configuration) throw new Error("Case configuration version is missing");
     if (configuration.values.REQUIRE_STAGING_CONFIRMATION && !confirmedPhysicalPlacement) throw new CaseApiError("CASE_NOT_OPEN", "Physical staging confirmation is required", 400);
@@ -64,6 +65,26 @@ export async function stageCase(auth: AuthContext, caseId: string, confirmedPhys
     }
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "ORDER_STAGED", details: { caseId, physicalLocation } });
     return { caseId, phase: "STAGED" as const, physicalState: "SHORT_PICK_HOLD" as const, physicalLocation };
+  });
+}
+export async function updateCasePhase(auth: AuthContext, caseId: string, phase: "PICKING" | "STAGED", confirmedPhysicalPlacement = false) {
+  if (!hasAuthPermission(auth, "MARK_ORDER_STAGED")) throw new CaseApiError("CASE_ACCESS_DENIED", "Cannot change the order status", 403);
+  if (phase !== "STAGED" && !hasAuthPermission(auth, "VIEW_ALL_OPEN_CASES")) throw new CaseApiError("CASE_ACCESS_DENIED", "Returning an order to picking requires manager access", 403);
+  if (phase === "STAGED") {
+    const staged = await stageCase(auth, caseId, confirmedPhysicalPlacement);
+    return { ...staged, previousPhase: "PICKING" as const };
+  }
+  return getDb().transaction(async (tx) => {
+    const [record] = await tx.select().from(orderCases).where(eq(orderCases.id, caseId)).for("update").limit(1);
+    if (!record) throw new CaseApiError("CASE_NOT_FOUND", "Case not found", 404);
+    if (record.phase === "CLOSED") throw new CaseApiError("CASE_NOT_OPEN", "Case is closed or missing", 409);
+    if (record.phase === "PICKING") return { caseId, phase: "PICKING" as const, physicalState: record.physicalState, physicalLocation: record.physicalLocation, previousPhase: "PICKING" as const };
+    const before = { phase: record.phase, physicalState: record.physicalState, physicalLocation: record.physicalLocation };
+    const now = new Date();
+    await tx.update(orderCases).set({ phase: "PICKING", physicalState: "WITH_PICKER", physicalLocation: null, updatedAt: now, version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
+    await tx.insert(caseEvents).values({ caseId, actorUserId: auth.user.id, eventType: "ORDER_RETURNED_TO_PICKING", details: { before } });
+    await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "ORDER_RETURNED_TO_PICKING", details: { caseId, before } });
+    return { caseId, phase: "PICKING" as const, physicalState: "WITH_PICKER" as const, physicalLocation: null, previousPhase: before.phase };
   });
 }
 

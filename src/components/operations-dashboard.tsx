@@ -72,6 +72,7 @@ type Props = {
   canAssign: boolean;
   canClose: boolean;
   canReopen: boolean;
+  canChangePhase: boolean;
   focusedCaseId?: string | null;
   focusedNonce?: number;
   focusFromNotification?: boolean;
@@ -142,7 +143,7 @@ function attentionLabel(level: CaseSummary["attentionLevel"], tr: Translator) {
   return tr(keys[level ?? "NORMAL"]);
 }
 
-export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, canAssign, canClose, canReopen, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: Props) {
+export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, canAssign, canClose, canReopen, canChangePhase, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: Props) {
   const dashboardRequestInFlight = useRef(false);
   const [metrics, setMetrics] = useState<Metrics>(EMPTY_METRICS);
   const [attentionThresholdMinutes, setAttentionThresholdMinutes] = useState(15);
@@ -164,6 +165,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
   const [manualSku, setManualSku] = useState("");
   const [manualQuantity, setManualQuantity] = useState("1");
   const [manualPicker, setManualPicker] = useState("");
+  const [manualPhase, setManualPhase] = useState<"PICKING" | "STAGED">("STAGED");
   const [manualReason, setManualReason] = useState("");
   const [historicalCases, setHistoricalCases] = useState<HistoricalCase[]>([]);
   const [confirmHistory, setConfirmHistory] = useState(false);
@@ -280,6 +282,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
     const payload = {
       orderNumber: manualOrder.trim(),
       firstLine: { location: manualLocation.trim(), sku: manualSku.trim(), quantity: Number(manualQuantity) },
+      phase: manualPhase,
       ...(manualPicker ? { originalPickerUserId: manualPicker } : {}),
       ...(manualReason.trim() ? { reason: manualReason.trim() } : {}),
       ...(historicalCases?.length && confirmHistory ? { confirmedHistoricalCaseIds: historicalCases.map((item) => item.id) } : {}),
@@ -303,7 +306,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
         throw new Error(body.code === "OPEN_CASE_EXISTS" ? tr("manualOpenCaseExists") : tr("manualCaseCreateFailed"));
       }
       setShowManual(false);
-      setManualOrder(""); setManualLocation(""); setManualSku(""); setManualQuantity("1"); setManualPicker(""); setManualReason(""); setHistoricalCases([]); setConfirmHistory(false);
+      setManualOrder(""); setManualLocation(""); setManualSku(""); setManualQuantity("1"); setManualPicker(""); setManualPhase("STAGED"); setManualReason(""); setHistoricalCases([]); setConfirmHistory(false);
       setNotice(tr("manualCaseCreated"));
       await fetchDashboard();
       if (body.case?.id) await loadCase(body.case.id);
@@ -339,6 +342,23 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
     const saved = await mutateCase(`/api/cases/${selected.id}/messages`, "POST", { message: messageText.trim() }, "caseMessageSent");
     if (saved) setMessageText("");
   };
+  const changePhase = async (phase: "PICKING" | "STAGED") => {
+    if (!selected || selected.phase === phase || selected.phase === "CLOSED" || selected.closedAt) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const response = await fetch(`/api/cases/${selected.id}/phase`, { method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phase, ...(phase === "STAGED" ? { confirmedPhysicalPlacement: true } : {}) }) });
+      const body = await readBody<CaseResponse>(response);
+      if (!response.ok) throw new Error(body.code ? tr("orderStatusUpdateFailed") : tr("orderStatusUpdateFailed"));
+      setNotice(tr("orderStatusUpdated"));
+      await fetchDashboard();
+      await loadCase(selected.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : tr("orderStatusUpdateFailed"));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const renderMetric = (key: MessageKey, value: number, tone: string) => <div className={`${styles.metric} ${styles[tone]}`} key={key}><span>{key === "metricOverThreshold" ? tr(key, { minutes: String(attentionThresholdMinutes) }) : tr(key)}</span><strong>{value}</strong></div>;
 
@@ -357,9 +377,9 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
       <form className={styles.manualForm} onSubmit={submitManual}>
         <label><span>{tr("orderNumber")}</span><ScanInput inputMode="numeric" required value={manualOrder} onChange={setManualOrder} tr={tr} scanKind="order" fieldLabel={tr("orderNumber")} /></label>
         <label><span>{tr("location")}</span><ScanInput required autoCapitalize="characters" value={manualLocation} onChange={setManualLocation} tr={tr} scanKind="location" fieldLabel={tr("location")} /></label>
-        <label><span>{tr("sku")}</span><ScanInput required autoCapitalize="characters" value={manualSku} onChange={setManualSku} tr={tr} scanKind="sku" fieldLabel={tr("sku")} /></label>
         <label><span>{tr("missingQuantity")}</span><input required type="number" min="1" step="1" value={manualQuantity} onChange={(event) => setManualQuantity(event.target.value)} /></label>
-        <label><span>{tr("originalPickerOptional")}</span><select value={manualPicker} onChange={(event) => setManualPicker(event.target.value)}><option value="">{tr("noPickerSelected")}</option>{workers.filter((worker) => worker.role === "PICKER").map((worker) => <option key={worker.id} value={worker.id}>{worker.displayName}</option>)}</select></label>
+        <label><span>{tr("originalPickerOptional")}</span><select value={manualPicker} onChange={(event) => setManualPicker(event.target.value)}><option value="">{tr("noPickerSelected")}</option>{workers.filter((worker) => worker.role === "PICKER" || worker.role === "TROUBLESHOOTER").map((worker) => <option key={worker.id} value={worker.id}>{worker.displayName}</option>)}</select></label>
+        <label><span>{tr("manualStatusLabel")}</span><select value={manualPhase} onChange={(event) => setManualPhase(event.target.value as "PICKING" | "STAGED")}><option value="PICKING">{tr("phasePicking")}</option><option value="STAGED">{tr("phaseStaged")}</option></select></label>
         <label className={styles.wide}><span>{tr("manualReasonOptional")}</span><textarea rows={2} maxLength={500} value={manualReason} onChange={(event) => setManualReason(event.target.value)} /></label>
         {historicalCases?.length ? <div className={styles.historyConfirm} role="alert"><strong>{tr("manualHistoricalCasesTitle")}</strong><ul>{historicalCases.map((item) => <li key={item.id}>{manualOrder} · {item.phase === "CLOSED" ? tr("caseClosed") : item.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · {formatDate(item.createdAt, locale)}</li>)}</ul><label className={styles.confirmCheck}><input type="checkbox" checked={confirmHistory} onChange={(event) => setConfirmHistory(event.target.checked)} /><span>{tr("manualHistoryAcknowledged")}</span></label></div> : null}
         <div className={`${styles.formActions} ${styles.wide}`}><button type="button" className={styles.secondary} onClick={() => { setShowManual(false); setConfirmHistory(false); setHistoricalCases([]); }}>{tr("cancel")}</button><button type="submit" className={styles.primary} disabled={busy || (Boolean(historicalCases?.length) && !confirmHistory)}>{busy ? tr("saving") : tr("saveManualCase")}</button></div>
@@ -408,7 +428,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
         {(selected.events?.length || selected.messages?.length) ? <section className={styles.detailSection}><h3>{tr("caseTimeline")}</h3><CaseTimeline events={(selected.events || []) as CaseTimelineEvent[]} messages={selected.messages || []} tr={tr} formatDate={(value) => formatDate(value, locale)} className={styles.timeline} /></section> : null}
         {canMessage && selected.phase !== "CLOSED" && !selected.closedAt && <form className={styles.messageForm} onSubmit={postMessage}><label><span>{tr("caseMessageLabel")}</span><textarea required maxLength={2000} rows={3} value={messageText} onChange={(event) => setMessageText(event.target.value)} placeholder={tr("caseMessagePlaceholder")} /></label><button type="submit" className={styles.primary} disabled={busy || !messageText.trim()}>{tr("sendCaseMessage")}</button></form>}
         <div className={styles.caseActions}>
-          {selected.phase !== "CLOSED" && !selected.closedAt && canAssign && <div className={styles.reopenAction}><label><span>{tr("assignTroubleshooter")}</span><select required value={reopenResponsible} onChange={(event) => setReopenResponsible(event.target.value)}><option value="">{tr("selectWorker")}</option>{workers.filter((worker) => worker.role === "TROUBLESHOOTER").map((worker) => <option key={worker.id} value={worker.id}>{worker.displayName}</option>)}</select></label><button type="button" className={styles.secondary} disabled={busy || !reopenResponsible} onClick={() => void mutateCase(`/api/cases/${selected.id}/responsibility`, "POST", { userId: reopenResponsible }, "caseResponsibilitySaved")}>{tr("assignTroubleshooter")}</button></div>}
+          {selected.phase !== "CLOSED" && !selected.closedAt && canChangePhase && <div className={styles.reopenAction}><label><span>{tr("orderStatusLabel")}</span><select value={selected.phase === "STAGED" ? "STAGED" : "PICKING"} disabled={busy} onChange={(event) => void changePhase(event.target.value as "PICKING" | "STAGED")}><option value="PICKING">{tr("phasePicking")}</option><option value="STAGED">{tr("phaseStaged")}</option></select></label></div>}
           {selected.phase !== "CLOSED" && !selected.closedAt && canClose && <div className={styles.closeAction}><label><span>{tr("administrativeResolutionOptional")}</span><input maxLength={300} minLength={5} value={adminResolution} onChange={(event) => setAdminResolution(event.target.value)} placeholder={tr("administrativeResolutionPlaceholder")} /><small>{tr("administrativeResolutionHint")}</small></label><button type="button" className={styles.secondary} disabled={busy} onClick={() => { if (window.confirm(tr("closeCaseConfirm"))) void mutateCase(`/api/cases/${selected.id}/close`, "POST", adminResolution.trim() ? { administrativeResolutionReason: adminResolution.trim() } : {}, "caseClosedNotice"); }}>{tr("closeCase")}</button></div>}
           {(selected.phase === "CLOSED" || selected.closedAt) && canReopen && <div className={styles.reopenAction}><label><span>{tr("reopenPhase")}</span><select value={reopenPhase} onChange={(event) => setReopenPhase(event.target.value as "PICKING" | "STAGED")}><option value="PICKING">{tr("phasePicking")}</option><option value="STAGED">{tr("phaseStaged")}</option></select></label><label><span>{tr("reopenResponsible")}</span><select required value={reopenResponsible} onChange={(event) => setReopenResponsible(event.target.value)}><option value="">{tr("selectWorker")}</option>{workers.filter((worker) => reopenPhase === "PICKING" ? worker.role === "PICKER" : worker.status === "ACTIVE").map((worker) => <option key={worker.id} value={worker.id}>{worker.displayName}</option>)}</select></label><button type="button" className={styles.primary} disabled={busy || !reopenResponsible} onClick={() => void mutateCase(`/api/cases/${selected.id}/reopen`, "POST", { phase: reopenPhase, responsibleUserId: reopenResponsible, lineIds: selected.lines?.map((line) => line.id) || [] }, "caseReopenedNotice")}>{tr("reopenCase")}</button></div>}
         </div>

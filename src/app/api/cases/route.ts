@@ -15,8 +15,8 @@ export async function POST(request: Request) {
   try {
     const auth = await authenticate(request);
     if (!auth) return jsonError("Unauthenticated", 401);
-    // Phase 2 creates picker reports only; on-behalf case creation is a later phase.
-    if (auth.user.role !== "PICKER" || !hasAuthPermission(auth, "REPORT_SHORT_PICK")) return jsonError("Forbidden", 403);
+    // Picker reports and troubleshooter reports share the same flow; troubleshooters are specialized pickers.
+    if (!["PICKER", "TROUBLESHOOTER"].includes(auth.user.role) || !hasAuthPermission(auth, "REPORT_SHORT_PICK")) return jsonError("Forbidden", 403);
     const input = await parseJson(request, createCaseSchema);
     const created = await createCase(auth, input.orderNumber, input.confirmedHistoricalCaseIds, input.firstLine);
     return Response.json({ case: created }, { status: 201 });
