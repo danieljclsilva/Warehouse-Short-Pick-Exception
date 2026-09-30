@@ -40,8 +40,8 @@ export async function getAnalyticsReport(auth: AuthContext, reportId: string) {
   if (!hasAuthPermission(auth, "EXPORT_ANALYTICS")) throw new CaseApiError("CASE_ACCESS_DENIED", "EXPORT_ANALYTICS permission required", 403);
   const [report] = await getDb().select().from(analyticsReports).where(eq(analyticsReports.id, reportId)).limit(1);
   if (!report) throw new CaseApiError("CASE_NOT_FOUND", "Analytics report not found", 404);
-  if (report.generatedByUserId !== auth.user.id && auth.user.role !== "TEAM_LEADER") {
-    throw new CaseApiError("CASE_ACCESS_DENIED", "Only the report creator or a Team Leader can download this report", 403);
+  if (report.generatedByUserId !== auth.user.id && auth.user.role !== "TEAM_LEADER" && auth.user.role !== "MANAGER") {
+    throw new CaseApiError("CASE_ACCESS_DENIED", "Only the report creator, a Manager, or a Team Leader can download this report", 403);
   }
   const storage = getStorage();
   if (!storage) throw new CaseApiError("STORAGE_UNAVAILABLE", "Analytics report storage is unavailable", 503);
@@ -96,8 +96,8 @@ export async function deleteAnalyticsReport(auth: AuthContext, reportId: string)
     const [report] = await tx.select().from(analyticsReports).where(eq(analyticsReports.id, reportId)).for("update").limit(1);
     if (!report) throw new CaseApiError("CASE_NOT_FOUND", "Analytics report not found", 404);
     const isOwner = report.generatedByUserId === auth.user.id;
-    const isTeamLeader = auth.user.role === "TEAM_LEADER" && hasAuthPermission(auth, "EXPORT_ANALYTICS");
-    if (!isOwner && !isTeamLeader) throw new CaseApiError("CASE_ACCESS_DENIED", "Only the report creator or a Team Leader can delete this report", 403);
+    const isManager = (auth.user.role === "TEAM_LEADER" || auth.user.role === "MANAGER") && hasAuthPermission(auth, "EXPORT_ANALYTICS");
+    if (!isOwner && !isManager) throw new CaseApiError("CASE_ACCESS_DENIED", "Only the report creator, a Manager, or a Team Leader can delete this report", 403);
 
     try {
       // S3-compatible DeleteObject is idempotent. If the DB transaction later rolls

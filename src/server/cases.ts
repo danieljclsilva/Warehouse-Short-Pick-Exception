@@ -299,7 +299,7 @@ export async function addCaseLine(auth: AuthContext, caseId: string, input: z.in
       eq(shortPickLines.caseId, caseId), eq(shortPickLines.originalLocation, normalizedLocation), eq(shortPickLines.sku, normalizedSku),
       inArray(shortPickLines.state, ["OPEN", "CHECKING", "FOUND", "RETRIEVING"]),
     )).limit(1);
-    const mayOverride = (auth.user.role === "TEAM_LEADER" || auth.user.role === "ADMIN")
+    const mayOverride = (auth.user.role === "TEAM_LEADER" || auth.user.role === "MANAGER" || auth.user.role === "ADMIN")
       && hasAuthPermission(auth, "OVERRIDE_DUPLICATE_SHORT_PICK_LINE");
     if (duplicate && (!input.confirmDuplicate || !mayOverride)) {
       return { kind: "DUPLICATE" as const, duplicate, mayOverride };

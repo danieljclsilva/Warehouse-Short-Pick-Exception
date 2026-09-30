@@ -1,4 +1,4 @@
-import { desc, eq, inArray, or } from "drizzle-orm";
+import { and, desc, eq, inArray, notInArray, or } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { auditLog, invites } from "@/db/schema";
@@ -20,9 +20,14 @@ export async function GET(request: Request) {
   if (!auth) return jsonError("Unauthenticated", 401);
   if (!hasAuthPermission(auth, "CREATE_INVITES")) return jsonError("Forbidden", 403);
   const query = getDb().select({ id: invites.id, expiresAt: invites.expiresAt, maxRegistrations: invites.maxRegistrations, registrationsUsed: invites.registrationsUsed, defaultRole: invites.defaultRole, createdBy: invites.createdBy, createdAt: invites.createdAt, revokedAt: invites.revokedAt }).from(invites);
-  const rows = await (auth.user.role === "ASSISTANT"
-    ? query.where(or(eq(invites.createdBy, auth.user.id), inArray(invites.defaultRole, ["PICKER", "TROUBLESHOOTER"])))
-    : query).orderBy(desc(invites.createdAt)).limit(100);
+  // Manager (and Admin) invitations are hidden from pickers, team leaders, assistants, and
+  // troubleshooters; only Admin sees them. canManageRole already blocks non-Admin creation.
+  const roleScope = auth.user.role === "ADMIN" ? undefined : notInArray(invites.defaultRole, ["ADMIN", "MANAGER"]);
+  const assistantScope = auth.user.role === "ASSISTANT"
+    ? or(eq(invites.createdBy, auth.user.id), inArray(invites.defaultRole, ["PICKER", "TROUBLESHOOTER"]))
+    : undefined;
+  const scope = roleScope && assistantScope ? and(roleScope, assistantScope) : roleScope ?? assistantScope;
+  const rows = await (scope ? query.where(scope) : query).orderBy(desc(invites.createdAt)).limit(100);
   return Response.json({ invites: rows });
 }
 
@@ -32,7 +37,7 @@ export async function POST(request: Request) {
     if (!auth) return jsonError("Unauthenticated", 401);
     if (!hasAuthPermission(auth, "CREATE_INVITES")) return jsonError("Forbidden", 403);
     const input = await parseJson(request, schema);
-    if (input.defaultRole === "ADMIN" || !canManageRole(auth.user.role, input.defaultRole)) return jsonError("Cannot create an invitation for that role", 403);
+    if (input.defaultRole === "ADMIN" || input.defaultRole === "MANAGER" || !canManageRole(auth.user.role, input.defaultRole)) return jsonError("Cannot create an invitation for that role", 403);
     const defaultPermissions = input.defaultPermissions ?? rolePermissions(input.defaultRole);
     if (!permissionsAllowedForRole(input.defaultRole, defaultPermissions)) return jsonError("Those permissions cannot be assigned to that role", 400);
     const token = createToken();

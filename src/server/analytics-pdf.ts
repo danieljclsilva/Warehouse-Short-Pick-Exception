@@ -124,7 +124,7 @@ type PdfLabels = PdfCopy & Pick<ReturnType<typeof getMessages>["messages"],
   | "analyticsPhasePicking" | "analyticsPhaseStaged" | "analyticsPhaseClosed"
   | "analyticsResolutionFound" | "analyticsResolutionNotFound" | "analyticsResolutionWrongLocation"
   | "analyticsResolutionOther" | "analyticsSourcePickerReport" | "analyticsSourceTlManual"
-  | "analyticsSourceAssistantManual" | "analyticsSourceAdminManual"
+  | "analyticsSourceAssistantManual" | "analyticsSourceManagerManual" | "analyticsSourceAdminManual"
   | "caseOpen" | "caseChecking" | "caseFound" | "caseRetrieved" | "caseClosed" | "caseCancelled"
 >;
 
@@ -239,7 +239,7 @@ function enumLabel(key: string, value: unknown, labels: PdfLabels) {
   if (key === "phase") return ({ PICKING: labels.analyticsPhasePicking, STAGED: labels.analyticsPhaseStaged, CLOSED: labels.analyticsPhaseClosed } as Record<string, string>)[stringValue] ?? stringValue;
   if (key === "state") return ({ OPEN: labels.caseOpen, CHECKING: labels.caseChecking, FOUND: labels.caseFound, RETRIEVING: labels.caseRetrieved, RESOLVED: labels.caseClosed, CANCELLED: labels.caseCancelled } as Record<string, string>)[stringValue] ?? stringValue;
   if (key === "resolution") return ({ FOUND: labels.analyticsResolutionFound, NOT_FOUND: labels.analyticsResolutionNotFound, WRONG_LOCATION: labels.analyticsResolutionWrongLocation, OTHER: labels.analyticsResolutionOther, FOUND_AT_ORIGINAL: labels.analyticsResolutionFoundAtOriginal } as Record<string, string>)[stringValue] ?? stringValue;
-  if (key === "source") return ({ PICKER_REPORT: labels.analyticsSourcePickerReport, TL_MANUAL: labels.analyticsSourceTlManual, ASSISTANT_MANUAL: labels.analyticsSourceAssistantManual, ADMIN_MANUAL: labels.analyticsSourceAdminManual } as Record<string, string>)[stringValue] ?? stringValue;
+  if (key === "source") return ({ PICKER_REPORT: labels.analyticsSourcePickerReport, TL_MANUAL: labels.analyticsSourceTlManual, ASSISTANT_MANUAL: labels.analyticsSourceAssistantManual, MANAGER_MANUAL: labels.analyticsSourceManagerManual, ADMIN_MANUAL: labels.analyticsSourceAdminManual } as Record<string, string>)[stringValue] ?? stringValue;
   return stringValue;
 }
 

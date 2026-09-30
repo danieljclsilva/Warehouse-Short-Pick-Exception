@@ -96,7 +96,7 @@ type Props = { tr: Translate; locale: Locale; canExport: boolean };
 
 const phaseLabelKeys: Record<string, MessageKey> = { PICKING: "analyticsPhasePicking", STAGED: "analyticsPhaseStaged", CLOSED: "analyticsPhaseClosed" };
 const resolutionLabelKeys: Record<string, MessageKey> = { FOUND: "analyticsResolutionFound", NOT_FOUND: "analyticsResolutionNotFound", WRONG_LOCATION: "analyticsResolutionWrongLocation", OTHER: "analyticsResolutionOther" };
-const sourceLabelKeys: Record<string, MessageKey> = { PICKER_REPORT: "analyticsSourcePickerReport", TL_MANUAL: "analyticsSourceTlManual", ASSISTANT_MANUAL: "analyticsSourceAssistantManual", ADMIN_MANUAL: "analyticsSourceAdminManual" };
+const sourceLabelKeys: Record<string, MessageKey> = { PICKER_REPORT: "analyticsSourcePickerReport", TL_MANUAL: "analyticsSourceTlManual", ASSISTANT_MANUAL: "analyticsSourceAssistantManual", MANAGER_MANUAL: "analyticsSourceManagerManual", ADMIN_MANUAL: "analyticsSourceAdminManual" };
 
 function enumLabel(value: string, labels: Record<string, MessageKey>, tr: Translate) {
   const key = labels[value];
@@ -300,7 +300,7 @@ function participantOptions(data: AnalyticsResponse | null) {
   return [...people.entries()].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label));
 }
 
-const ROLE_OPTIONS = ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "ADMIN"];
+const ROLE_OPTIONS = ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "MANAGER", "ADMIN"];
 
 
 function SameLocationFoundSection({ summary, byUser, tr, locale, canExport, downloading, onDownload, roleLabel }: {
@@ -464,11 +464,11 @@ export function AnalyticsDashboard({ tr, locale, canExport }: Props) {
   const kpis = data?.kpis ?? EMPTY_KPIS;
   const phases = options?.phases ?? ["PICKING", "STAGED", "CLOSED"];
   const resolutions = options?.resolutions ?? ["FOUND", "NOT_FOUND", "WRONG_LOCATION", "OTHER"];
-  const sources = options?.sources ?? ["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "ADMIN_MANUAL"];
+  const sources = options?.sources ?? ["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "MANAGER_MANUAL", "ADMIN_MANUAL"];
   const configOptions = (options?.configurations ?? []).map((option) => ({ value: option.id, label: option.label ?? String(option.version ?? option.id) }));
   if (!configOptions.length) configOptions.push(...kpis.casesByConfigurationVersion.map((option) => ({ value: option.label, label: option.label })));
   const directoryOptions = participantOptions(data);
-  const roleLabelKeys: Record<string, MessageKey> = { PICKER: "rolePICKER", TROUBLESHOOTER: "roleTROUBLESHOOTER", ASSISTANT: "roleASSISTANT", TEAM_LEADER: "roleTEAM_LEADER", ADMIN: "roleADMIN" };
+  const roleLabelKeys: Record<string, MessageKey> = { PICKER: "rolePICKER", TROUBLESHOOTER: "roleTROUBLESHOOTER", ASSISTANT: "roleASSISTANT", TEAM_LEADER: "roleTEAM_LEADER", MANAGER: "roleMANAGER", ADMIN: "roleADMIN" };
   const roleLabel = (role: string) => enumLabel(role, roleLabelKeys, tr);
   const partialDataMessages = data ? [
     data.limits.casesTruncated ? tr("analyticsCasesTruncated") : "",

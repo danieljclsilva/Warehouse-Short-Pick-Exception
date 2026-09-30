@@ -15,6 +15,7 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     const result = await db.transaction(async (tx) => {
       const [invite] = await tx.select().from(invites).where(and(eq(invites.id, id), isNull(invites.revokedAt))).for("update").limit(1);
       if (!invite) return "not_found" as const;
+      if ((invite.defaultRole === "ADMIN" || invite.defaultRole === "MANAGER") && auth.user.role !== "ADMIN") return "forbidden" as const;
       if (invite.createdBy !== auth.user.id && !canManageRole(auth.user.role, invite.defaultRole)) return "forbidden" as const;
       await tx.update(invites).set({ revokedAt: new Date() }).where(eq(invites.id, id));
       await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "INVITE_REVOKED", details: { inviteId: id } });

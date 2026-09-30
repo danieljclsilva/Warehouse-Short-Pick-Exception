@@ -1,12 +1,12 @@
 import { boolean, pgEnum, pgTable, text, timestamp, uuid, integer, jsonb, uniqueIndex, index, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
-export const roleEnum = pgEnum("user_role", ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "ADMIN"]);
+export const roleEnum = pgEnum("user_role", ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "MANAGER", "ADMIN"]);
 export const userStatusEnum = pgEnum("user_status", ["ACTIVE", "DISABLED", "ARCHIVED"]);
 export const profilePhotoStatusEnum = pgEnum("profile_photo_status", ["NONE", "PENDING", "APPROVED", "REJECTED", "SUPERSEDED"]);
 export const casePhaseEnum = pgEnum("case_phase", ["PICKING", "STAGED", "CLOSED"]);
 export const physicalStateEnum = pgEnum("physical_state", ["WITH_PICKER", "SHORT_PICK_HOLD", "OTHER_KNOWN_LOCATION", "UNKNOWN"]);
-export const caseSourceEnum = pgEnum("case_source", ["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "ADMIN_MANUAL"]);
+export const caseSourceEnum = pgEnum("case_source", ["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "MANAGER_MANUAL", "ADMIN_MANUAL"]);
 export const shortPickLineStateEnum = pgEnum("short_pick_line_state", ["OPEN", "CHECKING", "FOUND", "RETRIEVING", "RESOLVED", "CANCELLED"]);
 export const checkTaskStatusEnum = pgEnum("check_task_status", ["AVAILABLE", "CLAIMED", "ASSIGNED", "COMPLETED"]);
 export const checkCompletionCodeEnum = pgEnum("check_completion_code", ["FOUND", "FOUND_AT_ORIGINAL", "NOT_FOUND", "WRONG_LOCATION", "OTHER"]);

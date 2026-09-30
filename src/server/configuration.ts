@@ -103,7 +103,7 @@ export function assertConfigurationPermission(auth: AuthContext, current?: Confi
   if (auth.user.role === "ASSISTANT" && !current?.ASSISTANT_CAN_MANAGE_CONFIGURATION) {
     throw new CaseApiError("CASE_ACCESS_DENIED", "Assistant configuration access is disabled", 403);
   }
-  if (!["TEAM_LEADER", "ADMIN", "ASSISTANT"].includes(auth.user.role)) throw new CaseApiError("CASE_ACCESS_DENIED", "Only managers can manage configuration", 403);
+  if (!["TEAM_LEADER", "MANAGER", "ADMIN", "ASSISTANT"].includes(auth.user.role)) throw new CaseApiError("CASE_ACCESS_DENIED", "Only managers can manage configuration", 403);
 }
 
 export function canManageConfigurationForUser(user: { role: string; permissions: string[] }, current: ConfigurationValues) {

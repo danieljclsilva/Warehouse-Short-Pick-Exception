@@ -28,7 +28,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const input = await parseJson(request, schema);
 
     if (input.action === "permissions") {
-      const permissionName = target.role === "PICKER" ? "EDIT_PICKER_PERMISSIONS" : target.role === "TROUBLESHOOTER" ? "EDIT_TROUBLESHOOTER_PERMISSIONS" : target.role === "ASSISTANT" ? "EDIT_ASSISTANT_PERMISSIONS" : "EDIT_TL_PERMISSIONS";
+      const permissionName = target.role === "PICKER" ? "EDIT_PICKER_PERMISSIONS" : target.role === "TROUBLESHOOTER" ? "EDIT_TROUBLESHOOTER_PERMISSIONS" : target.role === "ASSISTANT" ? "EDIT_ASSISTANT_PERMISSIONS" : target.role === "MANAGER" ? "EDIT_MANAGER_PERMISSIONS" : "EDIT_TL_PERMISSIONS";
       if (!hasAuthPermission(auth, permissionName)) return jsonError("Forbidden", 403);
       if (!permissionsAllowedForRole(target.role, input.permissions)) return jsonError("Those permissions cannot be assigned to that role", 400);
       await db.transaction(async (tx) => {

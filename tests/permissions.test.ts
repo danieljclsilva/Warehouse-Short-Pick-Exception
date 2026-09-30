@@ -4,7 +4,7 @@ import { persistentSessionCookie, SESSION_COOKIE_MAX_AGE_SECONDS } from "../src/
 
 describe("role and permission hierarchy", () => {
   it("grants check and picker note defaults across role presets", () => {
-    for (const role of ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "ADMIN"] as const) {
+    for (const role of ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "MANAGER", "ADMIN"] as const) {
       const permissions = defaultPermissions(role);
       expect(permissions).toEqual(expect.arrayContaining(["VIEW_AVAILABLE_CHECKS", "CLAIM_CHECK", "COMPLETE_CHECK"]));
     }
@@ -29,6 +29,24 @@ describe("role and permission hierarchy", () => {
     expect(canManageRole("TEAM_LEADER", "ASSISTANT")).toBe(true);
     expect(canManageRole("TEAM_LEADER", "ADMIN")).toBe(false);
     expect(defaultPermissions("TEAM_LEADER")).not.toContain("EDIT_TL_PERMISSIONS");
+  });
+  it("places Manager above Team Leader and below Admin with Admin-only management", () => {
+    expect(canManageRole("ADMIN", "MANAGER")).toBe(true);
+    expect(canManageRole("MANAGER", "TEAM_LEADER")).toBe(true);
+    expect(canManageRole("MANAGER", "ADMIN")).toBe(false);
+    expect(canManageRole("MANAGER", "MANAGER")).toBe(false);
+    expect(canManageRole("TEAM_LEADER", "MANAGER")).toBe(false);
+    expect(canManageRole("ASSISTANT", "MANAGER")).toBe(false);
+    expect(canManageUser("MANAGER", [], "TEAM_LEADER")).toBe(true);
+    expect(canManageUser("MANAGER", [], "ADMIN")).toBe(false);
+    expect(defaultPermissions("MANAGER")).toContain("EDIT_TL_PERMISSIONS");
+    expect(defaultPermissions("MANAGER")).not.toContain("EDIT_MANAGER_PERMISSIONS");
+    expect(defaultPermissions("MANAGER")).not.toContain("REPAIR_CASE_DATA");
+    expect(permissionsAllowedForRole("MANAGER", ["EDIT_TL_PERMISSIONS"])).toBe(true);
+    expect(permissionsAllowedForRole("MANAGER", ["EDIT_MANAGER_PERMISSIONS"])).toBe(false);
+    expect(permissionsAllowedForRole("MANAGER", ["REPAIR_CASE_DATA"])).toBe(false);
+    expect(permissionsAllowedForRole("TEAM_LEADER", ["EDIT_MANAGER_PERMISSIONS"])).toBe(false);
+    expect(permissionsAllowedForRole("ASSISTANT", ["EDIT_MANAGER_PERMISSIONS"])).toBe(false);
   });
 
   it("requires the matching edit permission for an assistant managing picker permissions", () => {

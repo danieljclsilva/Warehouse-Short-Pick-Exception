@@ -25,7 +25,7 @@ export async function POST(request: Request) {
       const [invite] = await tx.select().from(invites).where(eq(invites.tokenHash, digestToken(input.inviteToken))).for("update").limit(1);
       const now = new Date();
       if (!invite || invite.revokedAt || invite.expiresAt <= now || invite.registrationsUsed >= invite.maxRegistrations) return null;
-      if (!(ROLES as readonly string[]).includes(invite.defaultRole) || invite.defaultRole === "ADMIN") return null;
+      if (!(ROLES as readonly string[]).includes(invite.defaultRole) || invite.defaultRole === "ADMIN" || invite.defaultRole === "MANAGER") return null;
       const pinHash = await hashPin(input.pin);
       const permissions = invite.defaultPermissions;
       const [user] = await tx.insert(users).values({

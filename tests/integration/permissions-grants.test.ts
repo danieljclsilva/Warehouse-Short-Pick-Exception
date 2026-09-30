@@ -15,7 +15,7 @@ describe("Integration slice: new-permission grant and revoke bounds", () => {
   });
 
   it("grants replenishment and ad hoc location to every role including Picker", () => {
-    for (const role of ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "ADMIN"] as const) {
+    for (const role of ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "MANAGER", "ADMIN"] as const) {
       expect(permissionsAllowedForRole(role, ["RECORD_REPLENISHMENT", "REPORT_NEW_LOCATION"])).toBe(true);
     }
   });
@@ -25,7 +25,7 @@ describe("Integration slice: new-permission grant and revoke bounds", () => {
     expect(defaultPermissions("PICKER")).not.toContain("REPORT_NEW_LOCATION");
     expect(defaultPermissions("PICKER")).not.toContain("OVERRIDE_CASE_STATE");
     expect(defaultPermissions("PICKER")).not.toContain("REPAIR_CASE_DATA");
-    for (const role of ["TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "ADMIN"] as const) {
+    for (const role of ["TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "MANAGER", "ADMIN"] as const) {
       expect(defaultPermissions(role)).toContain("RECORD_REPLENISHMENT");
       expect(defaultPermissions(role)).toContain("REPORT_NEW_LOCATION");
     }
@@ -36,7 +36,7 @@ describe("Integration slice: new-permission grant and revoke bounds", () => {
   });
 
   it("rejects unknown permissions for every role", () => {
-    for (const role of ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "ADMIN"] as const) {
+    for (const role of ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "MANAGER", "ADMIN"] as const) {
       expect(permissionsAllowedForRole(role, ["NOT_A_PERMISSION"])).toBe(false);
     }
   });

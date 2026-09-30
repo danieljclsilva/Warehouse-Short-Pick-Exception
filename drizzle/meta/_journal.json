@@ -134,6 +134,13 @@
       "when": 1790630016614,
       "tag": "0018_domain2-replenishment",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1790785020670,
+      "tag": "0019_hot_wildside",
+      "breakpoints": true
     }
   ]
 }

@@ -34,7 +34,7 @@ type AuthUser = {
 
 type AuthResponse = { user?: AuthUser; loginIdentifier?: string; error?: string };
 type View = "login" | "register" | "locked" | "registered" | "workspace";
-type InviteRole = "PICKER" | "TROUBLESHOOTER" | "ASSISTANT" | "TEAM_LEADER";
+type InviteRole = "PICKER" | "TROUBLESHOOTER" | "ASSISTANT" | "TEAM_LEADER" | "MANAGER";
 type Invite = {
   id: string;
   expiresAt: string;
@@ -70,13 +70,15 @@ const roleKeys: Record<InviteRole | "ADMIN", MessageKey> = {
   TROUBLESHOOTER: "inviteTroubleshooter",
   ASSISTANT: "inviteAssistant",
   TEAM_LEADER: "inviteTeamLeader",
+  MANAGER: "inviteManager",
   ADMIN: "inviteAdmin",
 };
 
 const inviteRolesByActor: Record<string, InviteRole[]> = {
   ASSISTANT: ["PICKER", "TROUBLESHOOTER"],
   TEAM_LEADER: ["PICKER", "TROUBLESHOOTER", "ASSISTANT"],
-  ADMIN: ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER"],
+  MANAGER: ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER"],
+  ADMIN: ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "MANAGER"],
 };
 
 const intlLocales: Record<Locale, string> = { en: "en-GB", nl: "nl-NL", pl: "pl-PL", es: "es-ES" };

@@ -117,12 +117,13 @@ No functionality in the application should require Odoo to work.
 
 # 5. User Roles
 
-Provide these role presets:
+Provide these role presets (amended 2026-09-30 — Manager sits above Team Leader and below Admin):
 
 - Picker
 - Troubleshooter
 - Assistant
 - Team Leader
+- Manager
 - Admin
 
 Roles are only default permission templates.
@@ -185,6 +186,7 @@ EDIT_PICKER_PERMISSIONS
 EDIT_TROUBLESHOOTER_PERMISSIONS
 EDIT_ASSISTANT_PERMISSIONS
 EDIT_TL_PERMISSIONS
+EDIT_MANAGER_PERMISSIONS
 
 MANAGE_CONFIGURATION
 MANAGE_TRANSLATIONS
@@ -197,7 +199,7 @@ RESET_USER_PIN
 REVOKE_USER_SESSIONS
 ```
 
-`REPORT_NEW_LOCATION` defaults to Troubleshooter, Assistant, Team Leader, and Admin presets; Picker holds it only by explicit grant. `RECORD_REPLENISHMENT` defaults to Troubleshooter, Assistant, Team Leader, and Admin presets; Picker holds it only by explicit grant. `OVERRIDE_CASE_STATE` defaults to Admin only and may be granted only to Admin or Team Leader. `REPAIR_CASE_DATA` defaults to Admin only and may be granted only to Admin. Each of these permissions is individually grantable/revocable per user within those bounds, including revoking any default.
+`REPORT_NEW_LOCATION` defaults to Troubleshooter, Assistant, Team Leader, Manager, and Admin presets; Picker holds it only by explicit grant. `RECORD_REPLENISHMENT` defaults to Troubleshooter, Assistant, Team Leader, Manager, and Admin presets; Picker holds it only by explicit grant. `OVERRIDE_CASE_STATE` defaults to Admin only and may be granted only to Admin, Manager, or Team Leader. `REPAIR_CASE_DATA` defaults to Admin only and may be granted only to Admin. Each of these permissions is individually grantable/revocable per user within those bounds, including revoking any default. `EDIT_MANAGER_PERMISSIONS` is Admin-only: only Admin can create a Manager account or edit Manager or Admin accounts. Admin and Manager accounts are hidden from pickers, team leaders, assistants, and troubleshooters; Managers never see Admin accounts and cannot edit Admin accounts in any way.
 
 ---
 
@@ -240,27 +242,32 @@ Assistant may:
 Assistant cannot change:
 
 - Team Leader privileges;
+- Manager privileges;
 - Admin privileges.
 
 Whether Assistant can modify operational configuration must itself be configurable by Team Leader.
 
-## 7.4 Team Leader
+## 7.4 Team Leader (amended 2026-09-30)
 
 Team Leader may:
 
 - manage all Picker permissions;
 - manage all Troubleshooter permissions;
 - manage Assistant permissions;
-- create invites;
+- create invites (except Manager and Admin invitations, which are Admin-only);
 - assign/reassign operational work;
 - manage operational configuration;
 - manage notifications;
 - access analytics;
 - manually create, close and reopen cases.
 
-Team Leader cannot alter Admin permissions.
+Team Leader cannot alter Manager or Admin permissions, and cannot see Manager or Admin accounts.
 
-## 7.5 Admin
+## 7.5 Manager (amended 2026-09-30)
+
+Manager sits above Team Leader and below Admin. A Manager holds everything a Team Leader holds plus `EDIT_TL_PERMISSIONS`, and may manage all Picker, Troubleshooter, Assistant, and Team Leader accounts. Only Admin can create a Manager account; Managers cannot edit Manager or Admin accounts in any way and never see Admin accounts.
+
+## 7.6 Admin
 
 Admin has unrestricted access.
 

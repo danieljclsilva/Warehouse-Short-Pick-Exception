@@ -97,7 +97,7 @@ export async function getOperationsDashboard(auth: AuthContext) {
 }
 
 export async function createManualCase(auth: AuthContext, input: z.infer<typeof manualCaseSchema>) {
-  if (!hasAuthPermission(auth, "CREATE_CASE_ON_BEHALF") || !["TEAM_LEADER", "ASSISTANT", "ADMIN"].includes(auth.user.role)) throw new CaseApiError("CASE_ACCESS_DENIED", "Cannot create a manual case", 403);
+  if (!hasAuthPermission(auth, "CREATE_CASE_ON_BEHALF") || !["TEAM_LEADER", "MANAGER", "ASSISTANT", "ADMIN"].includes(auth.user.role)) throw new CaseApiError("CASE_ACCESS_DENIED", "Cannot create a manual case", 403);
   const orderNumber = normalizeOrderNumber(input.orderNumber);
   const result = await getDb().transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`order-case:${orderNumber}`}))`);
@@ -114,7 +114,7 @@ export async function createManualCase(auth: AuthContext, input: z.infer<typeof 
     const configuration = await getCurrentConfiguration(tx);
     if (!configuration.values.MANUAL_CASE_CREATION_ENABLED) throw new CaseApiError("CASE_ACCESS_DENIED", "Manual case creation is disabled", 403);
     const physicalLocation = configuration.values.SHORT_PICK_HOLD_LOCATION_NAME;
-    const source = auth.user.role === "ADMIN" ? "ADMIN_MANUAL" : auth.user.role === "TEAM_LEADER" ? "TL_MANUAL" : "ASSISTANT_MANUAL";
+    const source = auth.user.role === "ADMIN" ? "ADMIN_MANUAL" : auth.user.role === "MANAGER" ? "MANAGER_MANUAL" : auth.user.role === "TEAM_LEADER" ? "TL_MANUAL" : "ASSISTANT_MANUAL";
     const [record] = await tx.insert(orderCases).values({ orderNumber, phase: "STAGED", physicalState: "SHORT_PICK_HOLD", physicalLocation,
       stagedAt: new Date(), pickingUserId: input.originalPickerUserId ?? null, currentCaseResponsibleUserId: auth.user.id,
       createdByUserId: auth.user.id, source, manualReason: input.reason, configurationVersionId: configuration.id }).returning({ id: orderCases.id });
@@ -162,7 +162,7 @@ export async function assignCaseResponsibility(auth: AuthContext, caseId: string
     const [record] = await tx.select().from(orderCases).where(eq(orderCases.id, caseId)).for("update").limit(1);
     if (!record || record.phase === "CLOSED") throw new CaseApiError("CASE_NOT_OPEN", "Case is closed or missing", 409);
     const [target] = await tx.select().from(users).where(and(eq(users.id, userId), eq(users.status, "ACTIVE"))).limit(1);
-    if (!target || !["TROUBLESHOOTER", "TEAM_LEADER", "ASSISTANT", "ADMIN"].includes(target.role)) throw new CaseApiError("CASE_ACCESS_DENIED", "Assignee must be an active resolver", 400);
+    if (!target || !["TROUBLESHOOTER", "TEAM_LEADER", "MANAGER", "ASSISTANT", "ADMIN"].includes(target.role)) throw new CaseApiError("CASE_ACCESS_DENIED", "Assignee must be an active resolver", 400);
     await tx.update(orderCases).set({ currentCaseResponsibleUserId: userId, updatedAt: new Date(), version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
     await tx.insert(caseEvents).values({ caseId, actorUserId: auth.user.id, eventType: "RESPONSIBILITY_CHANGED", details: { previousUserId: record.currentCaseResponsibleUserId, responsibleUserId: userId } });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "RESPONSIBILITY_CHANGED", details: { caseId, previousUserId: record.currentCaseResponsibleUserId, userId } });

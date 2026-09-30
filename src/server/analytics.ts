@@ -23,7 +23,7 @@ export type ConclusiveCheckOutcome = (typeof CONCLUSIVE_CHECK_OUTCOMES)[number];
 export const SAME_LOCATION_FOUND_MIN_DENOMINATOR = 20;
 
 const phaseSchema = z.enum(["PICKING", "STAGED", "CLOSED"]);
-const sourceSchema = z.enum(["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "ADMIN_MANUAL"]);
+const sourceSchema = z.enum(["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "MANAGER_MANUAL", "ADMIN_MANUAL"]);
 const uuidParam = z.string().uuid();
 
 export const analyticsFilterSchema = z.object({
@@ -41,7 +41,7 @@ export const analyticsFilterSchema = z.object({
   pickerUserId: uuidParam.optional(),
   checkerUserId: uuidParam.optional(),
   troubleshooterUserId: uuidParam.optional(),
-  role: z.enum(["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "ADMIN"]).optional(),
+  role: z.enum(["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "MANAGER", "ADMIN"]).optional(),
 }).superRefine((value, ctx) => {
   if (value.to <= value.from) ctx.addIssue({ code: "custom", path: ["to"], message: "The end date must be after the start date" });
   const days = (value.to.getTime() - value.from.getTime()) / 86_400_000;
@@ -503,7 +503,7 @@ async function queryAnalytics(filters: AnalyticsFilters): Promise<AnalyticsData>
   if (duplicateOrdersTruncated) partialMetrics.add("duplicates");
   const displayFilters = { ...filters };
   delete displayFilters.toExclusive;
-  const responseFilters: AnalyticsResponseFilters = { ...displayFilters, phases: ["PICKING", "STAGED", "CLOSED"], resolutions: ["FOUND", "NOT_FOUND", "WRONG_LOCATION", "OTHER", "FOUND_AT_ORIGINAL"], sources: ["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "ADMIN_MANUAL"], configurations: caseRows.map((row) => ({ id: String(row.configurationVersion.version), label: String(row.configurationVersion.version), version: row.configurationVersion.version })).filter((row, index, all) => all.findIndex((item) => item.id === row.id) === index) };
+  const responseFilters: AnalyticsResponseFilters = { ...displayFilters, phases: ["PICKING", "STAGED", "CLOSED"], resolutions: ["FOUND", "NOT_FOUND", "WRONG_LOCATION", "OTHER", "FOUND_AT_ORIGINAL"], sources: ["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "MANAGER_MANUAL", "ADMIN_MANUAL"], configurations: caseRows.map((row) => ({ id: String(row.configurationVersion.version), label: String(row.configurationVersion.version), version: row.configurationVersion.version })).filter((row, index, all) => all.findIndex((item) => item.id === row.id) === index) };
   return { filters: responseFilters, kpis: { totalCases, totalLines, casesByPeriod: [...groupedPeriods.values()].sort((a, b) => a.period.localeCompare(b.period)), linesByLocation: breakdown((line) => line.originalLocation), linesBySku: breakdown((line) => line.sku),
     foundDuringCheck: codeCounts.get("FOUND") ?? 0, notFound: codeCounts.get("NOT_FOUND") ?? 0, wrongLocation: codeCounts.get("WRONG_LOCATION") ?? 0, retrieved: lineRows.filter((line) => line.retrievalState === "RETRIEVED").length,
     medianReportToCheckClaimedSeconds: median(claimedDurations), medianReportToLocationFoundSeconds: median(foundDurations), medianReportToRetrievalSeconds: median(retrievalDurations), medianReportToResolutionSeconds: median(resolutionDurations),

@@ -8,7 +8,7 @@ import type { MessageKey } from "@/i18n/messages";
 type ManagedUser = { id: string; displayName: string; loginIdentifier: string; role: string; status: "ACTIVE" | "DISABLED" | "ARCHIVED"; preferredLanguage: string; permissions: string[]; profilePhotoStatus?: string; photoUrl?: string | null };
 type Props = { actorId: string; actorRole: string; actorPermissions: string[]; tr: (key: MessageKey) => string };
 
-const permissionManage: Record<string, string> = { PICKER: "EDIT_PICKER_PERMISSIONS", TROUBLESHOOTER: "EDIT_TROUBLESHOOTER_PERMISSIONS", ASSISTANT: "EDIT_ASSISTANT_PERMISSIONS", TEAM_LEADER: "EDIT_TL_PERMISSIONS" };
+const permissionManage: Record<string, string> = { PICKER: "EDIT_PICKER_PERMISSIONS", TROUBLESHOOTER: "EDIT_TROUBLESHOOTER_PERMISSIONS", ASSISTANT: "EDIT_ASSISTANT_PERMISSIONS", TEAM_LEADER: "EDIT_TL_PERMISSIONS", MANAGER: "EDIT_MANAGER_PERMISSIONS" };
 
 export function UserManagement({ actorId, actorRole, actorPermissions, tr }: Props) {
   const [users, setUsers] = useState<ManagedUser[]>([]);
@@ -71,8 +71,8 @@ export function UserManagement({ actorId, actorRole, actorPermissions, tr }: Pro
     await mutate(target, { action: "permissions", permissions }, tr("permissionsSaved")); setPermissionTarget("");
   };
 
-  const canManage = (target: ManagedUser) => target.id !== actorId && (actorRole === "ADMIN" || actorRole === "TEAM_LEADER" && target.role !== "ADMIN" || actorRole === "ASSISTANT" && (target.role === "PICKER" || target.role === "TROUBLESHOOTER") && actorPermissions.includes(permissionManage[target.role] || ""));
-  const canEditPermissions = (target: ManagedUser) => canManage(target) && (actorRole === "ADMIN" || actorRole === "TEAM_LEADER" || actorPermissions.includes(permissionManage[target.role] || ""));
+  const canManage = (target: ManagedUser) => target.id !== actorId && (actorRole === "ADMIN" || actorRole === "MANAGER" && target.role !== "ADMIN" && target.role !== "MANAGER" || actorRole === "TEAM_LEADER" && target.role !== "ADMIN" && target.role !== "MANAGER" || actorRole === "ASSISTANT" && (target.role === "PICKER" || target.role === "TROUBLESHOOTER") && actorPermissions.includes(permissionManage[target.role] || ""));
+  const canEditPermissions = (target: ManagedUser) => canManage(target) && (actorRole === "ADMIN" || actorRole === "MANAGER" || actorRole === "TEAM_LEADER" || actorPermissions.includes(permissionManage[target.role] || ""));
   const editablePermission = (target: ManagedUser, permission: string) => {
     return permissionsAllowedForRole(target.role as Role, [permission]);
   };
