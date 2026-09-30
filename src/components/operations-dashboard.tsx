@@ -112,7 +112,13 @@ function lineStateLabel(state: string, tr: Translator) {
     OPEN: "caseOpen",
     CHECKING: "caseChecking",
     FOUND: "caseFound",
+    FOUND_AT_ORIGINAL: "caseFound",
+    WAITING_RETRIEVAL: "retrievalPending",
     RETRIEVING: "retrievalPending",
+    RETRIEVED: "caseRetrieved",
+    NOT_FOUND: "caseOpen",
+    WRONG_LOCATION: "caseOpen",
+    TROUBLESHOOTING: "caseChecking",
     RESOLVED: "caseRetrieved",
     CANCELLED: "caseCancelled",
   };
@@ -186,7 +192,7 @@ function LocationReporter({ tr, caseId, lineId, onReported }: { tr: Translator; 
     );
   }
   return (
-    <form className={styles.messageForm} onSubmit={submit}>
+    <form className={styles.lineForm} onSubmit={submit}>
       <label>
         <span>{tr("reportLocationAction")}</span>
         <ScanInput required autoCapitalize="characters" value={location} onChange={setLocation} tr={tr} scanKind="location" fieldLabel={tr("reportLocationAction")} placeholder={tr("reportLocationPlaceholder")} />
@@ -491,7 +497,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
             const projection = projections.get(line.id);
             const replenishment = projection?.replenishment;
             const replenishmentState = replenishment?.state ?? line.replenishmentState ?? "NONE";
-            return <article className={styles.line} key={line.id}><div><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></div><span className={styles.caseStatusBadge}><CaseStatusBadge status={line.state} retrievalState={line.retrievalState ?? null} tr={tr} kind="line" /></span><span className={styles.lineState}>{lineStateLabel(line.state, tr)}{line.retrievalState && (line.retrievalState !== "NOT_REQUIRED" || selected.phase !== "STAGED") ? ` · ${retrievalStateLabel(line.retrievalState, tr)}` : ""}{replenishmentState !== "NONE" ? ` · ${tr(`replenishmentState${replenishmentState}` as MessageKey)}` : ""}</span>{line.discoveredLocation && <small>{tr("newLocation")}: {line.discoveredLocation}</small>}{replenishmentState !== "NONE" ? <small>{tr("lineReplenishmentState")}: {tr(`replenishmentState${replenishmentState}` as MessageKey)}</small> : null}{canRecordReplenishment && selected.phase !== "CLOSED" && !selected.closedAt && !["RESOLVED", "CANCELLED"].includes(line.state) && replenishmentState !== "COMPLETED" ? <ReplenishmentForm tr={tr} caseId={selected.id} lineId={line.id} currentState={replenishmentState} compact onSaved={async () => { setNotice(tr("replenishmentSaved")); await fetchDashboard(); await loadCase(selected.id); }} /> : null}{canReportLocation && selected.phase !== "CLOSED" && !selected.closedAt && !["RESOLVED", "CANCELLED"].includes(line.state) ? <LocationReporter tr={tr} caseId={selected.id} lineId={line.id} onReported={async () => { setNotice(tr("reportLocationSaved")); await fetchDashboard(); await loadCase(selected.id); }} /> : null}</article>;
+            return <article className={styles.line} key={line.id}><div><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></div><span className={styles.caseStatusBadge}><CaseStatusBadge status={projection?.displayStatus ?? line.state} retrievalState={line.retrievalState ?? null} tr={tr} kind="line" /></span><span className={styles.lineState}>{lineStateLabel(projection?.displayStatus ?? line.state, tr)}{line.retrievalState && (line.retrievalState !== "NOT_REQUIRED" || selected.phase !== "STAGED") ? ` · ${retrievalStateLabel(line.retrievalState, tr)}` : ""}{replenishmentState !== "NONE" ? ` · ${tr(`replenishmentState${replenishmentState}` as MessageKey)}` : ""}</span>{line.discoveredLocation && <small>{tr("newLocation")}: {line.discoveredLocation}</small>}{(canRecordReplenishment || canReportLocation) && selected.phase !== "CLOSED" && !selected.closedAt && !["RESOLVED", "CANCELLED"].includes(line.state) && replenishmentState !== "COMPLETED" ? <div className={styles.lineActions}>{canRecordReplenishment && replenishmentState !== "COMPLETED" ? <ReplenishmentForm tr={tr} caseId={selected.id} lineId={line.id} currentState={replenishmentState} compact onSaved={async () => { setNotice(tr("replenishmentSaved")); await fetchDashboard(); await loadCase(selected.id); }} /> : null}{canReportLocation ? <LocationReporter tr={tr} caseId={selected.id} lineId={line.id} onReported={async () => { setNotice(tr("reportLocationSaved")); await fetchDashboard(); await loadCase(selected.id); }} /> : null}</div> : null}</article>;
           });
         })()}</div> : <p>{tr("noItemsYet")}</p>}</section>
         {(selected.events?.length || selected.messages?.length) ? <section className={styles.detailSection}><h3>{tr("caseTimeline")}</h3><CaseTimeline events={(selected.events || []) as CaseTimelineEvent[]} messages={selected.messages || []} tr={tr} formatDate={(value) => formatDate(value, locale)} className={styles.timeline} /></section> : null}
