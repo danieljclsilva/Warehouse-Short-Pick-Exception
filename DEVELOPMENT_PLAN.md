@@ -187,6 +187,16 @@ Wave 0 (2026-09-28) delivered docs-only contracts: PRD amendments plus the bindi
 - Gates: 214/214 tests (33 files), typecheck, lint, production build, `db:check` pass. No schema change, no migration needed.
 - Deployed: PROD `/api/health` 200 `{status:ok,database:ok}`, login page 200, new `GET /api/users/directory` returns 401 unauthenticated (live at ~20:08 UTC after the push build). TEST web not verified in this pass.
 
+## State-only replenishment + retrieval routing + stage-aware statuses (2026-09-30, `main` @ `b3a8f04`)
+
+- Replenishment is state-only: `POST .../replenishment` takes `{state}` only (no note, no assignment); Admin/Manager excluded from the directory (route kept, unused by replenishment); pickers AND troubleshooters hold no `RECORD_REPLENISHMENT` — writer lives on Checks detail + operations drawer for manager roles only, My Work keeps badge + retrieval + location reporter.
+- Replenishment badge visible on all order details (drawer + queue cards + checks + picker) from `lineProjections` with raw fallback; COMPLETED hides the writer, WAITING offers COMPLETED only.
+- Retrieval owner gets responsibility notification (existing server path) + report-back RETRIEVED/FAILED buttons; picker-owned FOUND+PENDING lines show the in-app `pickerRetrievalPrompt` banner; NOT_REQUIRED text only when the order is not staged.
+- New-location reporting: inline reporter on all three surfaces gated on `REPORT_NEW_LOCATION`; flips line to FOUND+PENDING with owner routing + notification; picker-owned work routes to My Work, checker-owned to Checks (existing routing rules).
+- Stage-aware statuses: `displayStatusForLine` now emits WAITING_RETRIEVAL/RETRIEVING/RETRIEVED from retrieval state so badges vary waiting/ready/done instead of always-waiting; all consequential statuses (stage, assign, check completion incl. staged-found, replenishment, retrieval, close, reopen, location) logged via existing case-events + audit in the same tx.
+- Gates: 214/214 tests (33 files), typecheck, lint, production build, `db:check` pass. No schema change, no migration needed.
+- Deployed: PROD `/api/health` 200, login 200, `GET /api/users/directory` 401 unauthenticated, `POST .../replenishment` 401 unauthenticated, new frontend strings (`pickerRetrievalPrompt`/`reportLocationAction`) live in production JS chunks.
+
 ## Troubleshooter reporting parity + order status control (2026-09-30, `main` @ `29caaa9`)
 
 - Troubleshooters report like pickers: defaults gain `REPORT_SHORT_PICK`/`VIEW_OWN_CASES`/`MARK_ORDER_STAGED` (Assistant gains staging default); `POST /api/cases`, My Work nav, and notification routing include troubleshooters.
