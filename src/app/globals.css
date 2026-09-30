@@ -404,7 +404,9 @@ button { color: inherit; }
 .case-close-button { margin-top: 15px; }
 .check-detail-button { width: fit-content; min-height: 38px; padding: 0 5px; border: 0; color: var(--green); background: none; font-weight: 650; cursor: pointer; }
 .check-detail-button:hover { text-decoration: underline; text-underline-offset: 3px; }
-.check-detail-panel { display: grid; gap: 15px; margin-top: 30px; padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.check-detail-panel { display: grid; gap: 15px; margin-top: 30px; padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); scroll-margin-top: 84px; }
+.check-detail-panel.case-notification-overlay { scroll-margin-top: 12px; }
+.picker-workflow .case-detail.case-notification-overlay { scroll-margin-top: 12px; }
 .check-detail-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .check-detail-heading span { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
 .check-detail-heading h2 { margin: 2px 0 0; font-size: 24px; }
@@ -590,6 +592,12 @@ button { color: inherit; }
 .photo-queue-details span { color: var(--muted); font-size: 12px; }
 .photo-queue-actions { display: grid; gap: 8px; }
 .photo-queue-actions .primary-button, .photo-queue-actions .revoke-button { width: 135px; min-height: 43px; margin: 0; }
+.case-overlay-backdrop { position: fixed; z-index: 70; inset: 0; display: grid; align-items: start; justify-items: center; padding: 24px 16px; background: var(--backdrop); overflow-y: auto; overscroll-behavior: contain; }
+.case-overlay { width: min(100%, 760px); max-height: calc(100vh - 48px); overflow-y: auto; overscroll-behavior: contain; padding: 20px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); box-shadow: 0 24px 80px var(--shadow-strong); }
+.case-overlay-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.case-overlay-head h2 { margin: 0; font-size: 17px; }
+.case-overlay-close { width: auto; min-width: 110px; margin: 0; }
+.case-overlay .deep-case-panel { border: 0; border-radius: 0; padding: 0; background: transparent; }
 
 @media (max-width: 760px) {
   .profile-card { padding: 19px 16px; }
@@ -606,6 +614,19 @@ button { color: inherit; }
   .photo-queue-actions .primary-button, .photo-queue-actions .revoke-button { width: 100%; }
   .permission-list { grid-template-columns: 1fr; }
   .dialog-actions .primary-button, .dialog-actions .secondary-button { min-width: 0; flex: 1; }
+  .case-overlay-backdrop { padding: 0; align-items: stretch; }
+  .case-overlay { width: 100%; max-height: none; min-height: 100vh; min-height: 100dvh; border: 0; border-radius: 0; padding: calc(18px + env(safe-area-inset-top)) 15px calc(28px + env(safe-area-inset-bottom)); }
+  .picker-workflow .case-detail.case-notification-overlay, .check-workflow .check-detail-panel.case-notification-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    margin-top: 0;
+    border: 0;
+    border-radius: 0;
+    padding: calc(18px + env(safe-area-inset-top)) 15px calc(28px + env(safe-area-inset-bottom));
+  }
 }
 .user-card-heading > img.avatar { object-fit: cover; }
 :root[data-theme="dark"] option, :root[data-theme="dark"] optgroup { background: var(--input); color: var(--ink); }

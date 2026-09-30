@@ -72,6 +72,11 @@ type Props = {
   canAssign: boolean;
   canClose: boolean;
   canReopen: boolean;
+  focusedCaseId?: string | null;
+  focusedNonce?: number;
+  focusFromNotification?: boolean;
+  onFocusConsumed?: () => void;
+  onFocusedClose?: () => void;
 };
 
 type FilterPhase = "ALL" | "PICKING" | "STAGED";
@@ -137,7 +142,7 @@ function attentionLabel(level: CaseSummary["attentionLevel"], tr: Translator) {
   return tr(keys[level ?? "NORMAL"]);
 }
 
-export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, canAssign, canClose, canReopen }: Props) {
+export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, canAssign, canClose, canReopen, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: Props) {
   const dashboardRequestInFlight = useRef(false);
   const [metrics, setMetrics] = useState<Metrics>(EMPTY_METRICS);
   const [attentionThresholdMinutes, setAttentionThresholdMinutes] = useState(15);
@@ -235,7 +240,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
       .sort((a, b) => sortOrder === "NEWEST" ? Date.parse(b.createdAt) - Date.parse(a.createdAt) : sortOrder === "ORDER" ? a.orderNumber.localeCompare(b.orderNumber, undefined, { numeric: true }) : Date.parse(a.createdAt) - Date.parse(b.createdAt));
   }, [cases, filterPhase, sortOrder, query]);
 
-  const loadCase = async (caseId: string) => {
+  const loadCase = useCallback(async (caseId: string) => {
     setBusy(true);
     setError("");
     try {
@@ -251,7 +256,16 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
     } finally {
       setBusy(false);
     }
-  };
+  }, [tr]);
+  const focusConsumedRef = useRef(0);
+  const [focusOverlayNonce, setFocusOverlayNonce] = useState(0);
+  useEffect(() => {
+    if (!focusedCaseId || !focusedNonce || focusConsumedRef.current === focusedNonce) return;
+    focusConsumedRef.current = focusedNonce;
+    queueMicrotask(() => { if (focusFromNotification) setFocusOverlayNonce(focusedNonce); });
+    void loadCase(focusedCaseId).finally(() => { onFocusConsumed?.(); });
+  }, [focusedCaseId, focusedNonce, focusFromNotification, loadCase, onFocusConsumed]);
+  const focusOverlay = focusOverlayNonce !== 0;
 
   const refreshSelected = async () => {
     await fetchDashboard();
@@ -383,9 +397,9 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
         </button>)}
       </div> : <p className={styles.empty}>{tr("noRecentClosedCases")}</p>}
     </section>
-    {selected && <div className={styles.backdrop} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelected(null); }}>
+    {selected && <div className={`${styles.backdrop}${focusOverlay ? ` ${styles.notificationOverlay}` : ""}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setSelected(null); setFocusOverlayNonce(0); onFocusedClose?.(); } }}>
       <section className={styles.drawer} role="dialog" aria-modal="true" aria-labelledby="case-drawer-title">
-        <header className={styles.drawerHead}><div><p className={styles.eyebrow}>{tr("caseDetails")}</p><h2 id="case-drawer-title">{tr("orderLabel")} {selected.orderNumber}</h2></div><button className={styles.iconButton} type="button" aria-label={tr("closePanel")} onClick={() => setSelected(null)}>×</button></header>
+        <header className={styles.drawerHead}><div><p className={styles.eyebrow}>{tr("caseDetails")}</p><h2 id="case-drawer-title">{tr("orderLabel")} {selected.orderNumber}</h2></div><button className={styles.iconButton} type="button" aria-label={tr("closePanel")} onClick={() => { setSelected(null); setFocusOverlayNonce(0); onFocusedClose?.(); }}>×</button></header>
         <p className={styles.caseStatusBadge}><CaseStatusBadge status={selected.phase === "CLOSED" ? "CLOSED" : (selected.lineProjections?.[0]?.displayStatus ?? selected.lines?.[0]?.state ?? selected.phase)} tr={tr} /></p>
         <p className={styles.drawerSummary}>{selected.phase === "CLOSED" ? `${tr("caseClosed")} · ${tr("caseClosedOn", { date: formatDate(selected.resolvedAt || selected.createdAt, locale) })}` : `${selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · ${formatAge(selected.createdAt)}`} · {selected.pickerName || tr("unknownPicker")}</p>
         <p className={styles.drawerPhysical}>{tr("physicalState", { state: physicalStateLabel(selected.physicalState, tr) })}{selected.physicalLocation ? ` · ${selected.physicalLocation}` : ""}</p>

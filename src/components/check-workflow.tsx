@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Locale, MessageKey } from "@/i18n/messages";
 import { LiveRefreshStatus } from "@/components/live-refresh-status";
 import { ScanInput } from "@/components/scan-input";
@@ -49,6 +49,11 @@ type Props = {
   canReassign: boolean;
   canRetrieve: boolean;
   canMessage: boolean;
+  focusedCaseId?: string | null;
+  focusedNonce?: number;
+  focusFromNotification?: boolean;
+  onFocusConsumed?: () => void;
+  onFocusedClose?: () => void;
 };
 
 async function readJson(response: Response) {
@@ -57,7 +62,7 @@ async function readJson(response: Response) {
   };
 }
 
-export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canComplete, canAssign, canReassign, canRetrieve, canMessage }: Props) {
+export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canComplete, canAssign, canReassign, canRetrieve, canMessage, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: Props) {
   const [available, setAvailable] = useState<Check[]>([]);
   const [mine, setMine] = useState<Check[]>([]);
   const [active, setActive] = useState<Check[]>([]);
@@ -115,7 +120,7 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
   }, [detail, load]);
   const liveState = useLiveRefresh(refreshLiveData);
 
-  const openDetails = async (caseId: string) => {
+  const openDetails = useCallback(async (caseId: string) => {
     setError("");
     try {
       const response = await fetch(`/api/cases/${caseId}`, { cache: "no-store" });
@@ -123,7 +128,19 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       if (!response.ok || !body.case) throw new Error(tr("caseLoadError"));
       setDetail(body.case);
     } catch { setError(tr("caseLoadError")); }
-  };
+  }, [tr]);
+  const focusConsumedRef = useRef(0);
+  const [focusOverlayNonce, setFocusOverlayNonce] = useState(0);
+  useEffect(() => {
+    if (!focusedCaseId || !focusedNonce || focusConsumedRef.current === focusedNonce) return;
+    focusConsumedRef.current = focusedNonce;
+    queueMicrotask(() => { if (focusFromNotification) setFocusOverlayNonce(focusedNonce); });
+    void openDetails(focusedCaseId).finally(() => { onFocusConsumed?.(); });
+  }, [focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, openDetails]);
+  useEffect(() => {
+    if (detail && focusFromNotification) document.getElementById("notification-case-detail")?.scrollIntoView({ block: "start" });
+  }, [detail, focusFromNotification]);
+  const focusOverlay = focusOverlayNonce !== 0;
 
   const mutate = async (id: string, path: string, method: "POST" | "PATCH", body?: unknown) => {
     setBusyId(id);
@@ -189,8 +206,8 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
     </article>)}</div> : <p className="check-empty">{tr("noRetrievals")}</p>}</section>}
     {canViewAvailable && <section className="check-section"><h2>{tr("availableChecks")}</h2>{loading ? <p>{tr("loading")}</p> : available.length ? <div className="check-card-grid">{available.map((check) => checkCard(check, "available"))}</div> : <p className="check-empty">{tr("noAvailableChecks")}</p>}</section>}
     {canReassign && <section className="check-section"><h2>{tr("activeChecks")}</h2>{loading ? <p>{tr("loading")}</p> : active.length ? <div className="check-card-grid">{active.map((check) => checkCard(check, "active"))}</div> : <p className="check-empty">{tr("noActiveChecks")}</p>}</section>}
-    {detail && <section className="check-detail-panel" aria-label={tr("caseDetails")}>
-      <div className="check-detail-heading"><div><span>{tr("orderLabel")}</span><h2>{detail.orderNumber}</h2><span className="case-badges"><CaseStatusBadge status={detail.lines[0]?.state ?? detail.phase} tr={tr} /></span></div><button className="secondary-button" type="button" onClick={() => setDetail(null)}>{tr("closePanel")}</button></div>
+    {detail && <section id={focusOverlay ? "notification-case-detail" : undefined} className={`check-detail-panel${focusOverlay ? " case-notification-overlay" : ""}`} aria-label={tr("caseDetails")}>
+      <div className="check-detail-heading"><div><span>{tr("orderLabel")}</span><h2>{detail.orderNumber}</h2><span className="case-badges"><CaseStatusBadge status={detail.lines[0]?.state ?? detail.phase} tr={tr} /></span></div><button className="secondary-button" type="button" onClick={() => { setDetail(null); setFocusOverlayNonce(0); onFocusedClose?.(); }}>{tr("closePanel")}</button></div>
       <p className="check-detail-state">{detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · {detail.physicalState === "SHORT_PICK_HOLD" ? tr("physicalShortPickHold") : detail.physicalState === "WITH_PICKER" ? tr("physicalWithPicker") : detail.physicalState === "OTHER_KNOWN_LOCATION" ? tr("physicalOtherLocation") : tr("physicalUnknown")}{detail.physicalLocation ? ` · ${detail.physicalLocation}` : ""}</p>
       <h3>{tr("reportedItems")}</h3>
       <div className="check-detail-lines">{detail.lines.map((line) => <div key={line.id}><strong>{line.location} · {line.sku} ×{line.quantity}</strong><span>{line.discoveredLocation || (line.state === "CHECKING" ? tr("caseChecking") : line.state === "FOUND" ? tr("caseFound") : line.state === "RESOLVED" ? tr("caseRetrieved") : tr("caseOpen"))}</span><small>{detail.checks.filter((check) => check.shortPickLineId === line.id).map((check) => check.completionCode ? `${tr(({ FOUND: "timelineResolutionFOUND", FOUND_AT_ORIGINAL: "timelineResolutionFOUND_AT_ORIGINAL", NOT_FOUND: "timelineResolutionNOT_FOUND", WRONG_LOCATION: "timelineResolutionWRONG_LOCATION", OTHER: "timelineResolutionOTHER" } as const)[check.completionCode as "FOUND" | "FOUND_AT_ORIGINAL" | "NOT_FOUND" | "WRONG_LOCATION" | "OTHER"] ?? "timelineResolutionUnknown")} · ${new Date(check.completedAt || "").toLocaleString(locale)}` : check.status === "AVAILABLE" ? tr("availableChecks") : tr("caseChecking")).join(" / ")}</small></div>)}</div>

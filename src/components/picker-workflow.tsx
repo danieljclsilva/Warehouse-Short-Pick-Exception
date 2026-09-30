@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Locale, MessageKey } from "@/i18n/messages";
 import { LiveRefreshStatus } from "@/components/live-refresh-status";
 import { ScanInput } from "@/components/scan-input";
@@ -33,6 +33,11 @@ type PickerWorkflowProps = {
   canStage: boolean;
   canConfirmRetrieval: boolean;
   canClose: boolean;
+  focusedCaseId?: string | null;
+  focusedNonce?: number;
+  focusFromNotification?: boolean;
+  onFocusConsumed?: () => void;
+  onFocusedClose?: () => void;
 };
 
 function formatDate(value: string, locale: Locale) {
@@ -68,7 +73,7 @@ async function readBody(response: Response) {
   return (await response.json().catch(() => ({}))) as ApiError & { kind?: string; normalizedOrderNumber?: string; history?: PriorCase[]; cases?: CaseSummary[]; case?: OrderCase; line?: ShortPickLine };
 }
 
-export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canViewOwnCases, canOverrideDuplicateLine, canStage, canConfirmRetrieval, canClose }: PickerWorkflowProps) {
+export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canViewOwnCases, canOverrideDuplicateLine, canStage, canConfirmRetrieval, canClose, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: PickerWorkflowProps) {
   const [cases, setCases] = useState<CaseSummary[]>([]);
   const [loading, setLoading] = useState(canViewOwnCases);
   const [busy, setBusy] = useState(false);
@@ -130,7 +135,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
     setDuplicateLine(null);
   };
 
-  const openCase = async (id: string) => {
+  const openCase = useCallback(async (id: string) => {
     setBusy(true);
     setError("");
     try {
@@ -146,7 +151,16 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
     } finally {
       setBusy(false);
     }
-  };
+  }, [tr]);
+  const focusConsumedRef = useRef(0);
+  const [focusOverlayNonce, setFocusOverlayNonce] = useState(0);
+  useEffect(() => {
+    if (!focusedCaseId || !focusedNonce || focusConsumedRef.current === focusedNonce) return;
+    focusConsumedRef.current = focusedNonce;
+    queueMicrotask(() => { if (focusFromNotification) setFocusOverlayNonce(focusedNonce); });
+    void openCase(focusedCaseId).finally(() => { onFocusConsumed?.(); });
+  }, [focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, openCase]);
+  const focusOverlay = focusOverlayNonce !== 0;
 
   const stageOrder = async () => {
     if (!activeCase) return;
@@ -294,6 +308,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
   };
 
   const closeDetail = () => {
+    const wasFocused = focusOverlay && activeCase !== null;
     setActiveCase(null);
     setPendingOrder("");
     setConfirmedHistoricalCaseIds([]);
@@ -306,7 +321,9 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
     setQuantity(1);
     setError("");
     setActionNotice("");
-    void loadCases();
+    setFocusOverlayNonce(0);
+    if (wasFocused) onFocusedClose?.();
+    else void loadCases();
   };
 
   const displayCase: OrderCase | null = activeCase ?? (pendingOrder
@@ -318,7 +335,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
       {error && <p className="case-alert" role="alert">{error}</p>}
       {actionNotice && <p className="check-notice" role="status">{actionNotice}</p>}
       {displayCase ? (
-        <section className="case-detail" aria-labelledby="case-detail-title">
+        <section className={`case-detail${focusOverlay ? " case-notification-overlay" : ""}`} aria-labelledby="case-detail-title">
           <button className="case-back-button" type="button" onClick={closeDetail} disabled={busy}>‹ {tr("backToMyOrders")}</button>
           <div className="case-detail-heading">
             <div><p className="case-eyebrow">{tr("orderLabel")}</p><h2 id="case-detail-title">{displayCase.orderNumber}</h2></div>

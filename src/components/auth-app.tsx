@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PickerWorkflow } from "@/components/picker-workflow";
 import { CheckWorkflow } from "@/components/check-workflow";
 import { OperationsDashboard } from "@/components/operations-dashboard";
@@ -331,14 +331,62 @@ export function resolveDeepTarget(input: { phase?: string | null; closedAt?: str
   if (closed || !input.canAct) return { view: "readonly" };
   return { view: "live", section: "myWork" };
 }
+export type LiveSection = "myWork" | "checks" | "openCases";
 
-function DeepCasePanel({ tr, caseId, lineId, canViewMessages, canAct, fromNotification = false, onClose, onOpenLive }: {
+const CHECK_NOTIFICATION_MARKER = "CHECK";
+
+export function liveSectionForUser(
+  account: { role?: string | null; permissions?: readonly string[] | null } | null | undefined,
+  notificationType?: string | null,
+): LiveSection | null {
+  const permissions = account?.permissions ?? [];
+  if (permissions.includes("VIEW_ALL_OPEN_CASES")) return "openCases";
+  const canUseChecks = ["VIEW_AVAILABLE_CHECKS", "CLAIM_CHECK", "COMPLETE_CHECK", "ASSIGN_CHECK", "REASSIGN_CHECK"]
+    .some((permission) => permissions.includes(permission));
+  const canUsePickerWorkflow = account?.role === "PICKER"
+    && (permissions.includes("REPORT_SHORT_PICK") || permissions.includes("VIEW_OWN_CASES"));
+  if (canUsePickerWorkflow) {
+    if ((notificationType ?? "").toUpperCase().includes(CHECK_NOTIFICATION_MARKER) && canUseChecks) return "checks";
+    return "myWork";
+  }
+  if (canUseChecks) return "checks";
+  return null;
+}
+
+function CaseOverlay({ tr, title, onClose, headingId, labelledBy, children }: {
+  tr: (key: MessageKey, values?: Record<string, string>) => string;
+  title: MessageKey;
+  onClose: () => void;
+  headingId: string;
+  labelledBy?: MessageKey;
+  children: ReactNode;
+}) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div className="case-overlay-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="case-overlay" role="dialog" aria-modal="true" aria-labelledby={headingId} aria-label={labelledBy ? tr(labelledBy) : undefined}>
+        <header className="case-overlay-head">
+          <h2 id={headingId}>{tr(title)}</h2>
+          <button className="secondary-button case-overlay-close" type="button" onClick={onClose}>{tr("closePanel")}</button>
+        </header>
+        {children}
+      </section>
+    </div>
+  );
+}
+
+function DeepCasePanel({ tr, caseId, lineId, canViewMessages, canAct, fromNotification = false, overlay = false, onClose, onOpenLive }: {
   tr: (key: MessageKey, values?: Record<string, string>) => string;
   caseId: string;
   lineId: string | null;
   canViewMessages: boolean;
   canAct: boolean;
   fromNotification?: boolean;
+  overlay?: boolean;
   onClose: () => void;
   onOpenLive?: (caseId: string, lineId: string | null) => void;
 }) {
@@ -376,17 +424,20 @@ function DeepCasePanel({ tr, caseId, lineId, canViewMessages, canAct, fromNotifi
 
   const openCase = status === "ready" && data !== null && data.phase !== "CLOSED" && !data.closedAt && !data.resolvedAt;
   const target = resolveDeepTarget({ phase: data?.phase ?? null, closedAt: data?.closedAt ?? null, resolvedAt: data?.resolvedAt ?? null, canAct: openCase && canAct });
-  if (target.view === "live" && onOpenLive && status === "ready" && data) {
-    return (
-      <>
-        <DeepCaseView tr={tr} data={data} lineId={lineId} canViewMessages={canViewMessages} status={status} onClose={onClose} headingRef={headingRef} currentLineRef={currentLineRef} fromNotification={fromNotification} />
-        <div className="dialog-actions">
-          <button className="primary-button" type="button" onClick={() => onOpenLive(caseId, lineId)}>{tr("navInstructionOpenLiveCase")}</button>
-        </div>
-      </>
-    );
-  }
-  return <DeepCaseView tr={tr} data={data} lineId={lineId} canViewMessages={canViewMessages} status={status} onClose={onClose} headingRef={headingRef} currentLineRef={currentLineRef} fromNotification={fromNotification} />;
+  const body = target.view === "live" && onOpenLive && status === "ready" && data ? (
+    <>
+      <DeepCaseView tr={tr} data={data} lineId={lineId} canViewMessages={canViewMessages} status={status} onClose={onClose} headingRef={headingRef} currentLineRef={currentLineRef} fromNotification={fromNotification} />
+      <div className="dialog-actions">
+        <button className="primary-button" type="button" onClick={() => onOpenLive(caseId, lineId)}>{tr("navInstructionOpenLiveCase")}</button>
+      </div>
+    </>
+  ) : <DeepCaseView tr={tr} data={data} lineId={lineId} canViewMessages={canViewMessages} status={status} onClose={onClose} headingRef={headingRef} currentLineRef={currentLineRef} fromNotification={fromNotification} />;
+  if (!overlay) return body;
+  return (
+    <CaseOverlay tr={tr} title="caseDetails" onClose={onClose} headingId="notification-case-overlay-title" labelledBy="caseDetails">
+      {body}
+    </CaseOverlay>
+  );
 }
 
 export function AuthApp({ initialInviteToken = "", initialView = "login" }: AuthAppProps) {
@@ -422,6 +473,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
   const [deepCaseId, setDeepCaseId] = useState<string | null>(null);
   const [deepLineId, setDeepLineId] = useState<string | null>(null);
   const [deepCaseFromNotification, setDeepCaseFromNotification] = useState(false);
+  const [liveFocus, setLiveFocus] = useState<{ section: LiveSection; caseId: string; nonce: number } | null>(null);
   const { messages: t } = getMessages(locale);
   const tr = useCallback((key: MessageKey, values?: Record<string, string>) => translate(t, key, values), [t]);
   const localeRef = useRef<Locale>(locale);
@@ -476,10 +528,21 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             const requestedSection = window.location.pathname === "/"
               && params.get("section") === "notifications";
             if (deepCase) {
-              setDeepCaseId(deepCase);
-              setDeepLineId(deepLine);
-              setDeepCaseFromNotification(true);
-              setActiveSection(firstSection?.key ?? "workspace");
+              const section = liveSectionForUser(body.user, null);
+              if (section) {
+                setDeepCaseId(null);
+                setDeepLineId(null);
+                setDeepCaseFromNotification(false);
+                setActiveSection(section);
+                setMobileNavOpen(false);
+                setLiveFocus({ section, caseId: deepCase, nonce: Date.now() });
+              } else {
+                setDeepCaseId(deepCase);
+                setDeepLineId(deepLine);
+                setDeepCaseFromNotification(true);
+                setActiveSection(firstSection?.key ?? "workspace");
+                setLiveFocus(null);
+              }
             } else setActiveSection(requestedSection ? "notifications" : firstSection?.key ?? "workspace");
             setView("workspace");
             if (requestedSection) router.replace("/", { scroll: false });
@@ -540,32 +603,51 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
   const canOverrideDuplicateLine = Boolean(user?.permissions.includes("OVERRIDE_DUPLICATE_SHORT_PICK_LINE"));
   const assignableRoles = user ? inviteRolesByActor[user.role] ?? [] : [];
   const openCaseFromNotification = useCallback((caseId: string, lineId: string | null, notification?: { notification?: { type?: string | null; payload?: Record<string, unknown> | null } | null }) => {
+    if (!user) return;
     const inner = notification?.notification ?? null;
     const payload = inner?.payload && typeof inner.payload === "object" ? inner.payload as Record<string, unknown> : {};
     const flaggedLine = typeof payload.shortPickLineId === "string" ? payload.shortPickLineId
       : typeof payload.lineId === "string" ? payload.lineId : null;
     const targetLine = lineId ?? flaggedLine;
-    setDeepCaseId(caseId);
-    setDeepLineId(targetLine);
-    setDeepCaseFromNotification(true);
-    router.replace(`/?case=${encodeURIComponent(caseId)}${targetLine ? `&line=${encodeURIComponent(targetLine)}` : ""}`, { scroll: false });
-  }, [router]);
-  const openLiveCase = useCallback((caseId: string, lineId: string | null) => {
-    setDeepCaseFromNotification(true);
-    if (canUsePickerWorkflow) {
-      setActiveSection("myWork");
+    const targetUrl = `/?case=${encodeURIComponent(caseId)}${targetLine ? `&line=${encodeURIComponent(targetLine)}` : ""}`;
+    const section = liveSectionForUser(user, inner?.type ?? null);
+    if (section) {
+      setDeepCaseId(null);
+      setDeepLineId(null);
+      setDeepCaseFromNotification(false);
+      setActiveSection(section);
       setMobileNavOpen(false);
-    } else if (user?.permissions.includes("VIEW_ALL_OPEN_CASES")) {
-      setActiveSection("openCases");
-      setMobileNavOpen(false);
+      setLiveFocus({ section, caseId, nonce: Date.now() });
+    } else {
+      setDeepCaseId(caseId);
+      setDeepLineId(targetLine);
+      setDeepCaseFromNotification(true);
+      setLiveFocus(null);
     }
+    router.replace(targetUrl, { scroll: false });
+  }, [router, user]);
+  const openLiveCase = useCallback((caseId: string, lineId: string | null) => {
+    if (!user) return;
+    setDeepCaseId(null);
+    setDeepLineId(null);
+    setDeepCaseFromNotification(false);
+    setLiveFocus(null);
     router.replace(`/?case=${encodeURIComponent(caseId)}${lineId ? `&line=${encodeURIComponent(lineId)}` : ""}`, { scroll: false });
-  }, [canUsePickerWorkflow, router, user]);
+  }, [router, user]);
 
   const closeDeepCase = useCallback(() => {
     setDeepCaseId(null);
     setDeepLineId(null);
     setDeepCaseFromNotification(false);
+    setLiveFocus(null);
+    router.replace("/", { scroll: false });
+  }, [router]);
+  const consumeLiveFocus = useCallback(() => { setLiveFocus(null); }, []);
+  const closeFocusedCase = useCallback(() => {
+    setDeepCaseId(null);
+    setDeepLineId(null);
+    setDeepCaseFromNotification(false);
+    setLiveFocus(null);
     router.replace("/", { scroll: false });
   }, [router]);
 
@@ -573,6 +655,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
     setDeepCaseId(null);
     setDeepLineId(null);
     setDeepCaseFromNotification(false);
+    setLiveFocus(null);
     setActiveSection(section);
     setMobileNavOpen(false);
     router.replace("/", { scroll: false });
@@ -850,7 +933,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
           </header>
           <main className="workspace-content">
             {deepCaseId ? (
-              <DeepCasePanel tr={tr} caseId={deepCaseId} lineId={deepLineId} canViewMessages={user.permissions.includes("VIEW_CASE_MESSAGES")} canAct={user.permissions.some((permission) => ["REPORT_SHORT_PICK", "CLAIM_CHECK", "COMPLETE_CHECK", "ASSIGN_CHECK", "REASSIGN_CHECK", "CONFIRM_RETRIEVAL", "ADD_CASE_MESSAGE", "RESOLVE_CASE", "RECORD_REPLENISHMENT", "MARK_ORDER_STAGED"].includes(permission))} fromNotification={deepCaseFromNotification} onClose={closeDeepCase} onOpenLive={openLiveCase} />
+              <DeepCasePanel tr={tr} caseId={deepCaseId} lineId={deepLineId} canViewMessages={user.permissions.includes("VIEW_CASE_MESSAGES")} canAct={user.permissions.some((permission) => ["REPORT_SHORT_PICK", "CLAIM_CHECK", "COMPLETE_CHECK", "ASSIGN_CHECK", "REASSIGN_CHECK", "CONFIRM_RETRIEVAL", "ADD_CASE_MESSAGE", "RESOLVE_CASE", "RECORD_REPLENISHMENT", "MARK_ORDER_STAGED"].includes(permission))} fromNotification={deepCaseFromNotification} overlay onClose={closeDeepCase} onOpenLive={openLiveCase} />
             ) : null}
             {activeSection === "configuration" && allowedNavigation.some((item) => item.key === "configuration") ? (
               <ConfigurationPanel tr={tr} locale={locale} role={user.role} />
@@ -868,6 +951,11 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
                 canAssign={user.permissions.includes("ASSIGN_TROUBLESHOOTER")}
                 canClose={user.permissions.includes("RESOLVE_CASE")}
                 canReopen={user.permissions.includes("REOPEN_CASE")}
+                focusedCaseId={liveFocus?.section === "openCases" ? liveFocus.caseId : null}
+                focusedNonce={liveFocus?.section === "openCases" ? liveFocus.nonce : 0}
+                focusFromNotification={liveFocus?.section === "openCases"}
+                onFocusConsumed={consumeLiveFocus}
+                onFocusedClose={closeFocusedCase}
               />
             ) : activeSection === "notifications" ? (
               <NotificationCenter
@@ -881,9 +969,9 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             ) : activeSection === "reports" && allowedNavigation.some((item) => item.key === "reports") ? (
               <AnalyticsDashboard tr={tr} locale={locale} canExport={user.permissions.includes("EXPORT_ANALYTICS")} />
             ) : canUsePickerWorkflow && activeSection === "myWork" ? (
-              <PickerWorkflow locale={locale} tr={tr} userId={user.id} canReportShortPick={Boolean(user.permissions.includes("REPORT_SHORT_PICK"))} canViewOwnCases={Boolean(user.permissions.includes("VIEW_OWN_CASES"))} canOverrideDuplicateLine={canOverrideDuplicateLine} canStage={user.permissions.includes("MARK_ORDER_STAGED")} canConfirmRetrieval={user.permissions.includes("CONFIRM_RETRIEVAL")} canClose={user.permissions.includes("RESOLVE_CASE")} />
+              <PickerWorkflow locale={locale} tr={tr} userId={user.id} canReportShortPick={Boolean(user.permissions.includes("REPORT_SHORT_PICK"))} canViewOwnCases={Boolean(user.permissions.includes("VIEW_OWN_CASES"))} canOverrideDuplicateLine={canOverrideDuplicateLine} canStage={user.permissions.includes("MARK_ORDER_STAGED")} canConfirmRetrieval={user.permissions.includes("CONFIRM_RETRIEVAL")} canClose={user.permissions.includes("RESOLVE_CASE")} focusedCaseId={liveFocus?.section === "myWork" ? liveFocus.caseId : null} focusedNonce={liveFocus?.section === "myWork" ? liveFocus.nonce : 0} focusFromNotification={liveFocus?.section === "myWork"} onFocusConsumed={consumeLiveFocus} onFocusedClose={closeFocusedCase} />
             ) : activeSection === "checks" && allowedNavigation.some((item) => item.key === "checks") ? (
-              <CheckWorkflow locale={locale} tr={tr} canViewAvailable={user.permissions.includes("VIEW_AVAILABLE_CHECKS") || user.permissions.includes("ASSIGN_CHECK")} canClaim={user.permissions.includes("CLAIM_CHECK")} canComplete={user.permissions.includes("COMPLETE_CHECK")} canAssign={user.permissions.includes("ASSIGN_CHECK")} canReassign={user.permissions.includes("REASSIGN_CHECK")} canRetrieve={user.permissions.includes("CONFIRM_RETRIEVAL")} canMessage={user.permissions.includes("ADD_CASE_MESSAGE")} />
+              <CheckWorkflow locale={locale} tr={tr} canViewAvailable={user.permissions.includes("VIEW_AVAILABLE_CHECKS") || user.permissions.includes("ASSIGN_CHECK")} canClaim={user.permissions.includes("CLAIM_CHECK")} canComplete={user.permissions.includes("COMPLETE_CHECK")} canAssign={user.permissions.includes("ASSIGN_CHECK")} canReassign={user.permissions.includes("REASSIGN_CHECK")} canRetrieve={user.permissions.includes("CONFIRM_RETRIEVAL")} canMessage={user.permissions.includes("ADD_CASE_MESSAGE")} focusedCaseId={liveFocus?.section === "checks" ? liveFocus.caseId : null} focusedNonce={liveFocus?.section === "checks" ? liveFocus.nonce : 0} focusFromNotification={liveFocus?.section === "checks"} onFocusConsumed={consumeLiveFocus} onFocusedClose={closeFocusedCase} />
             ) : canCreateInvites && activeSection === "invitations" ? (
               <>
                 <div className="content-heading"><div><h1>{tr("inviteManagementTitle")}</h1><p>{tr("inviteManagementDescription")}</p></div></div>
