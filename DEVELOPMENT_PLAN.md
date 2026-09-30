@@ -179,3 +179,4 @@ Wave 0 (2026-09-28) delivered docs-only contracts: PRD amendments plus the bindi
 - New `MANAGER` role above Team Leader and below Admin with Admin-only `EDIT_MANAGER_PERMISSIONS`; only Admin creates/manages Manager accounts; Managers cannot touch Admin accounts; Admin/Manager hidden from picker/team-leader/assistant/troubleshooter surfaces (Managers see Managers, never Admins).
 - Migration `0019_hot_wildside` adds `MANAGER` to `user_role` and `MANAGER_MANUAL` to `case_source`. PRD §5–§7 amended; four-language labels added.
 - Local gates: 208/208 tests (32 files), typecheck, lint, `db:check`, production build pass. Live TEST/PROD deployment and migration not yet run.
+- Deployed 2026-09-30 (`main` @ `a385f4e`): PROD web `c27c9362` SUCCESS with `/api/health` 200 and login 200 (pre-deploy `npm run db:migrate` applied 0019); TEST `web-test` `feedb962` SUCCESS with `/api/health` 200 + `/api/environment` test. No live Manager login QA yet.
