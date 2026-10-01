@@ -166,12 +166,26 @@ async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: st
   });
   const messages = includeMessages ? await db.select({ id: caseMessages.id, shortPickLineId: caseMessages.shortPickLineId, authorUserId: caseMessages.authorUserId, authorName: users.displayName, message: caseMessages.message, createdAt: caseMessages.createdAt })
     .from(caseMessages).innerJoin(users, eq(caseMessages.authorUserId, users.id)).where(eq(caseMessages.caseId, caseId)).orderBy(caseMessages.createdAt, caseMessages.id) : [];
+  const eventAssigneeIds = events.flatMap((event) => {
+    const raw = (event.details ?? {}) as Record<string, unknown>;
+    return [raw.assignedToUserId, raw.responsibleUserId, raw.userId, raw.checkerUserId].filter((id): id is string => typeof id === "string" && id.length > 0);
+  });
   const personIds = [...new Set([record.pickingUserId, record.currentCaseResponsibleUserId,
     ...lines.flatMap((line) => [line.reportedByUserId, line.currentResponsibleUserId, line.discoveredByUserId, line.retrievalResponsibleUserId, line.replenishmentActorUserId, line.replenishmentRetrieverUserId]),
     ...checks.flatMap((check) => [check.claimedByUserId, check.assignedToUserId]),
+    ...eventAssigneeIds,
   ].filter((id): id is string => Boolean(id)))];
   const people = personIds.length ? await db.select({ id: users.id, displayName: users.displayName }).from(users).where(inArray(users.id, personIds)) : [];
   const names = new Map(people.map((person) => [person.id, person.displayName]));
+  const detailsByEventId = new Map(events.map((entry) => [entry.id, { details: (entry.details ?? {}) as Record<string, unknown>, actorUserId: entry.actorUserId }]));
+  const shapedWithAssignee = shapedEvents.map((event) => {
+    const entry = detailsByEventId.get(event.id);
+    const raw = entry?.details ?? {};
+    const explicitId = [raw.assignedToUserId, raw.responsibleUserId, raw.userId, raw.checkerUserId].find((id): id is string => typeof id === "string" && id.length > 0) ?? null;
+    // CHECK_CLAIMED details carry only { taskId }; the event actor is the claimer.
+    const assigneeUserId = explicitId ?? (event.eventType === "CHECK_CLAIMED" && typeof entry?.actorUserId === "string" ? entry.actorUserId : null);
+    return { ...event, assigneeName: assigneeUserId ? (names.get(assigneeUserId) ?? null) : null };
+  });
   const unresolvedLines = lines.filter((line) => line.state !== "RESOLVED" && line.state !== "CANCELLED");
   const checkingCount = lines.filter((line) => line.state === "CHECKING").length;
   const currentIssue = lines.some((line) => line.retrievalState === "FAILED") ? "RETRIEVAL_FAILED"
@@ -182,7 +196,7 @@ async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: st
   return { ...record, pickerName: record.pickingUserId ? names.get(record.pickingUserId) ?? null : null,
     responsibleName: record.currentCaseResponsibleUserId ? names.get(record.currentCaseResponsibleUserId) ?? null : null,
     missingCount: unresolvedLines.reduce((total, line) => total + line.missingQuantity, 0), checkingCount, currentIssue,
-    lines: lines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity })), checks, events: shapedEvents, messages,
+    lines: lines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity })), checks, events: shapedWithAssignee, messages,
     projection, lineProjections };
 }
 

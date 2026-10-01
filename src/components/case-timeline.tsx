@@ -7,6 +7,7 @@ export type CaseTimelineEvent = {
   eventType: string;
   createdAt: string;
   actorName?: string | null;
+  assigneeName?: string | null;
   completionCode?: string | null;
   discoveredLocation?: string | null;
   originalLocation?: string | null;
@@ -59,10 +60,15 @@ export function checkCompletedDetail(event: CaseTimelineEvent, tr: Translator): 
   }
   return label;
 }
+const ASSIGNMENT_TYPES = new Set(["CHECK_ASSIGNED", "CHECK_REASSIGNED", "CHECK_CLAIMED", "RETRIEVAL_ASSIGNED", "RESPONSIBILITY_CHANGED", "CASE_REOPENED", "CASE_REPAIRED", "CHECK_REQUESTED", "CASE_CREATED"]);
 
 export function timelineLabelFor(event: CaseTimelineEvent, tr: Translator): string {
   if (event.eventType !== "CHECK_COMPLETED") {
-    return tr(`event_${event.eventType}` as MessageKey);
+    const base = tr(`event_${event.eventType}` as MessageKey);
+    if (ASSIGNMENT_TYPES.has((event.eventType || "").toUpperCase()) && event.assigneeName) {
+      return `${base} — ${tr("timelineAssignedTo", { name: event.assigneeName })}`;
+    }
+    return base;
   }
   return `${tr("event_CHECK_COMPLETED")} — ${checkCompletedDetail(event, tr)}`;
 }

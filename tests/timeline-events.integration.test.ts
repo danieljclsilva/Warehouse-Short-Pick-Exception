@@ -13,6 +13,7 @@ import { createSession } from "../src/server/auth";
 import { hashPin } from "../src/server/security";
 import { POST as createCaseRoute } from "../src/app/api/cases/route";
 import { POST as claimRoute } from "../src/app/api/checks/[id]/claim/route";
+import { PATCH as assignCheckRoute } from "../src/app/api/checks/[id]/assign/route";
 import { POST as completeRoute } from "../src/app/api/checks/[id]/complete/route";
 import { GET as caseDetailRoute } from "../src/app/api/cases/[id]/route";
 
@@ -121,5 +122,26 @@ describeDatabase("timeline CHECK_COMPLETED shaping against PostgreSQL", () => {
       expect(event.discoveredLocation).toBeNull();
       expect(event.originalLocation).toBeNull();
     }
+  });
+
+  it("resolves the assignee display name on assignment events", async () => {
+    const item = await makeCase("74");
+    const checker = await makeUser("TROUBLESHOOTER", "checker-assignee");
+    expect((await assignCheckRoute(request(`/api/checks/${item.taskId}/assign`, "PATCH", { userId: checker.id }, leaderCookie), { params: Promise.resolve({ id: item.taskId }) })).status).toBe(200);
+    const detail = await (await caseDetailRoute(request(`/api/cases/${item.caseId}`, "GET", undefined, pickerCookie), { params: Promise.resolve({ id: item.caseId }) })).json();
+    const assigned = (detail.case.events as Array<{ eventType: string; assigneeName: string | null }>).filter((event) => event.eventType === "CHECK_ASSIGNED");
+    expect(assigned).toHaveLength(1);
+    expect(assigned[0]).toMatchObject({ assigneeName: "checker-assignee" });
+  });
+
+  it("resolves the claimer display name on CHECK_CLAIMED events", async () => {
+    const item = await makeCase("75");
+    const claimer = await makeUser("TROUBLESHOOTER", "checker-claimer");
+    const claimerCookie = (await createSession(claimer.id)).cookie.split(";")[0]!;
+    expect((await claimRoute(request(`/api/checks/${item.taskId}/claim`, "POST", undefined, claimerCookie), { params: Promise.resolve({ id: item.taskId }) })).status).toBe(200);
+    const detail = await (await caseDetailRoute(request(`/api/cases/${item.caseId}`, "GET", undefined, pickerCookie), { params: Promise.resolve({ id: item.caseId }) })).json();
+    const claimed = (detail.case.events as Array<{ eventType: string; assigneeName: string | null }>).filter((event) => event.eventType === "CHECK_CLAIMED");
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]).toMatchObject({ assigneeName: "checker-claimer" });
   });
 });

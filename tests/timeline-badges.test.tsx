@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { renderToString } from "react-dom/server";
 import { getMessages, supportedLocales, translate, type Locale } from "@/i18n/messages";
 import { CaseStatusBadge, statusGroupFor } from "@/components/case-status-badge";
-import { CaseTimeline, checkCompletedDetail } from "@/components/case-timeline";
+import { CaseTimeline, checkCompletedDetail, timelineLabelFor } from "@/components/case-timeline";
 import { OperationsDashboard } from "@/components/operations-dashboard";
 import { PickerWorkflow } from "@/components/picker-workflow";
 import { CheckWorkflow } from "@/components/check-workflow";
@@ -73,6 +73,34 @@ describe("timeline completion-code rendering", () => {
     expect(html).toContain("01.AA.1");
     expect(html).toContain("looking into it");
     expect(html.match(/timeline-message/g)?.length ?? 0).toBe(1);
+  });
+});
+
+describe("timeline assignment names", () => {
+  it("states the assignee on assignment rows and omits it when unknown", () => {
+    const tr = trFor("en");
+    expect(timelineLabelFor(event({ eventType: "CHECK_ASSIGNED", assigneeName: "Checker Two" }), tr)).toBe(
+      `${tr("event_CHECK_ASSIGNED")} — ${tr("timelineAssignedTo", { name: "Checker Two" })}`,
+    );
+    expect(timelineLabelFor(event({ eventType: "CHECK_CLAIMED", assigneeName: "Checker One" }), tr)).toBe(
+      `${tr("event_CHECK_CLAIMED")} — ${tr("timelineAssignedTo", { name: "Checker One" })}`,
+    );
+    expect(timelineLabelFor(event({ eventType: "RETRIEVAL_ASSIGNED", assigneeName: "Retriever One" }), tr)).toBe(
+      `${tr("event_RETRIEVAL_ASSIGNED")} — ${tr("timelineAssignedTo", { name: "Retriever One" })}`,
+    );
+    // Unknown/deleted accounts render the bare label — never an invented name.
+    expect(timelineLabelFor(event({ eventType: "CHECK_ASSIGNED", assigneeName: null }), tr)).toBe(tr("event_CHECK_ASSIGNED"));
+    expect(timelineLabelFor(event({ eventType: "CHECK_COMPLETED", completionCode: "NOT_FOUND", assigneeName: "Someone" }), tr)).not.toContain("Someone");
+  });
+
+  it("localizes the assignee suffix in all four languages", () => {
+    for (const locale of supportedLocales) {
+      const tr = trFor(locale);
+      const text = timelineLabelFor(event({ eventType: "CHECK_ASSIGNED", assigneeName: "Sam" }), tr);
+      expect(text).toContain(tr("event_CHECK_ASSIGNED"));
+      expect(text).toContain("Sam");
+      expect(text).not.toBe("Sam");
+    }
   });
 });
 
