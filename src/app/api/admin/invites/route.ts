@@ -37,7 +37,8 @@ export async function POST(request: Request) {
     if (!auth) return jsonError("Unauthenticated", 401);
     if (!hasAuthPermission(auth, "CREATE_INVITES")) return jsonError("Forbidden", 403);
     const input = await parseJson(request, schema);
-    if (input.defaultRole === "ADMIN" || input.defaultRole === "MANAGER" || !canManageRole(auth.user.role, input.defaultRole)) return jsonError("Cannot create an invitation for that role", 403);
+    // Admin invitations are never issued via invites; Manager invitations are Admin-only via canManageRole.
+    if (input.defaultRole === "ADMIN" || !canManageRole(auth.user.role, input.defaultRole)) return jsonError("Cannot create an invitation for that role", 403);
     const defaultPermissions = input.defaultPermissions ?? rolePermissions(input.defaultRole);
     if (!permissionsAllowedForRole(input.defaultRole, defaultPermissions)) return jsonError("Those permissions cannot be assigned to that role", 400);
     const token = createToken();
