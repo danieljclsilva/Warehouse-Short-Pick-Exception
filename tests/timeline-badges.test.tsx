@@ -247,5 +247,22 @@ describe("timeline messaging format and fit-width badges", () => {
     };
     expect(ruleBody("\\.responsible-badge")).toMatch(/width:\s*fit-content/);
     expect(ruleBody("\\.responsible-badge")).toMatch(/max-width:\s*100%/);
+    expect(ruleBody("\\.check-detail-lines > div")).toMatch(/justify-items:\s*start/);
+  });
+});
+describe("shared line card parity", () => {
+  it("renders one badge, stacked reporter, and the location reporter on both screens", async () => {
+    const card = await import("@/components/case-line-card");
+    expect(typeof card.SharedCaseLineCard).toBe("function");
+    expect(typeof card.SharedInlineLocationForm).toBe("function");
+    expect(typeof card.SharedCaseTimeline).toBe("function");
+    const checks = readFileSync(fileURLToPath(new URL("../src/components/check-workflow.tsx", import.meta.url)), "utf8");
+    const drawer = readFileSync(fileURLToPath(new URL("../src/components/operations-dashboard.tsx", import.meta.url)), "utf8");
+    for (const source of [checks, drawer]) {
+      expect(source).toContain("SharedCaseLineCard");
+      expect(source).not.toContain("lineStateLabel");
+    }
+    expect(checks).toContain("SharedInlineLocationForm");
+    expect(drawer).toContain("LocationReporter");
   });
 });

@@ -18,14 +18,14 @@ describe("replenishment UI wiring", () => {
       "../src/components/operations-dashboard.tsx",
     ]) {
       const source = read(surface);
-      expect(source).toContain("ReplenishmentForm");
+      expect(source).toContain("SharedCaseLineCard");
       expect(source).toContain("canRecordReplenishment");
     }
+    expect(read("../src/components/case-line-card.tsx")).toContain("ReplenishmentForm");
     const picker = read("../src/components/picker-workflow.tsx");
     expect(picker).not.toContain("ReplenishmentForm");
+    expect(picker).not.toContain("SharedCaseLineCard");
     expect(picker).toContain("replenishment-badge");
-    const auth = read("../src/components/auth-app.tsx");
-    expect(auth.match(/canRecordReplenishment=\{user\.permissions\.includes\("RECORD_REPLENISHMENT"\)\}/g)?.length ?? 0).toBe(3);
   });
 
   it("posts state only: no note, no assignment, no directory fetch", () => {

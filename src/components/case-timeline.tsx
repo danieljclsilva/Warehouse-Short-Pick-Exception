@@ -113,7 +113,7 @@ export function CaseTimeline({
       {rows.map((entry) => (
         <li key={entry.id} data-testid={entry.kind === "event" ? "timeline-event" : "timeline-message"}>
           <time>{formatDate(entry.createdAt)}</time>
-          <span>
+          <span className="timeline-row">
             <strong data-testid="timeline-actor">{entry.who}</strong>
             <span data-testid="timeline-text">: {entry.text}</span>
           </span>

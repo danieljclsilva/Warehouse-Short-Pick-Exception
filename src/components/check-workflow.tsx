@@ -7,7 +7,7 @@ import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import { CaseStatusBadge } from "@/components/case-status-badge";
 import { CaseTimeline, type CaseTimelineEvent } from "@/components/case-timeline";
-import { ReplenishmentForm } from "@/components/replenishment-form";
+import { SharedCaseLineCard, SharedInlineLocationForm } from "@/components/case-line-card";
 
 type Check = {
   id: string;
@@ -253,21 +253,13 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       <p className="check-detail-state">{detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · {detail.physicalState === "SHORT_PICK_HOLD" ? tr("physicalShortPickHold") : detail.physicalState === "WITH_PICKER" ? tr("physicalWithPicker") : detail.physicalState === "OTHER_KNOWN_LOCATION" ? tr("physicalOtherLocation") : tr("physicalUnknown")}{detail.physicalLocation ? ` · ${detail.physicalLocation}` : ""}</p>
       <h3>{tr("reportedItems")}</h3>
       <div className="check-detail-lines">{detail.lines.map((line) => {
-        const replenishment = (line.replenishmentState ?? "NONE").toUpperCase();
-        const retrieval = (line.retrievalState ?? "NOT_REQUIRED").toUpperCase();
         const reportable = canReportLocation && detail.phase !== "CLOSED" && !["RESOLVED", "CANCELLED"].includes(line.state);
-        const retrievalPending = canRetrieve && line.state === "FOUND" && (retrieval === "PENDING" || retrieval === "FAILED");
-        return <div key={line.id}>
-          <strong>{line.location} · {line.sku} ×{line.quantity}</strong>
-          {line.responsibleName ? <p><span className="responsible-badge">{tr("checkResponsibleBadge", { name: line.responsibleName })}</span></p> : null}
-          <CaseStatusBadge kind="line" status={line.state} retrievalState={line.retrievalState} tr={tr} />
-          {(line.reporterName || line.reporterIdentifier) ? <small>{tr("lineReportedBy", { name: line.reporterName || line.reporterIdentifier || "" })}{line.reporterIdentifier ? ` · ${tr("lineReporterId", { id: line.reporterIdentifier })}` : ""}</small> : null}
-          {replenishment !== "NONE" ? <p className="replenishment-badge" data-state={replenishment}>{tr(`replenishmentState${replenishment}` as MessageKey)}</p> : null}
-          {(line.retrievalState ?? "").toUpperCase() === "NOT_REQUIRED" && detail.phase !== "STAGED" ? <p className="retrieval-badge" data-state="NOT_REQUIRED">{tr("retrievalNotRequired")}</p> : null}
-          {canRecordReplenishment && replenishment !== "COMPLETED" && !["RESOLVED", "CANCELLED"].includes(line.state) && detail.phase !== "CLOSED" ? <ReplenishmentForm tr={tr} caseId={detail.id} lineId={line.id} currentState={replenishment} compact onSaved={async () => { await openDetails(detail.id); setNotice(tr("replenishmentSaved")); }} /> : null}
-          {retrievalPending ? <div className="check-card-actions"><button className="secondary-button" type="button" disabled={Boolean(busyId)} onClick={() => void mutate(line.id, `/api/cases/${detail.id}/lines/${line.id}/retrieve`, "POST", { result: "FAILED" })}>{tr("reportRetrievalFailed")}</button><button className="primary-button" type="button" disabled={Boolean(busyId)} onClick={() => void mutate(line.id, `/api/cases/${detail.id}/lines/${line.id}/retrieve`, "POST", { result: "RETRIEVED" })}>{tr("confirmRetrieved")}</button></div> : null}
-          {reportable ? (reportLocationLineId === line.id ? <form className="check-complete-form" onSubmit={(event) => { event.preventDefault(); void (async () => { setBusyId(line.id); setError(""); setNotice(""); try { const response = await fetch(`/api/cases/${encodeURIComponent(detail.id)}/lines/${encodeURIComponent(line.id)}/discovered-location`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ location: reportLocationValue.trim().toUpperCase() }), cache: "no-store" }); if (!response.ok) throw new Error(tr("reportLocationFailed")); setReportLocationLineId(null); setReportLocationValue(""); await load(); await openDetails(detail.id); setNotice(tr("reportLocationSaved")); } catch { setError(tr("reportLocationFailed")); } finally { setBusyId(""); } })(); }}><label className="form-field"><span>{tr("reportLocationAction")}</span><ScanInput required autoCapitalize="characters" value={reportLocationValue} onChange={setReportLocationValue} tr={tr} scanKind="location" fieldLabel={tr("reportLocationAction")} /></label><div className="check-card-actions"><button type="button" className="secondary-button" onClick={() => { setReportLocationLineId(null); setReportLocationValue(""); }}>{tr("cancel")}</button><button type="submit" className="primary-button" disabled={Boolean(busyId) || !reportLocationValue.trim()}>{tr("reportLocationAction")}</button></div></form> : <button type="button" className="secondary-button" disabled={Boolean(busyId)} onClick={() => { setReportLocationLineId(line.id); setReportLocationValue(""); }}>{tr("reportLocationAction")}</button>) : null}
-        </div>;
+        const submitReportLocation = (lineId: string) => { void (async () => { setBusyId(lineId); setError(""); setNotice(""); try { const response = await fetch(`/api/cases/${encodeURIComponent(detail.id)}/lines/${encodeURIComponent(lineId)}/discovered-location`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ location: reportLocationValue.trim().toUpperCase() }), cache: "no-store" }); if (!response.ok) throw new Error(tr("reportLocationFailed")); setReportLocationLineId(null); setReportLocationValue(""); await load(); await openDetails(detail.id); setNotice(tr("reportLocationSaved")); } catch { setError(tr("reportLocationFailed")); } finally { setBusyId(""); } })(); };
+        return <SharedCaseLineCard key={line.id} tr={tr} caseId={detail.id} casePhase={detail.phase} line={line} projections={new Map()}
+          actions={{ canRecordReplenishment, canRetrieve, canReportLocation, busyId,
+            onSaved: async () => { await openDetails(detail.id); setNotice(tr("replenishmentSaved")); },
+            onRetrieve: (lineId, result) => { void mutate(lineId, `/api/cases/${detail.id}/lines/${lineId}/retrieve`, "POST", { result }); },
+            reportForm: (lineId) => (reportable ? (reportLocationLineId === line.id ? <SharedInlineLocationForm tr={tr} placeholder={tr("reportLocationPlaceholder")} value={reportLocationValue} onChange={setReportLocationValue} onSubmit={() => submitReportLocation(lineId)} /> : <button type="button" className="secondary-button" onClick={() => { setReportLocationLineId(line.id); setReportLocationValue(""); }}>{tr("reportLocationAction")}</button>) : null) }} />;
       })}</div>
       <h3>{tr("caseTimeline")}</h3>
       <CaseTimeline events={detail.events as CaseTimelineEvent[]} messages={detail.messages} tr={tr} formatDate={(value) => new Date(value).toLocaleString(locale)} className="check-detail-timeline" />

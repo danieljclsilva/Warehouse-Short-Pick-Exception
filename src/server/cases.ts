@@ -198,6 +198,7 @@ async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: st
   return { ...record, pickerName: record.pickingUserId ? names.get(record.pickingUserId) ?? null : null,
     pickerIdentifier: record.pickingUserId ? identifiers.get(record.pickingUserId) ?? null : null,
     responsibleName: record.currentCaseResponsibleUserId ? names.get(record.currentCaseResponsibleUserId) ?? null : null,
+    responsibleIdentifier: record.currentCaseResponsibleUserId ? identifiers.get(record.currentCaseResponsibleUserId) ?? null : null,
     missingCount: unresolvedLines.reduce((total, line) => total + line.missingQuantity, 0), checkingCount, currentIssue,
     lines: lines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity,
       responsibleName: line.currentResponsibleUserId ? (names.get(line.currentResponsibleUserId) ?? null) : null,

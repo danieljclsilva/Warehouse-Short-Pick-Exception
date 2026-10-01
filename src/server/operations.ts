@@ -77,6 +77,7 @@ export async function getOperationsDashboard(auth: AuthContext) {
     return { ...row, pickerName: row.pickingUserId ? names.get(row.pickingUserId) ?? null : null,
       pickerIdentifier: row.pickingUserId ? identifiers.get(row.pickingUserId) ?? null : null,
       responsibleName: row.currentCaseResponsibleUserId ? names.get(row.currentCaseResponsibleUserId) ?? null : null,
+      responsibleIdentifier: row.currentCaseResponsibleUserId ? identifiers.get(row.currentCaseResponsibleUserId) ?? null : null,
       missingCount, openLineCount, checkingCount, currentIssue, attentionLevel,
       lines: ownLines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity,
         reporterName: names.get(line.reportedByUserId) ?? null, reporterIdentifier: identifiers.get(line.reportedByUserId) ?? null })),

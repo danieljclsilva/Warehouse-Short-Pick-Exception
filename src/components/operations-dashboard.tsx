@@ -8,7 +8,7 @@ import { useLiveRefresh } from "@/components/use-live-refresh";
 import styles from "./operations-dashboard.module.css";
 import { CaseStatusBadge } from "@/components/case-status-badge";
 import { CaseTimeline, type CaseTimelineEvent } from "@/components/case-timeline";
-import { ReplenishmentForm } from "@/components/replenishment-form";
+import { SharedCaseLineCard } from "@/components/case-line-card";
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
 type Metrics = {
@@ -46,6 +46,7 @@ type CaseSummary = {
   checkingCount: number;
   currentIssue: string;
   responsibleName: string | null;
+  responsibleIdentifier?: string | null;
   source: string;
   physicalState?: string;
   physicalLocation?: string | null;
@@ -110,33 +111,6 @@ function formatDate(value: string, locale: string) {
   return new Intl.DateTimeFormat(dateLocales[locale] || "en-GB", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
-function lineStateLabel(state: string, tr: Translator) {
-  const keys: Record<string, MessageKey> = {
-    OPEN: "caseOpen",
-    CHECKING: "caseChecking",
-    FOUND: "caseFound",
-    FOUND_AT_ORIGINAL: "caseFound",
-    WAITING_RETRIEVAL: "retrievalPending",
-    RETRIEVING: "retrievalPending",
-    RETRIEVED: "caseRetrieved",
-    NOT_FOUND: "caseOpen",
-    WRONG_LOCATION: "caseOpen",
-    TROUBLESHOOTING: "caseChecking",
-    RESOLVED: "caseRetrieved",
-    CANCELLED: "caseCancelled",
-  };
-  return tr(keys[state.toUpperCase()] ?? "caseOpen");
-}
-
-function retrievalStateLabel(state: string, tr: Translator) {
-  const keys: Record<string, MessageKey> = {
-    NOT_REQUIRED: "retrievalNotRequired",
-    PENDING: "retrievalPending",
-    FAILED: "retrievalFailed",
-    RETRIEVED: "caseRetrieved",
-  };
-  return tr(keys[state.toUpperCase()] ?? "retrievalNotRequired");
-}
 
 function physicalStateLabel(state: string | undefined, tr: Translator) {
   const keys: Record<string, MessageKey> = {
@@ -500,16 +474,16 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
         <p className={styles.caseStatusBadge}><CaseStatusBadge status={selected.phase === "CLOSED" ? "CLOSED" : (selected.lineProjections?.[0]?.displayStatus ?? selected.lines?.[0]?.state ?? selected.phase)} tr={tr} /></p>
         <p className={styles.drawerSummary}>{selected.phase === "CLOSED" ? `${tr("caseClosed")} · ${tr("caseClosedOn", { date: formatDate(selected.resolvedAt || selected.createdAt, locale) })}` : `${selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · ${formatAge(selected.createdAt)}`} · {selected.pickerName || tr("unknownPicker")}</p>
         <p className={styles.drawerPhysical}>{tr("physicalState", { state: physicalStateLabel(selected.physicalState, tr) })}{selected.physicalLocation ? ` · ${selected.physicalLocation}` : ""}</p>
-        {(selected.pickerName || selected.pickerIdentifier) ? <p className={styles.drawerPhysical}>{tr("lineReportedBy", { name: selected.pickerName || selected.pickerIdentifier || "" })}{selected.pickerIdentifier ? ` · ${tr("lineReporterId", { id: selected.pickerIdentifier })}` : ""}</p> : null}
-        <div className={styles.detailGrid}><div><span>{tr("caseResponsible")}</span><strong>{selected.responsibleName || "—"}</strong></div><div><span>{tr("caseSource")}</span><strong>{tr(`source_${selected.source}` as MessageKey)}</strong></div><div><span>{tr("missingItemsLabel")}</span><strong>{selected.missingCount}</strong></div></div>
+        <div className={styles.detailGrid}><div><span>{tr("caseResponsible")}</span><strong>{selected.responsibleName || "—"}</strong>{selected.responsibleIdentifier ? <small className={styles.drawerPhysical}>{tr("lineReporterId", { id: selected.responsibleIdentifier })}</small> : null}</div><div><span>{tr("caseSource")}</span><strong>{tr(`source_${selected.source}` as MessageKey)}</strong></div><div><span>{tr("missingItemsLabel")}</span><strong>{selected.missingCount}</strong></div></div>
         <section className={styles.detailSection}><h3>{tr("reportedItems")}</h3>{selected.lines?.length ? <div className={styles.lineList}>{(() => {
-          const projections = new Map((selected.lineProjections ?? []).map((entry) => [entry.lineId, entry]));
-          return selected.lines.map((line) => {
-            const projection = projections.get(line.id);
-            const replenishment = projection?.replenishment;
-            const replenishmentState = replenishment?.state ?? line.replenishmentState ?? "NONE";
-            return <article className={styles.line} key={line.id}><div><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></div><span className={styles.caseStatusBadge}><CaseStatusBadge status={projection?.displayStatus ?? line.state} retrievalState={line.retrievalState ?? null} tr={tr} kind="line" /></span><span className={styles.lineState}>{lineStateLabel(projection?.displayStatus ?? line.state, tr)}{line.retrievalState && (line.retrievalState !== "NOT_REQUIRED" || selected.phase !== "STAGED") ? ` · ${retrievalStateLabel(line.retrievalState, tr)}` : ""}{replenishmentState !== "NONE" ? ` · ${tr(`replenishmentState${replenishmentState}` as MessageKey)}` : ""}</span>{(line.reporterName || line.reporterIdentifier) ? <span className={styles.lineState}>{tr("lineReportedBy", { name: line.reporterName || line.reporterIdentifier || "" })}{line.reporterIdentifier ? ` · ${tr("lineReporterId", { id: line.reporterIdentifier })}` : ""}</span> : null}{line.discoveredLocation && <small>{tr("newLocation")}: {line.discoveredLocation}</small>}{(canRecordReplenishment || canReportLocation) && selected.phase !== "CLOSED" && !selected.closedAt && !["RESOLVED", "CANCELLED"].includes(line.state) && replenishmentState !== "COMPLETED" ? <div className={styles.lineActions}>{canRecordReplenishment && replenishmentState !== "COMPLETED" ? <ReplenishmentForm tr={tr} caseId={selected.id} lineId={line.id} currentState={replenishmentState} compact onSaved={async () => { setNotice(tr("replenishmentSaved")); await fetchDashboard(); await loadCase(selected.id); }} /> : null}{canReportLocation ? <LocationReporter tr={tr} caseId={selected.id} lineId={line.id} onReported={async () => { setNotice(tr("reportLocationSaved")); await fetchDashboard(); await loadCase(selected.id); }} /> : null}</div> : null}</article>;
-          });
+          const projections = new Map((selected.lineProjections ?? []).map((entry) => [entry.lineId, { lineId: entry.lineId, displayStatus: entry.displayStatus, replenishment: entry.replenishment ?? null }]));
+          return selected.lines.map((line) => (
+            <article className={styles.line} key={line.id}><SharedCaseLineCard tr={tr} caseId={selected.id} casePhase={selected.phase} line={line} projections={projections}
+              actions={{ canRecordReplenishment, canRetrieve: false, canReportLocation, busyId: busy ? selected.id : "",
+                onSaved: async () => { setNotice(tr("replenishmentSaved")); await fetchDashboard(); await loadCase(selected.id); },
+                onRetrieve: () => {},
+                reportForm: () => (<LocationReporter tr={tr} caseId={selected.id} lineId={line.id} onReported={async () => { setNotice(tr("reportLocationSaved")); await fetchDashboard(); await loadCase(selected.id); }} />) }} /></article>
+          ));
         })()}</div> : <p>{tr("noItemsYet")}</p>}</section>
         {(selected.events?.length || selected.messages?.length) ? <section className={styles.detailSection}><h3>{tr("caseTimeline")}</h3><CaseTimeline events={(selected.events || []) as CaseTimelineEvent[]} messages={selected.messages || []} tr={tr} formatDate={(value) => formatDate(value, locale)} className={styles.timeline} /></section> : null}
         {canMessage && selected.phase !== "CLOSED" && !selected.closedAt && <form className={styles.messageForm} onSubmit={postMessage}><label><span>{tr("caseMessageLabel")}</span><textarea required maxLength={2000} rows={3} value={messageText} onChange={(event) => setMessageText(event.target.value)} placeholder={tr("caseMessagePlaceholder")} /></label><button type="submit" className={styles.primary} disabled={busy || !messageText.trim()}>{tr("sendCaseMessage")}</button></form>}
