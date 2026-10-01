@@ -217,3 +217,9 @@ Wave 0 (2026-09-28) delivered docs-only contracts: PRD amendments plus the bindi
 - Notices render as a fixed bottom-center toast (z-index 120, above scan dialog/drawers/backdrops) instead of inline below the fold; errors stay inline next to the failing action.
 - Gates: 219/219 tests (34 files), typecheck, lint, production build, `db:check` pass. No schema change, no migration needed.
 - Deployed: PROD web `841f9d6c` SUCCESS (`/api/health` 200 `{status:ok,database:ok}`, login page 200, pre-deploy `npm run db:migrate` applied cleanly); TEST `web-test` `0d47422c` SUCCESS (`/api/health` 200, `/api/environment` test).
+
+## Timeline assignment names (2026-10-01, `main` @ `d403277`)
+
+- Assignment timeline rows state the assignee: case detail resolves `assigneeName` from event details (`assignedToUserId`/`responsibleUserId`/`userId`/`checkerUserId`) with a `CHECK_CLAIMED` actor fallback; unknown/deleted accounts render the bare label. Rows render as "<label> — to <name>", localized in en/nl/pl/es; completion rows unchanged.
+- Gates: 223/223 tests (34 files), typecheck, lint, production build, `db:check` pass. No schema change, no migration needed.
+- Deployed: PROD web `2fc827a0` SUCCESS (`/api/health` 200 `{status:ok,database:ok}`, login page 200, pre-deploy `npm run db:migrate` applied cleanly); TEST `web-test` `459cffbd` SUCCESS (`/api/health` 200, `/api/environment` test).
