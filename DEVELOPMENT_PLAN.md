@@ -228,3 +228,8 @@ Wave 0 (2026-09-28) delivered docs-only contracts: PRD amendments plus the bindi
   - Assignment visibility (assignee/assigner/elapsed), responsible badges, per-line status, FOUND_AT_ORIGINAL result option, optional result note, same-location stats stay reporter-attributed; no schema migration (event-details JSON + existing columns).
   - Gates: 226/226 tests (35 files), typecheck, lint, production build, `db:check` pass. CI `36906637294` SUCCESS. No schema change, no migration needed.
   - Deployed: PROD web `9cdf889c` SUCCESS (`/api/health` 200 `{status:ok,database:ok}`, login page 200, pre-deploy `npm run db:migrate` applied cleanly); TEST `web-test` `b983d1cc` SUCCESS (`/api/health` 200, `/api/environment` test).
+## Check cards + order details polish (2026-10-01, `main` @ `b2259c1`)
+
+  - Fit-width responsible badges under SKU/location on cards and detail lines; Assigned-to line removed; Reported-by + User-ID lines in operations drawer, checks detail, and per-line drawer rows; duplicate plain-text line status removed (color-coded badge only); timeline rows render Name colon text; navInstruction templates use ownerSeparator so spacing holds in EN/NL/PL/ES.
+  - Gates: 228/228 tests (35 files), typecheck, lint, production build, `db:check` pass. CI `36922115224` SUCCESS. No schema change, no migration needed.
+  - Deployed: PROD web `4f62bf08` SUCCESS (`/api/health` 200 `{status:ok,database:ok}`, login page 200, pre-deploy `npm run db:migrate` applied cleanly); TEST `web-test` `d3a4fb20` SUCCESS (`/api/health` 200, `/api/environment` test).
