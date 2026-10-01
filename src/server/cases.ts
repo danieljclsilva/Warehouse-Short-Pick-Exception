@@ -162,7 +162,8 @@ async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: st
       ?? (event.eventType === "CHECK_COMPLETED" && completionCode === "FOUND" ? (lineLocations?.discoveredLocation ?? null) : null);
     const originalLocation = pickString(raw.originalLocation)
       ?? (event.eventType === "CHECK_COMPLETED" && completionCode === "FOUND_AT_ORIGINAL" ? (lineLocations?.originalLocation ?? null) : null);
-    return { ...event, completionCode, taskId: pickString(raw.taskId), discoveredLocation, originalLocation };
+    const resultMessage = event.eventType === "CHECK_COMPLETED" ? pickString(raw.message) : null;
+    return { ...event, completionCode, taskId: pickString(raw.taskId), discoveredLocation, originalLocation, resultMessage };
   });
   const messages = includeMessages ? await db.select({ id: caseMessages.id, shortPickLineId: caseMessages.shortPickLineId, authorUserId: caseMessages.authorUserId, authorName: users.displayName, message: caseMessages.message, createdAt: caseMessages.createdAt })
     .from(caseMessages).innerJoin(users, eq(caseMessages.authorUserId, users.id)).where(eq(caseMessages.caseId, caseId)).orderBy(caseMessages.createdAt, caseMessages.id) : [];
@@ -196,8 +197,10 @@ async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: st
   return { ...record, pickerName: record.pickingUserId ? names.get(record.pickingUserId) ?? null : null,
     responsibleName: record.currentCaseResponsibleUserId ? names.get(record.currentCaseResponsibleUserId) ?? null : null,
     missingCount: unresolvedLines.reduce((total, line) => total + line.missingQuantity, 0), checkingCount, currentIssue,
-    lines: lines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity })), checks, events: shapedWithAssignee, messages,
-    projection, lineProjections };
+    lines: lines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity,
+      responsibleName: line.currentResponsibleUserId ? (names.get(line.currentResponsibleUserId) ?? null) : null })),
+    checks: checks.map((check) => { const workerId = check.assignedToUserId ?? check.claimedByUserId; return { ...check, assigneeName: workerId ? (names.get(workerId) ?? null) : null }; }),
+    events: shapedWithAssignee, messages, projection, lineProjections };
 }
 
 function canReadCase(auth: AuthContext, row: typeof orderCases.$inferSelect) {

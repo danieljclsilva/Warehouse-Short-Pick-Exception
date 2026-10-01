@@ -12,6 +12,7 @@ export const assignCheckSchema = z.object({ userId: z.string().uuid(), pickerRet
 export const completeCheckSchema = z.object({
   code: z.enum(["FOUND", "FOUND_AT_ORIGINAL", "NOT_FOUND", "WRONG_LOCATION", "OTHER"]),
   discoveredLocation: z.string().trim().min(1).max(128).transform((value) => value.toUpperCase()).optional(),
+  message: z.string().trim().max(500).default(""),
 }).superRefine((value, context) => {
   if (value.code === "FOUND" && !value.discoveredLocation) {
     context.addIssue({ code: "custom", path: ["discoveredLocation"], message: "A discovered location is required when stock is found" });
@@ -105,8 +106,31 @@ export async function listChecks(auth: AuthContext, scope: "available" | "mine" 
     .orderBy(desc(sql`date_trunc('milliseconds', ${checkTasks.createdAt})`), desc(checkTasks.id)).limit(parsed.limit + 1);
   const page = rows.slice(0, parsed.limit);
   const last = page.length === parsed.limit && rows.length > parsed.limit ? page[page.length - 1] : null;
-  const items = page.map((row) => ({ ...row.task, orderNumber: row.case.orderNumber, caseId: row.case.id, casePhase: row.case.phase,
-    location: row.line.originalLocation, sku: row.line.sku, quantity: row.line.missingQuantity, lineId: row.line.id }));
+  const workerIds = [...new Set(page.map((row) => row.task.assignedToUserId ?? row.task.claimedByUserId).filter((id): id is string => typeof id === "string" && id.length > 0))];
+  const workerPeople = workerIds.length ? await db.select({ id: users.id, displayName: users.displayName }).from(users).where(inArray(users.id, workerIds)) : [];
+  const workerNames = new Map(workerPeople.map((person) => [person.id, person.displayName]));
+  const pageLineIds = [...new Set(page.map((row) => row.line.id))];
+  const assignEvents = pageLineIds.length ? await db.select({ details: caseEvents.details, actorUserId: caseEvents.actorUserId, createdAt: caseEvents.createdAt, id: caseEvents.id })
+    .from(caseEvents).where(and(inArray(caseEvents.shortPickLineId, pageLineIds), inArray(caseEvents.eventType, ["CHECK_ASSIGNED", "CHECK_REASSIGNED"])))
+    .orderBy(desc(caseEvents.createdAt), desc(caseEvents.id)) : [];
+  const assignerByTaskId = new Map<string, string>();
+  for (const event of assignEvents) {
+    const raw = (event.details ?? {}) as Record<string, unknown>;
+    const eventTaskId = raw.taskId;
+    if (typeof eventTaskId !== "string" || assignerByTaskId.has(eventTaskId)) continue;
+    if (typeof event.actorUserId === "string" && event.actorUserId.length > 0) assignerByTaskId.set(eventTaskId, event.actorUserId);
+  }
+  const assignerIds = [...new Set(assignerByTaskId.values())];
+  const assignerPeople = assignerIds.length ? await db.select({ id: users.id, displayName: users.displayName }).from(users).where(inArray(users.id, assignerIds)) : [];
+  const assignerNames = new Map(assignerPeople.map((person) => [person.id, person.displayName]));
+  const items = page.map((row) => {
+    const workerId = row.task.assignedToUserId ?? row.task.claimedByUserId;
+    const assignerId = assignerByTaskId.get(row.task.id) ?? null;
+    return { ...row.task, orderNumber: row.case.orderNumber, caseId: row.case.id, casePhase: row.case.phase,
+      location: row.line.originalLocation, sku: row.line.sku, quantity: row.line.missingQuantity, lineId: row.line.id,
+      assigneeName: workerId ? (workerNames.get(workerId) ?? null) : null,
+      assignedByName: assignerId ? (assignerNames.get(assignerId) ?? null) : null };
+  });
   const nextCursor = last ? encodeCheckCursor({ createdAt: last.task.createdAt!.toISOString(), id: last.task.id }) : null;
   return { items, nextCursor, total };
 }
@@ -284,7 +308,7 @@ export async function completeCheck(auth: AuthContext, taskId: string, input: z.
       retrievalResponsibleUserId: retrievalUserId, updatedAt: now, version: sql`${shortPickLines.version} + 1`,
     }).where(eq(shortPickLines.id, line.id));
     await tx.update(orderCases).set({ updatedAt: now, version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
-    await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType: "CHECK_COMPLETED", details: { taskId, code: input.code, pickerRetrieval } });
+    await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType: "CHECK_COMPLETED", details: { taskId, code: input.code, pickerRetrieval, ...(input.message ? { message: input.message } : {}) } });
     if (foundAtOriginal) {
       await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType: "FOUND_AT_ORIGINAL_VERIFIED", details: { taskId, originalLocation: line.originalLocation } });
       await tx.insert(caseEvents).values({ caseId, shortPickLineId: line.id, actorUserId: auth.user.id, eventType: "RETRIEVAL_ASSIGNED", details: { responsibleUserId: retrievalUserId, casePhase: record.phase } });
@@ -298,7 +322,7 @@ export async function completeCheck(auth: AuthContext, taskId: string, input: z.
       await insertMonitoringNotifications(tx, { type: "NEW_LOCATION", caseId, shortPickLineId: line.id,
         payload: { taskId, orderNumber: record.orderNumber, discoveredLocation: input.discoveredLocation }, excludeUserId: auth.user.id });
     }
-    await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CHECK_COMPLETED", details: { caseId, lineId: line.id, taskId, code: input.code, discoveredLocation: input.discoveredLocation } });
+    await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CHECK_COMPLETED", details: { caseId, lineId: line.id, taskId, code: input.code, discoveredLocation: input.discoveredLocation, message: input.message || null } });
     return { taskId, caseId, lineId: line.id, code: input.code, retrievalResponsibleUserId: retrievalUserId };
   });
 }

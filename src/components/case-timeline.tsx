@@ -11,6 +11,7 @@ export type CaseTimelineEvent = {
   completionCode?: string | null;
   discoveredLocation?: string | null;
   originalLocation?: string | null;
+  resultMessage?: string | null;
 };
 
 export type CaseTimelineMessage = {
@@ -43,22 +44,25 @@ function completionLabel(code: string | null | undefined, tr: Translator): strin
  * sentence — never invented values.
  */
 export function checkCompletedDetail(event: CaseTimelineEvent, tr: Translator): string {
+  const note = event.resultMessage && event.resultMessage.trim()
+    ? ` — ${tr("timelineResultNote", { message: event.resultMessage.trim() })}`
+    : "";
   const label = completionLabel(event.completionCode, tr);
-  if (!label) return tr("timelineSparseCompletion");
+  if (!label) return `${tr("timelineSparseCompletion")}${note}`;
   const code = (event.completionCode || "").toUpperCase();
   if (code === "FOUND_AT_ORIGINAL") {
     const at = event.originalLocation
       ? ` ${tr("timelineCompletedAtOriginal", { location: event.originalLocation })}`
       : "";
-    return `${label}${at}`;
+    return `${label}${at}${note}`;
   }
   if (code === "FOUND") {
     const at = event.discoveredLocation
       ? ` ${tr("timelineCompletedAtNew", { location: event.discoveredLocation })}`
       : "";
-    return `${label}${at}`;
+    return `${label}${at}${note}`;
   }
-  return label;
+  return `${label}${note}`;
 }
 const ASSIGNMENT_TYPES = new Set(["CHECK_ASSIGNED", "CHECK_REASSIGNED", "CHECK_CLAIMED", "RETRIEVAL_ASSIGNED", "RESPONSIBILITY_CHANGED", "CASE_REOPENED", "CASE_REPAIRED", "CHECK_REQUESTED", "CASE_CREATED"]);
 

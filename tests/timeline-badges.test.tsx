@@ -208,3 +208,19 @@ describe("badge and timeline CSS (390px)", () => {
     expect(timeline).toMatch(/overflow-wrap:\s*anywhere/);
   });
 });
+
+describe("timeline result note", () => {
+  it("appends the localized result note when present and omits it when absent", () => {
+    for (const locale of supportedLocales) {
+      const tr = trFor(locale);
+      const withNote = checkCompletedDetail(
+        event({ completionCode: "FOUND", discoveredLocation: "02.BB.2", resultMessage: "behind pallet 04" }),
+        tr,
+      );
+      expect(withNote).toContain(tr("timelineResultNote", { message: "behind pallet 04" }));
+      const without = checkCompletedDetail(event({ completionCode: "FOUND", discoveredLocation: "02.BB.2" }), tr);
+      expect(without).not.toContain(tr("timelineResultNote", { message: "behind pallet 04" }));
+      expect(without).not.toContain("behind pallet 04");
+    }
+  });
+});

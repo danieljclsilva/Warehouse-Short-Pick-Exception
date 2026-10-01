@@ -223,3 +223,6 @@ Wave 0 (2026-09-28) delivered docs-only contracts: PRD amendments plus the bindi
 - Assignment timeline rows state the assignee: case detail resolves `assigneeName` from event details (`assignedToUserId`/`responsibleUserId`/`userId`/`checkerUserId`) with a `CHECK_CLAIMED` actor fallback; unknown/deleted accounts render the bare label. Rows render as "<label> — to <name>", localized in en/nl/pl/es; completion rows unchanged.
 - Gates: 223/223 tests (34 files), typecheck, lint, production build, `db:check` pass. No schema change, no migration needed.
 - Deployed: PROD web `2fc827a0` SUCCESS (`/api/health` 200 `{status:ok,database:ok}`, login page 200, pre-deploy `npm run db:migrate` applied cleanly); TEST `web-test` `459cffbd` SUCCESS (`/api/health` 200, `/api/environment` test).
+## Checks visibility + result note (2026-10-01, uncommitted)
+
+  - Assignment visibility (assignee/assigner/elapsed), responsible badges, per-line status, FOUND_AT_ORIGINAL result option, optional result note, same-location stats stay reporter-attributed; no schema migration (event-details JSON + existing columns).

@@ -21,6 +21,12 @@ type Check = {
   status: string;
   assignedToUserId: string | null;
   claimedByUserId: string | null;
+  assigneeName: string | null;
+  assignedByName: string | null;
+  assignedAt: string | null;
+  claimedAt: string | null;
+  startedAt: string | null;
+  createdAt: string | null;
 };
 type Retrieval = {
   caseId: string;
@@ -35,9 +41,9 @@ type Retrieval = {
 type Worker = { id: string; displayName: string; status: string; permissions: string[] };
 type CaseDetail = {
   id: string; orderNumber: string; phase: string; physicalState: string; physicalLocation: string | null;
-  lines: Array<{ id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation: string | null; retrievalState?: string | null; retrievalResponsibleUserId?: string | null; replenishmentState?: string | null }>;
-  checks: Array<{ id: string; shortPickLineId: string; status: string; completionCode: string | null; completedAt: string | null }>;
-  events: Array<{ id: string; eventType: string; actorName: string | null; createdAt: string; completionCode?: string | null; discoveredLocation?: string | null; originalLocation?: string | null; taskId?: string | null }>;
+  lines: Array<{ id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation: string | null; retrievalState?: string | null; retrievalResponsibleUserId?: string | null; replenishmentState?: string | null; responsibleName: string | null }>;
+  checks: Array<{ id: string; shortPickLineId: string; status: string; completionCode: string | null; completedAt: string | null; assigneeName: string | null }>;
+  events: Array<{ id: string; eventType: string; actorName: string | null; createdAt: string; completionCode?: string | null; discoveredLocation?: string | null; originalLocation?: string | null; taskId?: string | null; resultMessage?: string | null }>;
   messages: Array<{ id: string; authorName: string; message: string; createdAt: string }>;
 };
 type Props = {
@@ -78,6 +84,14 @@ function withReplenishmentProjection(caseDetail: CaseDetail): CaseDetail {
     return { ...line, replenishmentState: projected };
   }) };
 }
+function formatCheckAge(iso: string): string {
+  const elapsedMs = Date.now() - Date.parse(iso);
+  const totalMinutes = Math.max(0, Math.floor(elapsedMs / 60000));
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const totalHours = Math.floor(totalMinutes / 60);
+  if (totalHours < 48) return `${totalHours}h ${totalMinutes % 60}m`;
+  return `${Math.floor(totalHours / 24)}d ${totalHours % 24}h`;
+}
 
 export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canComplete, canAssign, canReassign, canRetrieve, canMessage, canRecordReplenishment = false, canReportLocation = false, canViewAllOpenCases = false, focusedCaseId, focusedNonce, onFocusConsumed, onFocusedClose }: Props) {
   const [available, setAvailable] = useState<Check[]>([]);
@@ -87,8 +101,9 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [selectedWorkers, setSelectedWorkers] = useState<Record<string, string>>({});
   const [completionTaskId, setCompletionTaskId] = useState("");
-  const [completionCode, setCompletionCode] = useState<"FOUND" | "NOT_FOUND" | "WRONG_LOCATION" | "OTHER">("FOUND");
+  const [completionCode, setCompletionCode] = useState<"FOUND" | "FOUND_AT_ORIGINAL" | "NOT_FOUND" | "WRONG_LOCATION" | "OTHER">("FOUND");
   const [discoveredLocation, setDiscoveredLocation] = useState("");
+  const [resultMessage, setResultMessage] = useState("");
   const [busyId, setBusyId] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -184,6 +199,7 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       setNotice(tr("checkActionSaved"));
       setCompletionTaskId("");
       setDiscoveredLocation("");
+      setResultMessage("");
       await load();
       if (detail) await openDetails(detail.id);
       return true;
@@ -202,25 +218,30 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       {workers.map((worker) => <option key={worker.id} value={worker.id}>{worker.displayName}</option>)}
     </select>
   );
-
   const checkCard = (check: Check, mode: "available" | "mine" | "active") => {
     const canOpenCase = mode !== "available" || canViewAllOpenCases;
+    const elapsedBase = check.assignedAt ?? check.claimedAt ?? check.startedAt ?? check.createdAt;
     return <article className="check-card" key={check.id}>
       <div className="check-card-head"><strong>{tr("orderLabel")} {check.orderNumber}</strong><span>{check.casePhase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span></div>
       <p className="check-card-item"><strong>{check.location}</strong><span>{check.sku} ×{check.quantity}</span></p>
+      {check.assigneeName ? <p className="check-card-meta">{tr("checkAssignedTo", { name: check.assigneeName })}</p> : null}
+      {check.assignedByName ? <p className="check-card-meta">{tr("checkAssignedBy", { name: check.assignedByName })}</p> : null}
+      {elapsedBase && check.status !== "AVAILABLE" ? <p className="check-card-meta">{tr(check.status === "CLAIMED" ? "checkClaimedAgo" : "checkAssignedAgo", { age: formatCheckAge(elapsedBase) })}</p> : null}
+      {(mode === "active" || mode === "mine") && check.assigneeName ? <p className="responsible-badge">{tr("checkResponsibleBadge", { name: check.assigneeName })}</p> : null}
       {canOpenCase && <button className="check-detail-button" type="button" onClick={() => void openDetails(check.caseId)}>{tr("openCase")}</button>}
       {mode === "available" && canClaim && <button type="button" className="primary-button" disabled={Boolean(busyId)} onClick={() => void mutate(check.id, `/api/checks/${check.id}/claim`, "POST")}>{tr("claimCheck")}</button>}
       {mode === "available" && canAssign && <div className="check-assign-row">{workerSelect(check.id)}<button type="button" className="secondary-button" disabled={Boolean(busyId) || !selectedWorkers[check.id]} onClick={() => void mutate(check.id, `/api/checks/${check.id}/assign`, "PATCH", { userId: selectedWorkers[check.id] })}>{tr("assignCheck")}</button></div>}
       {mode === "active" && canReassign && <div className="check-assign-row">{workerSelect(check.id)}<button type="button" className="secondary-button" disabled={Boolean(busyId) || !selectedWorkers[check.id]} onClick={() => void mutate(check.id, `/api/checks/${check.id}/assign`, "PATCH", { userId: selectedWorkers[check.id] })}>{tr("reassignCheck")}</button></div>}
       {mode === "mine" && canComplete && (completionTaskId === check.id ? (
-        <form className="check-complete-form" onSubmit={(event) => { event.preventDefault(); void mutate(check.id, `/api/checks/${check.id}/complete`, "POST", { code: completionCode, ...(completionCode === "FOUND" ? { discoveredLocation } : {}) }); }}>
+        <form className="check-complete-form" onSubmit={(event) => { event.preventDefault(); void mutate(check.id, `/api/checks/${check.id}/complete`, "POST", { code: completionCode, ...(completionCode === "FOUND" ? { discoveredLocation } : {}), ...(resultMessage.trim() ? { message: resultMessage.trim() } : {}) }); }}>
           <label className="form-field"><span>{tr("completionResult")}</span><select value={completionCode} onChange={(event) => setCompletionCode(event.target.value as typeof completionCode)}>
-            <option value="FOUND">{tr("foundResult")}</option><option value="NOT_FOUND">{tr("notFoundResult")}</option><option value="WRONG_LOCATION">{tr("wrongLocationResult")}</option><option value="OTHER">{tr("otherResult")}</option>
+            <option value="FOUND">{tr("foundResult")}</option><option value="FOUND_AT_ORIGINAL">{tr("foundAtOriginalOption")}</option><option value="NOT_FOUND">{tr("notFoundResult")}</option><option value="WRONG_LOCATION">{tr("wrongLocationResult")}</option><option value="OTHER">{tr("otherResult")}</option>
           </select></label>
           {completionCode === "FOUND" && <label className="form-field"><span>{tr("newLocation")}</span><ScanInput required autoCapitalize="characters" value={discoveredLocation} onChange={setDiscoveredLocation} tr={tr} scanKind="location" fieldLabel={tr("newLocation")} /></label>}
+          <label className="form-field"><span>{tr("checkResultMessageLabel")}</span><input type="text" value={resultMessage} onChange={(event) => setResultMessage(event.target.value)} maxLength={500} placeholder={tr("checkResultMessagePlaceholder")} /></label>
           <div className="check-card-actions"><button type="button" className="secondary-button" onClick={() => setCompletionTaskId("")}>{tr("cancel")}</button><button type="submit" className="primary-button" disabled={Boolean(busyId)}>{tr("completeCheck")}</button></div>
         </form>
-      ) : <button type="button" className="primary-button" onClick={() => { setCompletionTaskId(check.id); setCompletionCode("FOUND"); setDiscoveredLocation(""); }}>{tr("completeCheck")}</button>)}
+      ) : <button type="button" className="primary-button" onClick={() => { setCompletionTaskId(check.id); setCompletionCode("FOUND"); setDiscoveredLocation(""); setResultMessage(""); }}>{tr("completeCheck")}</button>)}
     </article>;
   };
 
@@ -240,6 +261,8 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
         return <div key={line.id}>
           <strong>{line.location} · {line.sku} ×{line.quantity}</strong>
           <span>{line.discoveredLocation || (line.state === "CHECKING" ? tr("caseChecking") : line.state === "FOUND" ? tr("caseFound") : line.state === "RESOLVED" ? tr("caseRetrieved") : tr("caseOpen"))}</span>
+          {line.responsibleName ? <p className="responsible-badge">{tr("checkResponsibleBadge", { name: line.responsibleName })}</p> : null}
+          <CaseStatusBadge kind="line" status={line.state} retrievalState={line.retrievalState} tr={tr} />
           <small>{detail.checks.filter((check) => check.shortPickLineId === line.id).map((check) => check.completionCode ? `${tr(({ FOUND: "timelineResolutionFOUND", FOUND_AT_ORIGINAL: "timelineResolutionFOUND_AT_ORIGINAL", NOT_FOUND: "timelineResolutionNOT_FOUND", WRONG_LOCATION: "timelineResolutionWRONG_LOCATION", OTHER: "timelineResolutionOTHER" } as const)[check.completionCode as "FOUND" | "FOUND_AT_ORIGINAL" | "NOT_FOUND" | "WRONG_LOCATION" | "OTHER"] ?? "timelineResolutionUnknown")} · ${new Date(check.completedAt || "").toLocaleString(locale)}` : check.status === "AVAILABLE" ? tr("availableChecks") : tr("caseChecking")).join(" / ")}</small>
           {replenishment !== "NONE" ? <p className="replenishment-badge" data-state={replenishment}>{tr(`replenishmentState${replenishment}` as MessageKey)}</p> : null}
           {(line.retrievalState ?? "").toUpperCase() === "NOT_REQUIRED" && detail.phase !== "STAGED" ? <p className="retrieval-badge" data-state="NOT_REQUIRED">{tr("retrievalNotRequired")}</p> : null}
