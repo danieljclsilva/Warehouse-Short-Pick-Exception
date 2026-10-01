@@ -112,16 +112,6 @@ function formatDate(value: string, locale: string) {
 }
 
 
-function physicalStateLabel(state: string | undefined, tr: Translator) {
-  const keys: Record<string, MessageKey> = {
-    WITH_PICKER: "physicalWithPicker",
-    SHORT_PICK_HOLD: "physicalShortPickHold",
-    OTHER_KNOWN_LOCATION: "physicalOtherLocation",
-    UNKNOWN: "physicalUnknown",
-  };
-  return tr(keys[state?.toUpperCase() ?? "UNKNOWN"] ?? "physicalUnknown");
-}
-
 function attentionLabel(level: CaseSummary["attentionLevel"], tr: Translator) {
   const keys: Record<NonNullable<CaseSummary["attentionLevel"]>, MessageKey> = {
     NORMAL: "attentionNormal",
@@ -471,9 +461,8 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
     {selected && <div className={`${styles.backdrop}${focusOverlay ? ` ${styles.notificationOverlay}` : ""}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setSelected(null); setFocusOverlayNonce(0); onFocusedClose?.(); } }}>
       <section className={styles.drawer} role="dialog" aria-modal="true" aria-labelledby="case-drawer-title">
         <header className={styles.drawerHead}><div><p className={styles.eyebrow}>{tr("caseDetails")}</p><h2 id="case-drawer-title">{tr("orderLabel")} {selected.orderNumber}</h2></div><button className={styles.iconButton} type="button" aria-label={tr("closePanel")} onClick={() => { setSelected(null); setFocusOverlayNonce(0); onFocusedClose?.(); }}>×</button></header>
-        <p className={styles.caseStatusBadge}><CaseStatusBadge status={selected.phase === "CLOSED" ? "CLOSED" : (selected.lineProjections?.[0]?.displayStatus ?? selected.lines?.[0]?.state ?? selected.phase)} tr={tr} /></p>
+        <p className={styles.caseStatusBadge}><CaseStatusBadge status={selected.phase === "CLOSED" ? "CLOSED" : (selected.lineProjections?.[0]?.displayStatus ?? selected.lines?.[0]?.state ?? selected.phase)} tr={tr} />{selected.phase === "CLOSED" ? null : <span className={`${styles.phase} ${selected.phase === "STAGED" ? styles.phaseStaged : ""}`}>{selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span>}</p>
         <p className={styles.drawerSummary}>{selected.phase === "CLOSED" ? `${tr("caseClosed")} · ${tr("caseClosedOn", { date: formatDate(selected.resolvedAt || selected.createdAt, locale) })}` : `${selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · ${formatAge(selected.createdAt)}`} · {selected.pickerName || tr("unknownPicker")}</p>
-        <p className={styles.drawerPhysical}>{tr("physicalState", { state: physicalStateLabel(selected.physicalState, tr) })}{selected.physicalLocation ? ` · ${selected.physicalLocation}` : ""}</p>
         <div className={styles.detailGrid}><div><span>{tr("caseResponsible")}</span><strong>{selected.responsibleName || "—"}</strong>{selected.responsibleIdentifier ? <small className={styles.drawerPhysical}>{tr("lineReporterId", { id: selected.responsibleIdentifier })}</small> : null}</div><div><span>{tr("caseSource")}</span><strong>{tr(`source_${selected.source}` as MessageKey)}</strong></div><div><span>{tr("missingItemsLabel")}</span><strong>{selected.missingCount}</strong></div></div>
         <section className={styles.detailSection}><h3>{tr("reportedItems")}</h3>{selected.lines?.length ? <div className={styles.lineList}>{(() => {
           const projections = new Map((selected.lineProjections ?? []).map((entry) => [entry.lineId, { lineId: entry.lineId, displayStatus: entry.displayStatus, replenishment: entry.replenishment ?? null }]));

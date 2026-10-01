@@ -266,3 +266,18 @@ describe("shared line card parity", () => {
     expect(drawer).toContain("LocationReporter");
   });
 });
+describe("case-detail header sync", () => {
+  it("shows the phase badge next to the status badge, drops the redundant order-status line, and keeps badges content-width", () => {
+    const drawer = readFileSync(fileURLToPath(new URL("../src/components/operations-dashboard.tsx", import.meta.url)), "utf8");
+    const checks = readFileSync(fileURLToPath(new URL("../src/components/check-workflow.tsx", import.meta.url)), "utf8");
+    const lineCss = readFileSync(fileURLToPath(new URL("../src/components/operations-dashboard.module.css", import.meta.url)), "utf8");
+    expect(drawer).toContain("caseStatusBadge");
+    expect(drawer).toContain("styles.phase");
+    expect(checks).toContain("case-badges");
+    expect(checks).toContain("case-phase");
+    expect(drawer).not.toContain("physicalStateLabel");
+    expect(checks).not.toContain("physicalShortPickHold");
+    const lineRule = lineCss.match(/\.line\s*\{([^}]*)\}/);
+    expect(lineRule?.[1] ?? "").toMatch(/justify-items:\s*start/);
+  });
+});

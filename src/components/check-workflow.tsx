@@ -249,8 +249,8 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
     {notice && <p className="check-notice" role="status">{notice}</p>}
     <button className="case-back-button" type="button" onClick={closeDetail}>‹ {tr("backToChecks")}</button>
     <section ref={detailRef} id="check-case-detail" tabIndex={-1} className="check-detail-panel" aria-label={tr("caseDetails")}>
-      <div className="check-detail-heading"><div><span>{tr("orderLabel")}</span><h2>{detail.orderNumber}</h2><span className="case-badges"><CaseStatusBadge status={detail.lines[0]?.state ?? detail.phase} tr={tr} /></span></div></div>
-      <p className="check-detail-state">{detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · {detail.physicalState === "SHORT_PICK_HOLD" ? tr("physicalShortPickHold") : detail.physicalState === "WITH_PICKER" ? tr("physicalWithPicker") : detail.physicalState === "OTHER_KNOWN_LOCATION" ? tr("physicalOtherLocation") : tr("physicalUnknown")}{detail.physicalLocation ? ` · ${detail.physicalLocation}` : ""}</p>
+      <div className="check-detail-heading"><div><span>{tr("orderLabel")}</span><h2>{detail.orderNumber}</h2><span className="case-badges"><CaseStatusBadge status={detail.lines[0]?.state ?? detail.phase} tr={tr} />{detail.phase === "CLOSED" ? null : <span className="case-phase">{detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span>}</span></div></div>
+      <p className="check-detail-state">{detail.phase === "CLOSED" ? tr("caseClosed") : detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}{detail.physicalLocation ? ` · ${detail.physicalLocation}` : ""}</p>
       <h3>{tr("reportedItems")}</h3>
       <div className="check-detail-lines">{detail.lines.map((line) => {
         const reportable = canReportLocation && detail.phase !== "CLOSED" && !["RESOLVED", "CANCELLED"].includes(line.state);
