@@ -348,7 +348,7 @@ button { color: inherit; }
 .case-line-status.state-found, .case-line-status.state-retrieved { color: var(--green); }
 
 /* Shared case status badges (Odoo-style Waiting → Ready → Done). */
-.case-status-badge { display: inline-flex; max-width: 100%; min-height: 24px; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 750; letter-spacing: .02em; white-space: normal; overflow-wrap: anywhere; }
+.case-status-badge { display: inline-flex; width: fit-content; max-width: 100%; min-height: 24px; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 750; letter-spacing: .02em; white-space: normal; overflow-wrap: anywhere; }
 .case-status-waiting { color: var(--warn-ink); background: var(--warn-wash); }
 .case-status-ready { color: var(--green); background: var(--green-wash); }
 .case-status-done { color: var(--on-green); background: var(--green); }
@@ -398,7 +398,8 @@ button { color: inherit; }
 .replenishment-form select, .replenishment-form textarea { width: 100%; min-height: 48px; padding: 10px 11px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--input); color: var(--ink); font-size: 14px; }
 .replenishment-form textarea { min-height: 64px; resize: vertical; }
 .replenishment-form small { color: var(--muted); font-size: 12px; }
-.replenishment-badge { display: inline-block; margin-top: 6px; padding: 3px 9px; border-radius: 999px; background: var(--warn-wash); color: var(--warn-ink); font-size: 11px; font-weight: 750; }
+.replenishment-badge { display: inline-block; width: fit-content; max-width: 100%; margin-top: 6px; padding: 3px 9px; border-radius: 999px; background: var(--warn-wash); color: var(--warn-ink); font-size: 11px; font-weight: 750; overflow-wrap: anywhere; }
+.retrieval-badge { display: inline-block; width: fit-content; max-width: 100%; margin-top: 6px; padding: 3px 9px; border-radius: 999px; background: var(--hover); color: var(--ink-soft); font-size: 11px; font-weight: 750; overflow-wrap: anywhere; }
 .check-card-meta { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
 .responsible-badge { display: inline-block; width: fit-content; max-width: 100%; margin-top: 6px; padding: 3px 9px; border-radius: 999px; background: var(--green-wash); color: var(--green); font-size: 11px; font-weight: 750; overflow-wrap: anywhere; }
 .check-empty { margin: 0; padding: 19px; border: 1px dashed var(--line-strong); border-radius: 8px; color: var(--muted); background: var(--surface); }
@@ -419,7 +420,7 @@ button { color: inherit; }
 .check-detail-panel h3 { margin: 10px 0 0; font-size: 15px; }
 .check-detail-state { margin: 0; color: var(--ink-soft); }
 .check-detail-lines { display: grid; gap: 8px; }
-.check-detail-lines > div { display: grid; gap: 3px; padding: 11px; border: 1px solid var(--line); border-radius: 7px; justify-items: start; }
+.check-detail-lines > div { display: grid; gap: 3px; padding: 11px; border: 1px solid var(--line); border-radius: 7px; }
 .check-detail-lines > div > * { min-width: 0; max-width: 100%; }
 .check-detail-timeline { display: grid; gap: 0; margin: 0; padding-left: 20px; }
 .check-detail-timeline li { display: grid; gap: 3px; padding: 9px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }

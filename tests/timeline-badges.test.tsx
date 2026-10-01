@@ -238,7 +238,7 @@ describe("timeline messaging format and fit-width badges", () => {
     expect(html).toContain('data-testid="timeline-actor">TEST Demo Picker One</strong>');
     expect(html).toContain("Short pick reported");
   });
-  it("keeps responsible badges fit-width with wrapping", () => {
+  it("keeps badges fit-width with wrapping and lets actions stretch", () => {
     const css = readFileSync(fileURLToPath(new URL("../src/app/globals.css", import.meta.url)), "utf8");
     const ruleBody = (selector: string): string => {
       const match = css.match(new RegExp(`${selector}\\s*\\{([^}]*)\\}`, "s"));
@@ -247,7 +247,10 @@ describe("timeline messaging format and fit-width badges", () => {
     };
     expect(ruleBody("\\.responsible-badge")).toMatch(/width:\s*fit-content/);
     expect(ruleBody("\\.responsible-badge")).toMatch(/max-width:\s*100%/);
-    expect(ruleBody("\\.check-detail-lines > div")).toMatch(/justify-items:\s*start/);
+    expect(ruleBody("\\.case-status-badge")).toMatch(/width:\s*fit-content/);
+    expect(ruleBody("\\.replenishment-badge")).toMatch(/width:\s*fit-content/);
+    expect(ruleBody("\\.retrieval-badge")).toMatch(/width:\s*fit-content/);
+    expect(ruleBody("\\.check-detail-lines > div")).not.toMatch(/justify-items:\s*start/);
   });
 });
 describe("shared line card parity", () => {
@@ -278,6 +281,6 @@ describe("case-detail header sync", () => {
     expect(drawer).not.toContain("physicalStateLabel");
     expect(checks).not.toContain("physicalShortPickHold");
     const lineRule = lineCss.match(/\.line\s*\{([^}]*)\}/);
-    expect(lineRule?.[1] ?? "").toMatch(/justify-items:\s*start/);
+    expect(lineRule?.[1] ?? "").not.toMatch(/justify-items:\s*start/);
   });
 });
