@@ -249,3 +249,8 @@ Wave 0 (2026-09-28) delivered docs-only contracts: PRD amendments plus the bindi
   - Content-width now scoped to the badges themselves: `width: fit-content` (keeping `max-width: 100%` + `overflow-wrap: anywhere`) on `.case-status-badge`, `.replenishment-badge`, and new `.retrieval-badge` (mirrors replenishment in neutral tones); `.responsible-badge` already fit-width, untouched. No markup, permission, state, schema, or i18n change.
   - Gates: 230/230 tests (35 files), typecheck, lint, production build, `db:check` pass. CI `36934249906` SUCCESS. No schema change, no migration needed.
   - Deployed: PROD web `df4d9444` SUCCESS (`/api/health` 200 `{status:ok,database:ok}`, `/` 200 login surface); TEST `web-test` `bc85afa2` SUCCESS (`/api/health` 200, `/api/environment` test, `/` 200 login surface).
+## Admin Manager invite creation fix (2026-10-02, `main` @ `efdaa7b`)
+
+  - `POST /api/admin/invites` no longer hard-rejects `defaultRole: MANAGER`: only `ADMIN` invites are unconditionally blocked; Manager invites pass through `canManageRole` (Admin-only per PRD §7.5). `POST /api/auth/register` accepts Manager invite tokens again (`ADMIN` still rejected). Non-Admin Manager creation stays blocked; revoke scoping and `permissionsAllowedForRole` bounds unchanged.
+  - Gates: 230/230 tests, typecheck, lint, production build, `db:check` pass. CI `36936537256` SUCCESS. No schema change, no migration needed.
+  - Deployed: PROD web `63ebdc0f` SUCCESS (`/api/health` 200 `{status:ok,database:ok}`, `/` 200 login surface, pre-deploy `npm run db:migrate` applied cleanly).
