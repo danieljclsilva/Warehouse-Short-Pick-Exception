@@ -41,7 +41,7 @@ type Retrieval = {
 type Worker = { id: string; displayName: string; status: string; permissions: string[] };
 type CaseDetail = {
   id: string; orderNumber: string; phase: string; physicalState: string; physicalLocation: string | null;
-  lines: Array<{ id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation: string | null; retrievalState?: string | null; retrievalResponsibleUserId?: string | null; replenishmentState?: string | null; responsibleName: string | null }>;
+  lines: Array<{ id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation: string | null; retrievalState?: string | null; retrievalResponsibleUserId?: string | null; replenishmentState?: string | null; responsibleName: string | null; reporterName?: string | null; reporterIdentifier?: string | null }>;
   checks: Array<{ id: string; shortPickLineId: string; status: string; completionCode: string | null; completedAt: string | null; assigneeName: string | null }>;
   events: Array<{ id: string; eventType: string; actorName: string | null; createdAt: string; completionCode?: string | null; discoveredLocation?: string | null; originalLocation?: string | null; taskId?: string | null; resultMessage?: string | null }>;
   messages: Array<{ id: string; authorName: string; message: string; createdAt: string }>;
@@ -224,10 +224,9 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
     return <article className="check-card" key={check.id}>
       <div className="check-card-head"><strong>{tr("orderLabel")} {check.orderNumber}</strong><span>{check.casePhase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span></div>
       <p className="check-card-item"><strong>{check.location}</strong><span>{check.sku} ×{check.quantity}</span></p>
-      {check.assigneeName ? <p className="check-card-meta">{tr("checkAssignedTo", { name: check.assigneeName })}</p> : null}
+      {check.assigneeName ? <p><span className="responsible-badge">{tr("checkResponsibleBadge", { name: check.assigneeName })}</span></p> : null}
       {check.assignedByName ? <p className="check-card-meta">{tr("checkAssignedBy", { name: check.assignedByName })}</p> : null}
       {elapsedBase && check.status !== "AVAILABLE" ? <p className="check-card-meta">{tr(check.status === "CLAIMED" ? "checkClaimedAgo" : "checkAssignedAgo", { age: formatCheckAge(elapsedBase) })}</p> : null}
-      {(mode === "active" || mode === "mine") && check.assigneeName ? <p className="responsible-badge">{tr("checkResponsibleBadge", { name: check.assigneeName })}</p> : null}
       {canOpenCase && <button className="check-detail-button" type="button" onClick={() => void openDetails(check.caseId)}>{tr("openCase")}</button>}
       {mode === "available" && canClaim && <button type="button" className="primary-button" disabled={Boolean(busyId)} onClick={() => void mutate(check.id, `/api/checks/${check.id}/claim`, "POST")}>{tr("claimCheck")}</button>}
       {mode === "available" && canAssign && <div className="check-assign-row">{workerSelect(check.id)}<button type="button" className="secondary-button" disabled={Boolean(busyId) || !selectedWorkers[check.id]} onClick={() => void mutate(check.id, `/api/checks/${check.id}/assign`, "PATCH", { userId: selectedWorkers[check.id] })}>{tr("assignCheck")}</button></div>}
@@ -260,10 +259,9 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
         const retrievalPending = canRetrieve && line.state === "FOUND" && (retrieval === "PENDING" || retrieval === "FAILED");
         return <div key={line.id}>
           <strong>{line.location} · {line.sku} ×{line.quantity}</strong>
-          <span>{line.discoveredLocation || (line.state === "CHECKING" ? tr("caseChecking") : line.state === "FOUND" ? tr("caseFound") : line.state === "RESOLVED" ? tr("caseRetrieved") : tr("caseOpen"))}</span>
-          {line.responsibleName ? <p className="responsible-badge">{tr("checkResponsibleBadge", { name: line.responsibleName })}</p> : null}
+          {line.responsibleName ? <p><span className="responsible-badge">{tr("checkResponsibleBadge", { name: line.responsibleName })}</span></p> : null}
           <CaseStatusBadge kind="line" status={line.state} retrievalState={line.retrievalState} tr={tr} />
-          <small>{detail.checks.filter((check) => check.shortPickLineId === line.id).map((check) => check.completionCode ? `${tr(({ FOUND: "timelineResolutionFOUND", FOUND_AT_ORIGINAL: "timelineResolutionFOUND_AT_ORIGINAL", NOT_FOUND: "timelineResolutionNOT_FOUND", WRONG_LOCATION: "timelineResolutionWRONG_LOCATION", OTHER: "timelineResolutionOTHER" } as const)[check.completionCode as "FOUND" | "FOUND_AT_ORIGINAL" | "NOT_FOUND" | "WRONG_LOCATION" | "OTHER"] ?? "timelineResolutionUnknown")} · ${new Date(check.completedAt || "").toLocaleString(locale)}` : check.status === "AVAILABLE" ? tr("availableChecks") : tr("caseChecking")).join(" / ")}</small>
+          {(line.reporterName || line.reporterIdentifier) ? <small>{tr("lineReportedBy", { name: line.reporterName || line.reporterIdentifier || "" })}{line.reporterIdentifier ? ` · ${tr("lineReporterId", { id: line.reporterIdentifier })}` : ""}</small> : null}
           {replenishment !== "NONE" ? <p className="replenishment-badge" data-state={replenishment}>{tr(`replenishmentState${replenishment}` as MessageKey)}</p> : null}
           {(line.retrievalState ?? "").toUpperCase() === "NOT_REQUIRED" && detail.phase !== "STAGED" ? <p className="retrieval-badge" data-state="NOT_REQUIRED">{tr("retrievalNotRequired")}</p> : null}
           {canRecordReplenishment && replenishment !== "COMPLETED" && !["RESOLVED", "CANCELLED"].includes(line.state) && detail.phase !== "CLOSED" ? <ReplenishmentForm tr={tr} caseId={detail.id} lineId={line.id} currentState={replenishment} compact onSaved={async () => { await openDetails(detail.id); setNotice(tr("replenishmentSaved")); }} /> : null}

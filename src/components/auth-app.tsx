@@ -201,7 +201,7 @@ export function briefInstructionForLine(line: { nextActionCode?: string | null; 
   const nextAction = line.nextActionCode ?? null;
   const owner = line.checkerName ?? line.retrieverName ?? line.replenishmentActorName ?? null;
   const ownerSuffix = owner ? ` · ${owner}` : "";
-  const base = { ownerSuffix };
+  const base = { ownerSeparator: owner ? " " : "", ownerSuffix };
   switch (nextAction) {
     case "CLAIM_CHECK": return { key: "navInstructionClaimCheck", values: base };
     case "COMPLETE_CHECK": return { key: "navInstructionCompleteCheck", values: base };

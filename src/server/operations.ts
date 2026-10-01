@@ -53,8 +53,9 @@ export async function getOperationsDashboard(auth: AuthContext) {
   for (const line of lines) rawPersonIds.push(line.reportedByUserId, line.currentResponsibleUserId, line.discoveredByUserId, line.retrievalResponsibleUserId, line.replenishmentActorUserId, line.replenishmentRetrieverUserId);
   for (const check of checks) rawPersonIds.push(check.claimedByUserId, check.assignedToUserId);
   const personIds = [...new Set(rawPersonIds.filter((id): id is string => Boolean(id)))];
-  const people = personIds.length ? await db.select({ id: users.id, displayName: users.displayName }).from(users).where(inArray(users.id, personIds)) : [];
+  const people = personIds.length ? await db.select({ id: users.id, displayName: users.displayName, identifier: users.identifier }).from(users).where(inArray(users.id, personIds)) : [];
   const names = new Map(people.map((person) => [person.id, person.displayName]));
+  const identifiers = new Map(people.map((person) => [person.id, person.identifier]));
   const byCase = new Map<string, typeof lines>();
   for (const line of lines) byCase.set(line.caseId, [...(byCase.get(line.caseId) ?? []), line]);
   const cases = rows.map((row) => {
@@ -74,9 +75,11 @@ export async function getOperationsDashboard(auth: AuthContext) {
         : ageMinutes >= caseConfiguration.WARNING_THRESHOLD_MINUTES ? "WARNING" : "NORMAL";
     const lineProjections = projectLines({ orderNumber: row.orderNumber, phase: row.phase, lines: ownLines, checks: ownChecks, names });
     return { ...row, pickerName: row.pickingUserId ? names.get(row.pickingUserId) ?? null : null,
+      pickerIdentifier: row.pickingUserId ? identifiers.get(row.pickingUserId) ?? null : null,
       responsibleName: row.currentCaseResponsibleUserId ? names.get(row.currentCaseResponsibleUserId) ?? null : null,
       missingCount, openLineCount, checkingCount, currentIssue, attentionLevel,
-      lines: ownLines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity })),
+      lines: ownLines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity,
+        reporterName: names.get(line.reportedByUserId) ?? null, reporterIdentifier: identifiers.get(line.reportedByUserId) ?? null })),
       projection: { caseId: row.id, orderNumber: row.orderNumber, phase: row.phase, openLineCount, lines: lineProjections }, lineProjections };
   });
   const [resolved] = await db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(and(eq(orderCases.phase, "CLOSED"), gte(orderCases.resolvedAt, today)));

@@ -400,7 +400,7 @@ button { color: inherit; }
 .replenishment-form small { color: var(--muted); font-size: 12px; }
 .replenishment-badge { display: inline-block; margin-top: 6px; padding: 3px 9px; border-radius: 999px; background: var(--warn-wash); color: var(--warn-ink); font-size: 11px; font-weight: 750; }
 .check-card-meta { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
-.responsible-badge { display: inline-block; margin-top: 6px; padding: 3px 9px; border-radius: 999px; background: var(--green-wash); color: var(--green); font-size: 11px; font-weight: 750; }
+.responsible-badge { display: inline-block; width: fit-content; max-width: 100%; margin-top: 6px; padding: 3px 9px; border-radius: 999px; background: var(--green-wash); color: var(--green); font-size: 11px; font-weight: 750; overflow-wrap: anywhere; }
 .check-empty { margin: 0; padding: 19px; border: 1px dashed var(--line-strong); border-radius: 8px; color: var(--muted); background: var(--surface); }
 .case-discovered-location { width: 100%; margin: 0; color: var(--ink-soft); font-size: 12px; }
 .case-retrieval-actions { width: 100%; }

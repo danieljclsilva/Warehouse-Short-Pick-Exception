@@ -49,16 +49,6 @@ function formatDate(value: string, locale: Locale) {
   return new Intl.DateTimeFormat(locales[locale], { dateStyle: "medium" }).format(new Date(value));
 }
 
-function statusKey(state: string, tr: PickerWorkflowProps["tr"]) {
-  switch (state.toUpperCase()) {
-    case "CHECKING": return tr("caseChecking");
-    case "FOUND": return tr("caseFound");
-    case "RETRIEVED":
-    case "RESOLVED": return tr("caseRetrieved");
-    case "CLOSED": return tr("caseClosed");
-    default: return tr("caseOpen");
-  }
-}
 
 function phaseLabel(phase: string, tr: PickerWorkflowProps["tr"]) {
   const keys: Record<string, MessageKey> = { PICKING: "phasePicking", STAGED: "phaseStaged", CLOSED: "caseClosed" };
@@ -428,7 +418,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
               return (
               <article className="case-line" key={line.id}>
                 <div className="case-line-primary"><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></div>
-                <span className="case-badges"><span className={`case-line-status state-${line.state.toLowerCase()}`}>{statusKey(line.state, tr)}</span><CaseStatusBadge status={line.state} retrievalState={line.retrievalState ?? null} tr={tr} kind="line" /></span>
+                <span className="case-badges"><CaseStatusBadge status={line.state} retrievalState={line.retrievalState ?? null} tr={tr} kind="line" /></span>
                 {line.discoveredLocation && <p className="case-discovered-location">{tr("newLocation")}: <strong>{line.discoveredLocation}</strong></p>}
                 {line.replenishmentState && line.replenishmentState !== "NONE" ? <p className="replenishment-badge" data-state={line.replenishmentState}>{tr(`replenishmentState${line.replenishmentState}` as MessageKey)}</p> : null}
                 {awaitingRetrieval && <p className="picker-retrieval-prompt" role="status">{tr("pickerRetrievalPrompt" as MessageKey, { location: line.discoveredLocation || line.location })}</p>}

@@ -30,6 +30,8 @@ type CaseLine = {
   replenishmentState?: string | null;
   replenishmentNote?: string | null;
   replenishmentActorName?: string | null;
+  reporterName?: string | null;
+  reporterIdentifier?: string | null;
 };
 type CaseEvent = { id: string; eventType: string; createdAt: string; actorName?: string | null; payload?: Record<string, unknown>; completionCode?: string | null; discoveredLocation?: string | null; originalLocation?: string | null; taskId?: string | null };
 type CaseMessage = { id: string; message: string; createdAt: string; authorName: string; shortPickLineId?: string | null };
@@ -39,6 +41,7 @@ type CaseSummary = {
   phase: string;
   createdAt: string;
   pickerName: string | null;
+  pickerIdentifier?: string | null;
   missingCount: number;
   checkingCount: number;
   currentIssue: string;
@@ -497,6 +500,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
         <p className={styles.caseStatusBadge}><CaseStatusBadge status={selected.phase === "CLOSED" ? "CLOSED" : (selected.lineProjections?.[0]?.displayStatus ?? selected.lines?.[0]?.state ?? selected.phase)} tr={tr} /></p>
         <p className={styles.drawerSummary}>{selected.phase === "CLOSED" ? `${tr("caseClosed")} · ${tr("caseClosedOn", { date: formatDate(selected.resolvedAt || selected.createdAt, locale) })}` : `${selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · ${formatAge(selected.createdAt)}`} · {selected.pickerName || tr("unknownPicker")}</p>
         <p className={styles.drawerPhysical}>{tr("physicalState", { state: physicalStateLabel(selected.physicalState, tr) })}{selected.physicalLocation ? ` · ${selected.physicalLocation}` : ""}</p>
+        {(selected.pickerName || selected.pickerIdentifier) ? <p className={styles.drawerPhysical}>{tr("lineReportedBy", { name: selected.pickerName || selected.pickerIdentifier || "" })}{selected.pickerIdentifier ? ` · ${tr("lineReporterId", { id: selected.pickerIdentifier })}` : ""}</p> : null}
         <div className={styles.detailGrid}><div><span>{tr("caseResponsible")}</span><strong>{selected.responsibleName || "—"}</strong></div><div><span>{tr("caseSource")}</span><strong>{tr(`source_${selected.source}` as MessageKey)}</strong></div><div><span>{tr("missingItemsLabel")}</span><strong>{selected.missingCount}</strong></div></div>
         <section className={styles.detailSection}><h3>{tr("reportedItems")}</h3>{selected.lines?.length ? <div className={styles.lineList}>{(() => {
           const projections = new Map((selected.lineProjections ?? []).map((entry) => [entry.lineId, entry]));
@@ -504,7 +508,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
             const projection = projections.get(line.id);
             const replenishment = projection?.replenishment;
             const replenishmentState = replenishment?.state ?? line.replenishmentState ?? "NONE";
-            return <article className={styles.line} key={line.id}><div><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></div><span className={styles.caseStatusBadge}><CaseStatusBadge status={projection?.displayStatus ?? line.state} retrievalState={line.retrievalState ?? null} tr={tr} kind="line" /></span><span className={styles.lineState}>{lineStateLabel(projection?.displayStatus ?? line.state, tr)}{line.retrievalState && (line.retrievalState !== "NOT_REQUIRED" || selected.phase !== "STAGED") ? ` · ${retrievalStateLabel(line.retrievalState, tr)}` : ""}{replenishmentState !== "NONE" ? ` · ${tr(`replenishmentState${replenishmentState}` as MessageKey)}` : ""}</span>{line.discoveredLocation && <small>{tr("newLocation")}: {line.discoveredLocation}</small>}{(canRecordReplenishment || canReportLocation) && selected.phase !== "CLOSED" && !selected.closedAt && !["RESOLVED", "CANCELLED"].includes(line.state) && replenishmentState !== "COMPLETED" ? <div className={styles.lineActions}>{canRecordReplenishment && replenishmentState !== "COMPLETED" ? <ReplenishmentForm tr={tr} caseId={selected.id} lineId={line.id} currentState={replenishmentState} compact onSaved={async () => { setNotice(tr("replenishmentSaved")); await fetchDashboard(); await loadCase(selected.id); }} /> : null}{canReportLocation ? <LocationReporter tr={tr} caseId={selected.id} lineId={line.id} onReported={async () => { setNotice(tr("reportLocationSaved")); await fetchDashboard(); await loadCase(selected.id); }} /> : null}</div> : null}</article>;
+            return <article className={styles.line} key={line.id}><div><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></div><span className={styles.caseStatusBadge}><CaseStatusBadge status={projection?.displayStatus ?? line.state} retrievalState={line.retrievalState ?? null} tr={tr} kind="line" /></span><span className={styles.lineState}>{lineStateLabel(projection?.displayStatus ?? line.state, tr)}{line.retrievalState && (line.retrievalState !== "NOT_REQUIRED" || selected.phase !== "STAGED") ? ` · ${retrievalStateLabel(line.retrievalState, tr)}` : ""}{replenishmentState !== "NONE" ? ` · ${tr(`replenishmentState${replenishmentState}` as MessageKey)}` : ""}</span>{(line.reporterName || line.reporterIdentifier) ? <span className={styles.lineState}>{tr("lineReportedBy", { name: line.reporterName || line.reporterIdentifier || "" })}{line.reporterIdentifier ? ` · ${tr("lineReporterId", { id: line.reporterIdentifier })}` : ""}</span> : null}{line.discoveredLocation && <small>{tr("newLocation")}: {line.discoveredLocation}</small>}{(canRecordReplenishment || canReportLocation) && selected.phase !== "CLOSED" && !selected.closedAt && !["RESOLVED", "CANCELLED"].includes(line.state) && replenishmentState !== "COMPLETED" ? <div className={styles.lineActions}>{canRecordReplenishment && replenishmentState !== "COMPLETED" ? <ReplenishmentForm tr={tr} caseId={selected.id} lineId={line.id} currentState={replenishmentState} compact onSaved={async () => { setNotice(tr("replenishmentSaved")); await fetchDashboard(); await loadCase(selected.id); }} /> : null}{canReportLocation ? <LocationReporter tr={tr} caseId={selected.id} lineId={line.id} onReported={async () => { setNotice(tr("reportLocationSaved")); await fetchDashboard(); await loadCase(selected.id); }} /> : null}</div> : null}</article>;
           });
         })()}</div> : <p>{tr("noItemsYet")}</p>}</section>
         {(selected.events?.length || selected.messages?.length) ? <section className={styles.detailSection}><h3>{tr("caseTimeline")}</h3><CaseTimeline events={(selected.events || []) as CaseTimelineEvent[]} messages={selected.messages || []} tr={tr} formatDate={(value) => formatDate(value, locale)} className={styles.timeline} /></section> : null}

@@ -176,8 +176,9 @@ async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: st
     ...checks.flatMap((check) => [check.claimedByUserId, check.assignedToUserId]),
     ...eventAssigneeIds,
   ].filter((id): id is string => Boolean(id)))];
-  const people = personIds.length ? await db.select({ id: users.id, displayName: users.displayName }).from(users).where(inArray(users.id, personIds)) : [];
+  const people = personIds.length ? await db.select({ id: users.id, displayName: users.displayName, identifier: users.identifier }).from(users).where(inArray(users.id, personIds)) : [];
   const names = new Map(people.map((person) => [person.id, person.displayName]));
+  const identifiers = new Map(people.map((person) => [person.id, person.identifier]));
   const detailsByEventId = new Map(events.map((entry) => [entry.id, { details: (entry.details ?? {}) as Record<string, unknown>, actorUserId: entry.actorUserId }]));
   const shapedWithAssignee = shapedEvents.map((event) => {
     const entry = detailsByEventId.get(event.id);
@@ -195,10 +196,12 @@ async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: st
   const lineProjections = projectLines({ orderNumber: record.orderNumber, phase: record.phase, lines, checks, names });
   const projection: CaseProjection = { caseId: record.id, orderNumber: record.orderNumber, phase: record.phase, openLineCount: unresolvedLines.length, lines: lineProjections };
   return { ...record, pickerName: record.pickingUserId ? names.get(record.pickingUserId) ?? null : null,
+    pickerIdentifier: record.pickingUserId ? identifiers.get(record.pickingUserId) ?? null : null,
     responsibleName: record.currentCaseResponsibleUserId ? names.get(record.currentCaseResponsibleUserId) ?? null : null,
     missingCount: unresolvedLines.reduce((total, line) => total + line.missingQuantity, 0), checkingCount, currentIssue,
     lines: lines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity,
-      responsibleName: line.currentResponsibleUserId ? (names.get(line.currentResponsibleUserId) ?? null) : null })),
+      responsibleName: line.currentResponsibleUserId ? (names.get(line.currentResponsibleUserId) ?? null) : null,
+      reporterName: names.get(line.reportedByUserId) ?? null, reporterIdentifier: identifiers.get(line.reportedByUserId) ?? null })),
     checks: checks.map((check) => { const workerId = check.assignedToUserId ?? check.claimedByUserId; return { ...check, assigneeName: workerId ? (names.get(workerId) ?? null) : null }; }),
     events: shapedWithAssignee, messages, projection, lineProjections };
 }

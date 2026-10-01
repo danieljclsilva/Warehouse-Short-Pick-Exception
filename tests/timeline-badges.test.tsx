@@ -224,3 +224,28 @@ describe("timeline result note", () => {
     }
   });
 });
+describe("timeline messaging format and fit-width badges", () => {
+  it("renders rows as Name colon text", () => {
+    const tr = trFor("en");
+    const html = renderToString(
+      createElement(CaseTimeline, {
+        tr,
+        formatDate: (value: string) => value,
+        events: [event({ id: "e1", eventType: "SHORT_PICK_ADDED", actorName: "TEST Demo Picker One" })],
+        messages: [],
+      }),
+    );
+    expect(html).toContain('data-testid="timeline-actor">TEST Demo Picker One</strong>');
+    expect(html).toContain("Short pick reported");
+  });
+  it("keeps responsible badges fit-width with wrapping", () => {
+    const css = readFileSync(fileURLToPath(new URL("../src/app/globals.css", import.meta.url)), "utf8");
+    const ruleBody = (selector: string): string => {
+      const match = css.match(new RegExp(`${selector}\\s*\\{([^}]*)\\}`, "s"));
+      if (!match) throw new Error(`missing CSS rule: ${selector}`);
+      return match[1]!;
+    };
+    expect(ruleBody("\\.responsible-badge")).toMatch(/width:\s*fit-content/);
+    expect(ruleBody("\\.responsible-badge")).toMatch(/max-width:\s*100%/);
+  });
+});
