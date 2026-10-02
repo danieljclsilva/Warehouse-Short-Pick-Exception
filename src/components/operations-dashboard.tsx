@@ -8,6 +8,7 @@ import { useLiveRefresh } from "@/components/use-live-refresh";
 import styles from "./operations-dashboard.module.css";
 import { CaseStatusBadge } from "@/components/case-status-badge";
 import { CaseTimeline, type CaseTimelineEvent } from "@/components/case-timeline";
+import { PaginationControls } from "@/components/pagination-controls";
 import { SharedCaseLineCard } from "@/components/case-line-card";
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
@@ -54,6 +55,7 @@ type CaseSummary = {
   lineProjections?: Array<{ lineId: string; displayStatus: string; replenishment?: { state: string; note: string | null; actorName: string | null; at: string | null }; nextActionCode?: string; actionOwnerName?: string | null; blockingReasonCode?: string | null }>;
   projection?: { lines?: Array<{ displayStatus: string }> };
   events?: CaseEvent[];
+  eventsPagination?: { total: number; page: number; pageSize: number; totalPages: number } | null;
   messages?: CaseMessage[];
   attentionLevel?: "NORMAL" | "WARNING" | "ATTENTION" | "CRITICAL";
   resolvedAt?: string | null;
@@ -184,6 +186,8 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
   const [thresholds, setThresholds] = useState({ warning: 5, attention: 10, critical: 15 });
   const [cases, setCases] = useState<CaseSummary[]>([]);
   const [recentClosedCases, setRecentClosedCases] = useState<ClosedCaseSummary[]>([]);
+  const [pageMeta, setPageMeta] = useState({ total: 0, page: 1, pageSize: 20, totalPages: 1 });
+  const [timelinePages, setTimelinePages] = useState<Record<string, number>>({});
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [selected, setSelected] = useState<CaseSummary | null>(null);
   const [filterPhase, setFilterPhase] = useState<FilterPhase>("ALL");
@@ -216,17 +220,23 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
   const [reopenResponsible, setReopenResponsible] = useState("");
   const [clockNow, setClockNow] = useState<number | null>(null);
 
-  const fetchDashboard = useCallback(async () => {
+  const fetchDashboard = useCallback(async (nextPage = 1) => {
     if (dashboardRequestInFlight.current) return true;
     dashboardRequestInFlight.current = true;
     try {
-      const response = await fetch("/api/operations/dashboard", { cache: "no-store" });
-      const body = await readBody<DashboardResponse>(response);
+      const response = await fetch(`/api/operations/dashboard?page=${nextPage}&pageSize=20`, { cache: "no-store" });
+      const body = await readBody<DashboardResponse & { total?: number; page?: number; pageSize?: number; totalPages?: number }>(response);
       if (!response.ok) throw new Error(tr("operationsLoadFailed"));
       setMetrics({ ...EMPTY_METRICS, ...(body.metrics || {}) });
       if (body.thresholds) setThresholds((current) => ({ ...current, ...body.thresholds }));
       if (body.attentionThresholdMinutes && body.attentionThresholdMinutes > 0) setAttentionThresholdMinutes(body.attentionThresholdMinutes);
       setCases(body.cases || []);
+      setPageMeta({
+        total: typeof body.total === "number" ? body.total : (body.cases || []).length,
+        page: typeof body.page === "number" && body.page >= 1 ? body.page : nextPage,
+        pageSize: typeof body.pageSize === "number" && body.pageSize >= 1 ? body.pageSize : 20,
+        totalPages: typeof body.totalPages === "number" && body.totalPages >= 1 ? body.totalPages : 1,
+      });
       setRecentClosedCases(body.recentClosedCases || []);
       setError("");
       return true;
@@ -238,22 +248,24 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
       setLoading(false);
     }
   }, [tr]);
-
   const selectedCaseId = selected?.id;
+  const pageRef = useRef(pageMeta.page);
+  useEffect(() => { pageRef.current = pageMeta.page; }, [pageMeta.page]);
   const refreshLiveData = useCallback(async () => {
-    if (!await fetchDashboard()) throw new Error("refresh failed");
+    if (!await fetchDashboard(pageRef.current)) throw new Error("refresh failed");
     if (selectedCaseId) {
-      const response = await fetch(`/api/cases/${encodeURIComponent(selectedCaseId)}`, { cache: "no-store" });
+      const timelinePage = timelinePages[selectedCaseId] ?? 1;
+      const response = await fetch(`/api/cases/${encodeURIComponent(selectedCaseId)}?page=${timelinePage}&pageSize=50`, { cache: "no-store" });
       const body = await readBody<CaseResponse>(response);
       if (!response.ok || !body.case) throw new Error("refresh failed");
       setSelected((current) => current?.id === selectedCaseId ? body.case ?? current : current);
     }
-  }, [fetchDashboard, selectedCaseId]);
+  }, [fetchDashboard, selectedCaseId, timelinePages]);
   const liveState = useLiveRefresh(refreshLiveData);
 
   const fetchWorkers = useCallback(async () => {
     try {
-      const response = await fetch("/api/admin/users", { cache: "no-store" });
+      const response = await fetch("/api/admin/users?page=1&pageSize=100", { cache: "no-store" });
       const body = await readBody<CaseResponse>(response);
       if (response.ok) setWorkers((body.users || []).filter((worker) => worker.status === "ACTIVE"));
     } catch {
@@ -283,13 +295,14 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
       .sort((a, b) => sortOrder === "NEWEST" ? Date.parse(b.createdAt) - Date.parse(a.createdAt) : sortOrder === "ORDER" ? a.orderNumber.localeCompare(b.orderNumber, undefined, { numeric: true }) : Date.parse(a.createdAt) - Date.parse(b.createdAt));
   }, [cases, filterPhase, sortOrder, query]);
 
-  const loadCase = useCallback(async (caseId: string) => {
+  const loadCase = useCallback(async (caseId: string, timelinePage = 1) => {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`/api/cases/${caseId}`, { cache: "no-store" });
+      const response = await fetch(`/api/cases/${caseId}?page=${timelinePage}&pageSize=50`, { cache: "no-store" });
       const body = await readBody<CaseResponse>(response);
       if (!response.ok || !body.case) throw new Error(tr("caseLoadError"));
+      setTimelinePages((current) => ({ ...current, [caseId]: timelinePage }));
       setSelected(body.case);
       setReopenPhase(body.case.phase === "STAGED" ? "STAGED" : "PICKING");
       setReopenResponsible("");
@@ -312,7 +325,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
 
   const refreshSelected = async () => {
     await fetchDashboard();
-    if (selected) await loadCase(selected.id);
+    if (selected) await loadCase(selected.id, timelinePages[selected.id] ?? 1);
   };
 
   const submitManual = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -367,7 +380,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
       if (!response.ok) throw new Error(body.code === "CASE_HAS_OPEN_LINES" || body.code === "CASE_NOT_CLOSABLE" ? tr("caseCloseNeedsResolution") : tr("caseActionFailed"));
       setNotice(tr(successKey));
       await fetchDashboard();
-      await loadCase(selected.id);
+      await loadCase(selected.id, timelinePages[selected.id] ?? 1);
       return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : tr("caseActionFailed"));
@@ -393,7 +406,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
       if (!response.ok) throw new Error(body.code ? tr("orderStatusUpdateFailed") : tr("orderStatusUpdateFailed"));
       setNotice(tr("orderStatusUpdated"));
       await fetchDashboard();
-      await loadCase(selected.id);
+      await loadCase(selected.id, timelinePages[selected.id] ?? 1);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : tr("orderStatusUpdateFailed"));
     } finally {
@@ -418,6 +431,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
       <form className={styles.manualForm} onSubmit={submitManual}>
         <label><span>{tr("orderNumber")}</span><ScanInput inputMode="numeric" required value={manualOrder} onChange={setManualOrder} tr={tr} scanKind="order" fieldLabel={tr("orderNumber")} /></label>
         <label><span>{tr("location")}</span><ScanInput required autoCapitalize="characters" value={manualLocation} onChange={setManualLocation} tr={tr} scanKind="location" fieldLabel={tr("location")} /></label>
+        <label><span>{tr("sku")}</span><ScanInput required autoCapitalize="characters" value={manualSku} onChange={setManualSku} tr={tr} scanKind="sku" fieldLabel={tr("sku")} /></label>
         <label><span>{tr("missingQuantity")}</span><input required type="number" min="1" step="1" value={manualQuantity} onChange={(event) => setManualQuantity(event.target.value)} /></label>
         <label><span>{tr("originalPickerOptional")}</span><select value={manualPicker} onChange={(event) => setManualPicker(event.target.value)}><option value="">{tr("noPickerSelected")}</option>{workers.filter((worker) => worker.role === "PICKER" || worker.role === "TROUBLESHOOTER").map((worker) => <option key={worker.id} value={worker.id}>{worker.displayName}</option>)}</select></label>
         <label><span>{tr("manualStatusLabel")}</span><select value={manualPhase} onChange={(event) => setManualPhase(event.target.value as "PICKING" | "STAGED")}><option value="PICKING">{tr("phasePicking")}</option><option value="STAGED">{tr("phaseStaged")}</option></select></label>
@@ -427,13 +441,13 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
       </form>
     </section>}
     <section className={styles.queue}>
-      <div className={styles.queueHeader}><div><p className={styles.eyebrow}>{tr("liveOperations")}</p><h2>{tr("openCaseQueue")}</h2></div><span className={styles.count}>{visibleCases.length}</span></div>
+      <div className={styles.queueHeader}><div><p className={styles.eyebrow}>{tr("liveOperations")}</p><h2>{tr("openCaseQueue")}</h2></div><span className={styles.count}>{pageMeta.total || visibleCases.length}</span></div>
       <div className={styles.filters}>
         <label className={styles.search}><span className={styles.srOnly}>{tr("searchCases")}</span><input type="search" placeholder={tr("searchCasesPlaceholder")} value={query} onChange={(event) => setQuery(event.target.value)} /></label>
         <label><span className={styles.srOnly}>{tr("filterByPhase")}</span><select value={filterPhase} onChange={(event) => setFilterPhase(event.target.value as FilterPhase)}><option value="ALL">{tr("allPhases")}</option><option value="PICKING">{tr("phasePicking")}</option><option value="STAGED">{tr("phaseStaged")}</option></select></label>
         <label><span className={styles.srOnly}>{tr("sortCases")}</span><select value={sortOrder} onChange={(event) => setSortOrder(event.target.value as SortOrder)}><option value="OLDEST">{tr("oldestFirst")}</option><option value="NEWEST">{tr("newestFirst")}</option><option value="ORDER">{tr("orderNumber")}</option></select></label>
       </div>
-      {loading ? <p className={styles.empty}>{tr("loadingCases")}</p> : visibleCases.length ? <div className={styles.caseList}>
+      {loading ? <p className={styles.empty}>{tr("loadingCases")}</p> : visibleCases.length ? <><div className={styles.caseList}>
         {visibleCases.map((item) => {
           const age = clockNow === null ? 0 : Math.floor((clockNow - Date.parse(item.createdAt)) / 60_000);
           const fallbackLevel: NonNullable<CaseSummary["attentionLevel"]> = age >= thresholds.critical ? "CRITICAL" : age >= thresholds.attention ? "ATTENTION" : age >= thresholds.warning ? "WARNING" : "NORMAL";
@@ -441,12 +455,12 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
           const attentionClass = level === "CRITICAL" ? styles.critical : level === "ATTENTION" ? styles.attention : level === "WARNING" ? styles.warning : "";
           const badgeClass = level === "CRITICAL" ? styles.attentionBadgeCritical : level === "ATTENTION" ? styles.attentionBadgeAttention : level === "WARNING" ? styles.attentionBadgeWarning : styles.attentionBadgeNormal;
           return <button type="button" className={`${styles.caseCard} ${attentionClass}`} key={item.id} onClick={() => void loadCase(item.id)}>
-            <div className={styles.caseTop}><strong>{tr("orderLabel")} {item.orderNumber}</strong><span className={styles.caseBadges}><span className={styles.caseStatusBadge}><CaseStatusBadge status={item.lineProjections?.[0]?.displayStatus ?? item.projection?.lines?.[0]?.displayStatus ?? item.lines?.[0]?.state ?? item.currentIssue ?? item.phase} retrievalState={item.lines?.[0]?.retrievalState ?? null} tr={tr} /></span><span className={`${styles.attentionBadge} ${badgeClass}`} aria-label={`${tr("attentionLevelLabel")}: ${attentionLabel(level, tr)}`}>{attentionLabel(level, tr)}</span><span className={`${styles.phase} ${item.phase === "STAGED" ? styles.phaseStaged : ""}`}>{item.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span>{(() => { const queueReplenishment = item.lineProjections?.[0]?.replenishment?.state ?? item.lines?.[0]?.replenishmentState ?? "NONE"; return queueReplenishment !== "NONE" ? <span className={styles.phase}>{tr(`replenishmentState${queueReplenishment}` as MessageKey)}</span> : null; })()}</span></div>
+            <div className={styles.caseTop}><strong>{tr("orderLabel")} {item.orderNumber}</strong><span className={styles.caseBadges}><span className={styles.caseStatusBadge}><CaseStatusBadge status={item.lineProjections?.[0]?.displayStatus ?? item.projection?.lines?.[0]?.displayStatus ?? item.lines?.[0]?.state ?? item.currentIssue ?? item.phase} retrievalState={item.lines?.[0]?.retrievalState ?? null} tr={tr} /></span><span className={`${styles.attentionBadge} ${badgeClass}`} aria-label={`${tr("attentionLevelLabel")}: ${attentionLabel(level, tr)}`}>{attentionLabel(level, tr)}</span><span className={`${styles.phase} ${item.phase === "STAGED" ? styles.phaseStaged : ""}`}>{item.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span></span></div>
             <div className={styles.caseData}><span><b>{item.missingCount}</b> {tr("missingItemsLabel")}</span><span>{item.checkingCount} {tr("checkingLabel")}</span><span className={styles.age}>{formatAge(item.createdAt)}</span></div>
-            <div className={styles.caseFoot}><span>{item.pickerName || tr("unknownPicker")}</span><span className={styles.issue}>{item.currentIssue ? tr(`issue_${item.currentIssue}` as MessageKey) : tr("caseNoCurrentIssue")}</span><span>{item.responsibleName || "—"}</span></div>
+            <div className={styles.caseFoot}><span>{item.pickerName || tr("unknownPicker")}</span><span>{item.currentIssue ? tr(`issue_${item.currentIssue}` as MessageKey) : tr("caseNoCurrentIssue")}</span><span>{item.responsibleName || "—"}</span></div>
           </button>;
         })}
-      </div> : <p className={styles.empty}>{tr("noOpenCases")}</p>}
+      </div><PaginationControls tr={tr} meta={pageMeta} loading={loading} onPage={(next) => void fetchDashboard(next)} /></> : <p className={styles.empty}>{tr("noOpenCases")}</p>}
     </section>
     <section className={styles.queue}>
       <div className={styles.queueHeader}><div><p className={styles.eyebrow}>{tr("caseClosed")}</p><h2>{tr("recentClosedCases")}</h2></div><span className={styles.count}>{recentClosedCases.length}</span></div>
@@ -469,12 +483,12 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
           return selected.lines.map((line) => (
             <article className={styles.line} key={line.id}><SharedCaseLineCard tr={tr} caseId={selected.id} casePhase={selected.phase} line={line} projections={projections}
               actions={{ canRecordReplenishment, canRetrieve: false, canReportLocation, busyId: busy ? selected.id : "",
-                onSaved: async () => { setNotice(tr("replenishmentSaved")); await fetchDashboard(); await loadCase(selected.id); },
+                onSaved: async () => { setNotice(tr("replenishmentSaved")); await fetchDashboard(); await loadCase(selected.id, timelinePages[selected.id] ?? 1); },
                 onRetrieve: () => {},
-                reportForm: () => (<LocationReporter tr={tr} caseId={selected.id} lineId={line.id} onReported={async () => { setNotice(tr("reportLocationSaved")); await fetchDashboard(); await loadCase(selected.id); }} />) }} /></article>
+                reportForm: () => (<LocationReporter tr={tr} caseId={selected.id} lineId={line.id} onReported={async () => { setNotice(tr("reportLocationSaved")); await fetchDashboard(); await loadCase(selected.id, timelinePages[selected.id] ?? 1); }} />) }} /></article>
           ));
         })()}</div> : <p>{tr("noItemsYet")}</p>}</section>
-        {(selected.events?.length || selected.messages?.length) ? <section className={styles.detailSection}><h3>{tr("caseTimeline")}</h3><CaseTimeline events={(selected.events || []) as CaseTimelineEvent[]} messages={selected.messages || []} tr={tr} formatDate={(value) => formatDate(value, locale)} className={styles.timeline} /></section> : null}
+        {(selected.events?.length || selected.messages?.length) ? <section className={styles.detailSection}><h3>{tr("caseTimeline")}</h3><CaseTimeline events={(selected.events || []) as CaseTimelineEvent[]} messages={selected.messages || []} tr={tr} formatDate={(value) => formatDate(value, locale)} className={styles.timeline} />{selected.eventsPagination && selected.eventsPagination.totalPages > 1 ? <PaginationControls tr={tr} variant="more" meta={selected.eventsPagination} loading={busy} onPage={(next) => void loadCase(selected.id, next)} /> : null}</section> : null}
         {canMessage && selected.phase !== "CLOSED" && !selected.closedAt && <form className={styles.messageForm} onSubmit={postMessage}><label><span>{tr("caseMessageLabel")}</span><textarea required maxLength={2000} rows={3} value={messageText} onChange={(event) => setMessageText(event.target.value)} placeholder={tr("caseMessagePlaceholder")} /></label><button type="submit" className={styles.primary} disabled={busy || !messageText.trim()}>{tr("sendCaseMessage")}</button></form>}
         <div className={styles.caseActions}>
           {selected.phase !== "CLOSED" && !selected.closedAt && canChangePhase && <div className={styles.reopenAction}><label><span>{tr("orderStatusLabel")}</span><select value={selected.phase === "STAGED" ? "STAGED" : "PICKING"} disabled={busy} onChange={(event) => void changePhase(event.target.value as "PICKING" | "STAGED")}><option value="PICKING">{tr("phasePicking")}</option><option value="STAGED">{tr("phaseStaged")}</option></select></label></div>}

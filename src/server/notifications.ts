@@ -6,6 +6,7 @@ import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/cases";
 import { getCurrentConfiguration } from "@/server/configuration";
+import { paginationMeta, paginationOffset, paginationQuerySchema } from "@/server/pagination";
 import { logServerEvent } from "@/server/logger";
 
 export type NotificationType = typeof notifications.$inferInsert.type;
@@ -216,16 +217,22 @@ export async function emitUnresolvedMonitoringNotifications(chunkSize: number = 
   return created;
 }
 
-export async function getNotifications(auth: AuthContext) {
+export const notificationListQuerySchema = paginationQuerySchema;
+
+export async function getNotifications(auth: AuthContext, options: { page?: number; pageSize?: number } = {}) {
+  const parsed = notificationListQuerySchema.parse({ page: options.page ?? 1, pageSize: options.pageSize ?? 50 });
   const db = getDb();
-  const [rows, unread] = await Promise.all([
+  const scope = eq(notifications.recipientUserId, auth.user.id);
+  const [rows, totalRow, unread] = await Promise.all([
     db.select({ id: notifications.id, type: notifications.type, caseId: notifications.caseId,
       shortPickLineId: notifications.shortPickLineId, payload: notifications.payload,
       createdAt: notifications.createdAt, readAt: notifications.readAt })
-      .from(notifications).where(eq(notifications.recipientUserId, auth.user.id)).orderBy(desc(notifications.createdAt), desc(notifications.id)).limit(100),
-    db.select({ count: sql<number>`count(*)::int` }).from(notifications).where(and(eq(notifications.recipientUserId, auth.user.id), isNull(notifications.readAt))),
+      .from(notifications).where(scope).orderBy(desc(notifications.createdAt), desc(notifications.id))
+      .limit(parsed.pageSize).offset(paginationOffset(parsed.page, parsed.pageSize)),
+    db.select({ count: sql<number>`count(*)::int` }).from(notifications).where(scope),
+    db.select({ count: sql<number>`count(*)::int` }).from(notifications).where(and(scope, isNull(notifications.readAt))),
   ]);
-  return { notifications: rows, unreadCount: unread[0]?.count ?? 0 };
+  return { notifications: rows, unreadCount: unread[0]?.count ?? 0, ...paginationMeta(totalRow[0]?.count ?? 0, parsed.page, parsed.pageSize) };
 }
 
 export async function markNotificationRead(auth: AuthContext, notificationId: string) {

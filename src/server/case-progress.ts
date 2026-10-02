@@ -6,6 +6,7 @@ import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/cases";
 import { insertResponsibilityNotification } from "@/server/notifications";
+import { paginationMeta, paginationOffset, paginationQuerySchema } from "@/server/pagination";
 import { getConfigurationVersion } from "@/server/configuration";
 
 export const stageCaseSchema = z.object({ confirmedPhysicalPlacement: z.boolean().default(false) });
@@ -17,16 +18,25 @@ export const replenishmentSchema = z.object({
   state: z.enum(["WAITING", "COMPLETED"]),
 });
 
-export async function listMyRetrievals(auth: AuthContext) {
+export const retrievalListQuerySchema = paginationQuerySchema;
+
+export async function listMyRetrievals(auth: AuthContext, options: { page?: number; pageSize?: number } = {}) {
   if (!hasAuthPermission(auth, "CONFIRM_RETRIEVAL")) throw new CaseApiError("CASE_ACCESS_DENIED", "Cannot view retrievals", 403);
-  const rows = await getDb().select({ line: shortPickLines, case: orderCases }).from(shortPickLines)
+  const parsed = retrievalListQuerySchema.parse({ page: options.page ?? 1, pageSize: options.pageSize ?? 20 });
+  const where = and(eq(shortPickLines.retrievalResponsibleUserId, auth.user.id), eq(shortPickLines.state, "FOUND"),
+    inArray(shortPickLines.retrievalState, ["PENDING", "FAILED"]), sql`${orderCases.phase} <> 'CLOSED'`);
+  const db = getDb();
+  const [countRow] = await db.select({ count: sql<number>`count(*)::int` }).from(shortPickLines)
+    .innerJoin(orderCases, eq(shortPickLines.caseId, orderCases.id)).where(where);
+  const total = countRow?.count ?? 0;
+  const rows = await db.select({ line: shortPickLines, case: orderCases }).from(shortPickLines)
     .innerJoin(orderCases, eq(shortPickLines.caseId, orderCases.id))
-    .where(and(eq(shortPickLines.retrievalResponsibleUserId, auth.user.id), eq(shortPickLines.state, "FOUND"),
-      inArray(shortPickLines.retrievalState, ["PENDING", "FAILED"]), sql`${orderCases.phase} <> 'CLOSED'`))
-    .orderBy(desc(shortPickLines.updatedAt)).limit(100);
-  return rows.map((row) => ({ lineId: row.line.id, caseId: row.case.id, orderNumber: row.case.orderNumber,
+    .where(where)
+    .orderBy(desc(shortPickLines.updatedAt)).limit(parsed.pageSize).offset(paginationOffset(parsed.page, parsed.pageSize));
+  const retrievals = rows.map((row) => ({ lineId: row.line.id, caseId: row.case.id, orderNumber: row.case.orderNumber,
     casePhase: row.case.phase, location: row.line.originalLocation, discoveredLocation: row.line.discoveredLocation,
     sku: row.line.sku, quantity: row.line.missingQuantity, retrievalState: row.line.retrievalState }));
+  return { retrievals, ...paginationMeta(total, parsed.page, parsed.pageSize) };
 }
 
 export async function stageCase(auth: AuthContext, caseId: string, confirmedPhysicalPlacement = false) {

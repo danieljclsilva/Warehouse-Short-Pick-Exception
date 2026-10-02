@@ -6,6 +6,7 @@ import { LiveRefreshStatus } from "@/components/live-refresh-status";
 import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import { CaseStatusBadge } from "@/components/case-status-badge";
+import { PaginationControls } from "@/components/pagination-controls";
 import { CaseTimeline, type CaseTimelineEvent } from "@/components/case-timeline";
 import { SharedCaseLineCard, SharedInlineLocationForm } from "@/components/case-line-card";
 
@@ -44,6 +45,7 @@ type CaseDetail = {
   lines: Array<{ id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation: string | null; retrievalState?: string | null; retrievalResponsibleUserId?: string | null; replenishmentState?: string | null; responsibleName: string | null; reporterName?: string | null; reporterIdentifier?: string | null }>;
   checks: Array<{ id: string; shortPickLineId: string; status: string; completionCode: string | null; completedAt: string | null; assigneeName: string | null }>;
   events: Array<{ id: string; eventType: string; actorName: string | null; createdAt: string; completionCode?: string | null; discoveredLocation?: string | null; originalLocation?: string | null; taskId?: string | null; resultMessage?: string | null }>;
+  eventsPagination?: { total: number; page: number; pageSize: number; totalPages: number } | null;
   messages: Array<{ id: string; authorName: string; message: string; createdAt: string }>;
 };
 type Props = {
@@ -67,7 +69,8 @@ type Props = {
 
 async function readJson(response: Response) {
   return (await response.json().catch(() => ({}))) as {
-    code?: string; checks?: Check[]; retrievals?: Retrieval[]; users?: Worker[]; case?: CaseDetail;
+    code?: string; checks?: Check[]; items?: Check[]; retrievals?: Retrieval[]; users?: Worker[]; case?: CaseDetail;
+    nextCursor?: string | null; total?: number; page?: number; pageSize?: number; totalPages?: number;
   };
 }
 
@@ -93,11 +96,46 @@ function formatCheckAge(iso: string): string {
   return `${Math.floor(totalHours / 24)}d ${totalHours % 24}h`;
 }
 
+function CheckSectionPager({ tr, page, meta, onPage }: {
+  tr: (key: MessageKey, values?: Record<string, string>) => string;
+  page: number;
+  meta: { total: number; nextCursor: string | null };
+  onPage: (page: number) => void;
+}) {
+  const canBack = page > 1;
+  const canNext = meta.nextCursor !== null;
+  if (meta.total === 0) return null;
+  if (!canBack && !canNext) return <p className="pagination-total" aria-live="polite">{tr("paginationTotal", { count: String(meta.total) })}</p>;
+  return (
+    <nav className="pagination-controls" aria-label={tr("paginationLabel")}>
+      <button type="button" className="pagination-prev" onClick={() => onPage(page - 1)} disabled={!canBack}>
+        {tr("paginationPrevious")}
+      </button>
+      <span className="pagination-total" aria-live="polite">{tr("paginationTotal", { count: String(meta.total) })}</span>
+      <button type="button" className="pagination-next" onClick={() => onPage(page + 1)} disabled={!canNext}>
+        {tr("paginationNext")}
+      </button>
+    </nav>
+  );
+}
+
 export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canComplete, canAssign, canReassign, canRetrieve, canMessage, canRecordReplenishment = false, canReportLocation = false, canViewAllOpenCases = false, focusedCaseId, focusedNonce, onFocusConsumed, onFocusedClose }: Props) {
   const [available, setAvailable] = useState<Check[]>([]);
   const [mine, setMine] = useState<Check[]>([]);
   const [active, setActive] = useState<Check[]>([]);
   const [retrievals, setRetrievals] = useState<Retrieval[]>([]);
+  const [availableMeta, setAvailableMeta] = useState<{ total: number; nextCursor: string | null }>({ total: 0, nextCursor: null });
+  const [mineMeta, setMineMeta] = useState<{ total: number; nextCursor: string | null }>({ total: 0, nextCursor: null });
+  const [activeMeta, setActiveMeta] = useState<{ total: number; nextCursor: string | null }>({ total: 0, nextCursor: null });
+  const [retrievalMeta, setRetrievalMeta] = useState({ total: 0, page: 1, pageSize: 20, totalPages: 1 });
+  const [detailTimelinePages, setDetailTimelinePages] = useState<Record<string, number>>({});
+  const detailTimelineRef = useRef(detailTimelinePages);
+  const [cursorStacks, setCursorStacks] = useState<{ available: Array<string | null>; mine: Array<string | null>; active: Array<string | null> }>({ available: [null], mine: [null], active: [null] });
+  const [checkPages, setCheckPages] = useState({ available: 1, mine: 1, active: 1 });
+  const cursorStacksRef = useRef(cursorStacks);
+  useEffect(() => { cursorStacksRef.current = cursorStacks; }, [cursorStacks]);
+  const checkPagesRef = useRef(checkPages);
+  useEffect(() => { checkPagesRef.current = checkPages; }, [checkPages]);
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [selectedWorkers, setSelectedWorkers] = useState<Record<string, string>>({});
   const [completionTaskId, setCompletionTaskId] = useState("");
@@ -119,29 +157,58 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
     return () => window.clearTimeout(timer);
   }, [notice]);
 
+  useEffect(() => { detailTimelineRef.current = detailTimelinePages; }, [detailTimelinePages]);
   const detailRef = useRef<HTMLElement | null>(null);
   const scrolledDetailId = useRef<string | null>(null);
 
+  const retrievalPageRef = useRef(retrievalMeta.page);
+  useEffect(() => { retrievalPageRef.current = retrievalMeta.page; }, [retrievalMeta.page]);
+  const loadSection = useCallback(async (scope: "available" | "mine" | "active", page: number) => {
+    const history = cursorStacksRef.current[scope];
+    const cursor = page > 1 ? history[page - 1] ?? null : null;
+    const url = cursor
+      ? `/api/checks?scope=${scope}&limit=20&cursor=${encodeURIComponent(cursor)}`
+      : `/api/checks?scope=${scope}&limit=20`;
+    const response = await fetch(url, { cache: "no-store" });
+    const body = await readJson(response) as { checks?: Check[]; items?: Check[]; nextCursor?: string | null; total?: number };
+    if (!response.ok) throw new Error(tr("checkActionFailed"));
+    const items = body.checks || body.items || [];
+    const nextCursor = body.nextCursor ?? null;
+    const total = typeof body.total === "number" ? body.total : items.length;
+    if (scope === "available") { setAvailable(items); setAvailableMeta({ total, nextCursor }); }
+    if (scope === "mine") { setMine(items); setMineMeta({ total, nextCursor }); }
+    if (scope === "active") { setActive(items); setActiveMeta({ total, nextCursor }); }
+    setCursorStacks((current) => {
+      const next = [...current[scope]];
+      if (nextCursor) next[page] = nextCursor;
+      else next.length = page;
+      return { ...current, [scope]: next };
+    });
+    setCheckPages((current) => ({ ...current, [scope]: page }));
+  }, [tr]);
+  const loadRetrievals = useCallback(async (nextPage = 1) => {
+    const response = await fetch(`/api/retrievals?page=${nextPage}&pageSize=20`, { cache: "no-store" });
+    const body = await readJson(response) as { retrievals?: Retrieval[]; total?: number; page?: number; pageSize?: number; totalPages?: number };
+    if (!response.ok) throw new Error(tr("checkActionFailed"));
+    setRetrievals(body.retrievals || []);
+    setRetrievalMeta({
+      total: typeof body.total === "number" ? body.total : (body.retrievals || []).length,
+      page: typeof body.page === "number" && body.page >= 1 ? body.page : nextPage,
+      pageSize: typeof body.pageSize === "number" && body.pageSize >= 1 ? body.pageSize : 20,
+      totalPages: typeof body.totalPages === "number" && body.totalPages >= 1 ? body.totalPages : 1,
+    });
+  }, [tr]);
   const load = useCallback(async () => {
-    const requests: Array<Promise<[string, Response]>> = [];
-    if (canViewAvailable) requests.push(fetch("/api/checks?scope=available", { cache: "no-store" }).then((response) => ["available", response]));
-    if (canComplete) requests.push(fetch("/api/checks?scope=mine", { cache: "no-store" }).then((response) => ["mine", response]));
-    if (canReassign) requests.push(fetch("/api/checks?scope=active", { cache: "no-store" }).then((response) => ["active", response]));
-    if (canRetrieve) requests.push(fetch("/api/retrievals", { cache: "no-store" }).then((response) => ["retrievals", response]));
-    if (canAssign || canReassign) requests.push(fetch("/api/admin/users", { cache: "no-store" }).then((response) => ["users", response]));
     try {
-      const responses = await Promise.all(requests);
-      const data = await Promise.all(responses.map(async ([kind, response]) => {
+      if (canViewAvailable) await loadSection("available", checkPagesRef.current.available > 0 ? checkPagesRef.current.available : 1);
+      if (canComplete) await loadSection("mine", checkPagesRef.current.mine > 0 ? checkPagesRef.current.mine : 1);
+      if (canReassign) await loadSection("active", checkPagesRef.current.active > 0 ? checkPagesRef.current.active : 1);
+      if (canRetrieve) await loadRetrievals(retrievalPageRef.current);
+      if (canAssign || canReassign) {
+        const response = await fetch("/api/admin/users?page=1&pageSize=100", { cache: "no-store" });
         const body = await readJson(response);
         if (!response.ok) throw new Error(tr("checkActionFailed"));
-        return { kind, body };
-      }));
-      for (const { kind, body } of data) {
-        if (kind === "available") setAvailable(body.checks || []);
-        if (kind === "mine") setMine(body.checks || []);
-        if (kind === "active") setActive(body.checks || []);
-        if (kind === "retrievals") setRetrievals(body.retrievals || []);
-        if (kind === "users") setWorkers((body.users || []).filter((user) => user.status === "ACTIVE" && user.permissions.includes("COMPLETE_CHECK")));
+        setWorkers((body.users || []).filter((user) => user.status === "ACTIVE" && user.permissions.includes("COMPLETE_CHECK")));
       }
       setError("");
       return true;
@@ -150,26 +217,27 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
     } finally {
       setLoading(false);
     }
-  }, [canViewAvailable, canComplete, canReassign, canRetrieve, canAssign, tr]);
-
+  }, [canViewAvailable, canComplete, canReassign, canRetrieve, canAssign, tr, loadSection, loadRetrievals]);
   const refreshLiveData = useCallback(async () => {
     if (!await load()) throw new Error("refresh failed");
     if (detail) {
-      const response = await fetch(`/api/cases/${encodeURIComponent(detail.id)}`, { cache: "no-store" });
+      const timelinePage = detailTimelineRef.current[detail.id] ?? 1;
+      const response = await fetch(`/api/cases/${encodeURIComponent(detail.id)}?page=${timelinePage}&pageSize=50`, { cache: "no-store" });
       const body = await readJson(response);
       if (!response.ok || !body.case) throw new Error("refresh failed");
-      setDetail(withReplenishmentProjection(body.case));
+      setDetail(withReplenishmentProjection(body.case as CaseDetail));
     }
   }, [detail, load]);
   const liveState = useLiveRefresh(refreshLiveData);
 
-  const openDetails = useCallback(async (caseId: string) => {
+  const openDetails = useCallback(async (caseId: string, timelinePage = 1) => {
     setError("");
     try {
-      const response = await fetch(`/api/cases/${caseId}`, { cache: "no-store" });
+      const response = await fetch(`/api/cases/${caseId}?page=${timelinePage}&pageSize=50`, { cache: "no-store" });
       const body = await readJson(response);
       if (!response.ok || !body.case) throw new Error(tr("caseLoadError"));
-      setDetail(withReplenishmentProjection(body.case));
+      setDetailTimelinePages((current) => ({ ...current, [caseId]: timelinePage }));
+      setDetail(withReplenishmentProjection(body.case as CaseDetail));
     } catch { setError(tr("caseLoadError")); }
   }, [tr]);
   const focusConsumedRef = useRef(0);
@@ -201,7 +269,7 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       setDiscoveredLocation("");
       setResultMessage("");
       await load();
-      if (detail) await openDetails(detail.id);
+      if (detail) await openDetails(detail.id, detailTimelineRef.current[detail.id] ?? 1);
       return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : tr("checkActionFailed"));
@@ -254,15 +322,16 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       <h3>{tr("reportedItems")}</h3>
       <div className="check-detail-lines">{detail.lines.map((line) => {
         const reportable = canReportLocation && detail.phase !== "CLOSED" && !["RESOLVED", "CANCELLED"].includes(line.state);
-        const submitReportLocation = (lineId: string) => { void (async () => { setBusyId(lineId); setError(""); setNotice(""); try { const response = await fetch(`/api/cases/${encodeURIComponent(detail.id)}/lines/${encodeURIComponent(lineId)}/discovered-location`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ location: reportLocationValue.trim().toUpperCase() }), cache: "no-store" }); if (!response.ok) throw new Error(tr("reportLocationFailed")); setReportLocationLineId(null); setReportLocationValue(""); await load(); await openDetails(detail.id); setNotice(tr("reportLocationSaved")); } catch { setError(tr("reportLocationFailed")); } finally { setBusyId(""); } })(); };
+        const submitReportLocation = (lineId: string) => { void (async () => { setBusyId(lineId); setError(""); setNotice(""); try { const response = await fetch(`/api/cases/${encodeURIComponent(detail.id)}/lines/${encodeURIComponent(lineId)}/discovered-location`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ location: reportLocationValue.trim().toUpperCase() }), cache: "no-store" }); if (!response.ok) throw new Error(tr("reportLocationFailed")); setReportLocationLineId(null); setReportLocationValue(""); await load(); await openDetails(detail.id, detailTimelineRef.current[detail.id] ?? 1); setNotice(tr("reportLocationSaved")); } catch { setError(tr("reportLocationFailed")); } finally { setBusyId(""); } })(); };
         return <SharedCaseLineCard key={line.id} tr={tr} caseId={detail.id} casePhase={detail.phase} line={line} projections={new Map()}
           actions={{ canRecordReplenishment, canRetrieve, canReportLocation, busyId,
-            onSaved: async () => { await openDetails(detail.id); setNotice(tr("replenishmentSaved")); },
+            onSaved: async () => { await openDetails(detail.id, detailTimelineRef.current[detail.id] ?? 1); setNotice(tr("replenishmentSaved")); },
             onRetrieve: (lineId, result) => { void mutate(lineId, `/api/cases/${detail.id}/lines/${lineId}/retrieve`, "POST", { result }); },
             reportForm: (lineId) => (reportable ? (reportLocationLineId === line.id ? <SharedInlineLocationForm tr={tr} placeholder={tr("reportLocationPlaceholder")} value={reportLocationValue} onChange={setReportLocationValue} onSubmit={() => submitReportLocation(lineId)} /> : <button type="button" className="secondary-button" onClick={() => { setReportLocationLineId(line.id); setReportLocationValue(""); }}>{tr("reportLocationAction")}</button>) : null) }} />;
       })}</div>
       <h3>{tr("caseTimeline")}</h3>
       <CaseTimeline events={detail.events as CaseTimelineEvent[]} messages={detail.messages} tr={tr} formatDate={(value) => new Date(value).toLocaleString(locale)} className="check-detail-timeline" />
+      {detail.eventsPagination && detail.eventsPagination.totalPages > 1 ? <PaginationControls tr={tr} variant="more" meta={detail.eventsPagination} loading={Boolean(busyId)} onPage={(next) => void openDetails(detail.id, next)} /> : null}
       {canMessage && <form className="check-detail-message" onSubmit={async (event) => { event.preventDefault(); if (!message.trim()) return; const saved = await mutate(detail.id, `/api/cases/${detail.id}/messages`, "POST", { message: message.trim() }); if (saved) setMessage(""); }}><label className="form-field"><span>{tr("caseMessageLabel")}</span><textarea value={message} onChange={(event) => setMessage(event.target.value)} maxLength={2000} rows={3} required /></label><button className="primary-button" type="submit" disabled={Boolean(busyId)}>{tr("sendCaseMessage")}</button></form>}
     </section>
   </div>;
@@ -270,15 +339,15 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
     <div className="content-heading"><div><h1>{tr("checks")}</h1></div><div className="live-refresh-controls"><LiveRefreshStatus state={liveState} tr={tr} /><button type="button" className="refresh-cases-button" onClick={() => void load()}>{tr("refresh")}</button></div></div>
     {error && <p className="case-alert" role="alert">{error}</p>}
     {notice && <p className="check-notice" role="status">{notice}</p>}
-    {canComplete && <section className="check-section"><h2>{tr("myAssignedChecks")}</h2>{loading ? <p>{tr("loading")}</p> : mine.length ? <div className="check-card-grid">{mine.map((check) => checkCard(check, "mine"))}</div> : <p className="check-empty">{tr("noAssignedChecks")}</p>}</section>}
-    {canRetrieve && <section className="check-section"><h2>{tr("myRetrievals")}</h2>{loading ? <p>{tr("loading")}</p> : retrievals.length ? <div className="check-card-grid">{retrievals.map((item) => <article className="check-card" key={item.lineId}>
+    {canComplete && <section className="check-section"><h2>{tr("myAssignedChecks")}</h2>{loading ? <p>{tr("loading")}</p> : mine.length ? <><div className="check-card-grid">{mine.map((check) => checkCard(check, "mine"))}</div><CheckSectionPager tr={tr} page={checkPages.mine} meta={mineMeta} onPage={(next) => void loadSection("mine", next)} /></> : <p className="check-empty">{tr("noAssignedChecks")}</p>}</section>}
+    {canRetrieve && <section className="check-section"><h2>{tr("myRetrievals")}</h2>{loading ? <p>{tr("loading")}</p> : retrievals.length ? <><div className="check-card-grid">{retrievals.map((item) => <article className="check-card" key={item.lineId}>
       <div className="check-card-head"><strong>{tr("orderLabel")} {item.orderNumber}</strong><span>{item.retrievalState === "FAILED" ? tr("retrievalFailed") : tr("retrievalPending")}</span></div>
       <p className="check-card-item"><strong>{item.discoveredLocation || item.location}</strong><span>{item.sku} ×{item.quantity}</span></p>
       <button className="check-detail-button" type="button" onClick={() => void openDetails(item.caseId)}>{tr("openCase")}</button>
       <div className="check-card-actions"><button className="secondary-button" type="button" disabled={Boolean(busyId)} onClick={() => void mutate(item.lineId, `/api/cases/${item.caseId}/lines/${item.lineId}/retrieve`, "POST", { result: "FAILED" })}>{tr("reportRetrievalFailed")}</button>
       <button className="primary-button" type="button" disabled={Boolean(busyId)} onClick={() => void mutate(item.lineId, `/api/cases/${item.caseId}/lines/${item.lineId}/retrieve`, "POST", { result: "RETRIEVED" })}>{tr("confirmRetrieved")}</button></div>
-    </article>)}</div> : <p className="check-empty">{tr("noRetrievals")}</p>}</section>}
-    {canViewAvailable && <section className="check-section"><h2>{tr("availableChecks")}</h2>{loading ? <p>{tr("loading")}</p> : available.length ? <div className="check-card-grid">{available.map((check) => checkCard(check, "available"))}</div> : <p className="check-empty">{tr("noAvailableChecks")}</p>}</section>}
-    {canReassign && <section className="check-section"><h2>{tr("activeChecks")}</h2>{loading ? <p>{tr("loading")}</p> : active.length ? <div className="check-card-grid">{active.map((check) => checkCard(check, "active"))}</div> : <p className="check-empty">{tr("noActiveChecks")}</p>}</section>}
+    </article>)}</div><PaginationControls tr={tr} meta={retrievalMeta} loading={loading} onPage={(next) => void loadRetrievals(next)} /></> : <p className="check-empty">{tr("noRetrievals")}</p>}</section>}
+    {canViewAvailable && <section className="check-section"><h2>{tr("availableChecks")}</h2>{loading ? <p>{tr("loading")}</p> : available.length ? <><div className="check-card-grid">{available.map((check) => checkCard(check, "available"))}</div><CheckSectionPager tr={tr} page={checkPages.available} meta={availableMeta} onPage={(next) => void loadSection("available", next)} /></> : <p className="check-empty">{tr("noAvailableChecks")}</p>}</section>}
+    {canReassign && <section className="check-section"><h2>{tr("activeChecks")}</h2>{loading ? <p>{tr("loading")}</p> : active.length ? <><div className="check-card-grid">{active.map((check) => checkCard(check, "active"))}</div><CheckSectionPager tr={tr} page={checkPages.active} meta={activeMeta} onPage={(next) => void loadSection("active", next)} /></> : <p className="check-empty">{tr("noActiveChecks")}</p>}</section>}
   </div>;
 }

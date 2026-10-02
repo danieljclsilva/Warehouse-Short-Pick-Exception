@@ -1,12 +1,15 @@
 import { authenticate } from "@/server/auth";
 import { configurationPatchSchema, getConfigurationForUser, updateConfiguration } from "@/server/configuration";
 import { handleRouteError, jsonError, parseJson } from "@/server/http";
+import { parsePaginationParams, paginationQuerySchema } from "@/server/pagination";
 
 export async function GET(request: Request) {
   try {
     const auth = await authenticate(request);
     if (!auth) return jsonError("Unauthenticated", 401);
-    return Response.json(await getConfigurationForUser(auth));
+    const { page, pageSize } = parsePaginationParams(new URL(request.url).searchParams);
+    const parsed = paginationQuerySchema.parse({ page, pageSize });
+    return Response.json(await getConfigurationForUser(auth, { page: parsed.page, pageSize: parsed.pageSize }));
   } catch (error) { return handleRouteError(error); }
 }
 

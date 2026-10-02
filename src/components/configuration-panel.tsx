@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MessageKey } from "@/i18n/messages";
+import { PaginationControls } from "@/components/pagination-controls";
 import styles from "./configuration-panel.module.css";
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
@@ -25,6 +26,10 @@ type ConfigurationResponse = {
   history?: HistoryRecord[];
   versions?: HistoryRecord[];
   defaults?: Record<string, unknown>;
+  total?: number;
+  page?: number;
+  pageSize?: number;
+  totalPages?: number;
   error?: string;
 };
 
@@ -165,6 +170,17 @@ export function ConfigurationPanel({ tr, locale, role }: Props) {
   const [version, setVersion] = useState(0);
   const [versionId, setVersionId] = useState("");
   const [history, setHistory] = useState<HistoryRecord[]>([]);
+  const [historyPage, setHistoryPage] = useState({ total: 0, page: 1, pageSize: 20, totalPages: 1 });
+  const applyHistoryPage = (body: ConfigurationResponse, nextPage: number) => {
+    const entries = body.history ?? body.versions ?? [];
+    setHistory(entries);
+    setHistoryPage({
+      total: typeof body.total === "number" ? body.total : entries.length,
+      page: typeof body.page === "number" && body.page >= 1 ? body.page : nextPage,
+      pageSize: typeof body.pageSize === "number" && body.pageSize >= 1 ? body.pageSize : 20,
+      totalPages: typeof body.totalPages === "number" && body.totalPages >= 1 ? body.totalPages : 1,
+    });
+  };
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -172,11 +188,14 @@ export function ConfigurationPanel({ tr, locale, role }: Props) {
   const [conflict, setConflict] = useState(false);
   const [uploadSizeInput, setUploadSizeInput] = useState(bytesToMebibytes(Number(defaults.PROFILE_PHOTO_MAX_UPLOAD_BYTES)));
 
-  const load = useCallback(async () => {
+  const historyPageRef = useRef(historyPage.page);
+  useEffect(() => { historyPageRef.current = historyPage.page; }, [historyPage.page]);
+  const load = useCallback(async (nextHistoryPage?: number) => {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/admin/configuration", { credentials: "same-origin", cache: "no-store" });
+      const page = typeof nextHistoryPage === "number" && nextHistoryPage >= 1 ? nextHistoryPage : historyPageRef.current;
+      const response = await fetch(`/api/admin/configuration?page=${page}&pageSize=20`, { credentials: "same-origin", cache: "no-store" });
       const body = await response.json().catch(() => ({})) as ConfigurationResponse;
       if (!response.ok) throw new Error(body.error || tr("configurationLoadError"));
       const record = recordFrom(body);
@@ -188,7 +207,7 @@ export function ConfigurationPanel({ tr, locale, role }: Props) {
       setUploadSizeInput(bytesToMebibytes(Number(loadedValues.PROFILE_PHOTO_MAX_UPLOAD_BYTES)));
       setVersion(versionFrom(record, body));
       setVersionId(record.versionId ?? "");
-      setHistory(body.history ?? body.versions ?? []);
+      applyHistoryPage(body, page);
       setConflict(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : tr("configurationLoadError"));
@@ -245,7 +264,7 @@ export function ConfigurationPanel({ tr, locale, role }: Props) {
       }
       setVersion(versionFrom(record, body) || version + 1);
       setVersionId(record.versionId ?? versionId);
-      if (body.history || body.versions) setHistory(body.history ?? body.versions ?? []);
+      if (body.history || body.versions) applyHistoryPage(body, historyPageRef.current);
       await load();
       setNotice(tr("configurationSaved"));
     } catch (cause) {
@@ -303,9 +322,9 @@ export function ConfigurationPanel({ tr, locale, role }: Props) {
       </form>
       <section className={styles.section} aria-labelledby="configuration-history-title">
         <div className={styles.sectionHeading}><div><h2 id="configuration-history-title">{tr("configurationHistoryTitle")}</h2><p>{tr("configurationHistoryDescription", { count: String(settingCount) })}</p></div></div>
-        {history.length === 0 ? <p className={styles.empty}>{tr("configurationHistoryEmpty")}</p> : <div className={styles.history}>
+        {history.length === 0 ? <p className={styles.empty}>{tr("configurationHistoryEmpty")}</p> : <><div className={styles.history}>
           {history.map((entry, index) => <div className={styles.historyRow} key={entry.id ?? entry.versionId ?? String(entry.version ?? index)}><strong>{entry.version ? `v${entry.version}` : "—"}</strong><span>{actorName(entry.changedBy)}</span><time dateTime={entry.changedAt ?? entry.createdAt}>{formatDate(entry.changedAt ?? entry.createdAt, locale)}</time><div className={styles.historyValues}>{Object.keys(entry.changedValues ?? entry.values ?? {}).slice(0, 8).map((key) => <code key={key}>{key}</code>)}</div></div>)}
-        </div>}
+        </div><PaginationControls tr={tr} meta={historyPage} loading={loading} onPage={(next) => { void load(next); }} /></>}
       </section>
     </div>
   );

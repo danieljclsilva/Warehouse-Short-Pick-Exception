@@ -4,6 +4,7 @@ import { getDb } from "@/db";
 import { auditLog, configurationAudits, configurationVersions, users } from "@/db/schema";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
+import { paginationMeta, paginationOffset, paginationQuerySchema } from "@/server/pagination";
 import { CaseApiError } from "@/server/case-errors";
 
 export const RESOLUTION_CODES = ["FOUND", "FOUND_AT_ORIGINAL", "NOT_FOUND", "WRONG_LOCATION", "OTHER"] as const;
@@ -136,16 +137,19 @@ function publicActor(row: { id: string; displayName: string } | null) {
   return row ? { id: row.id, displayName: row.displayName } : null;
 }
 
-export async function getConfigurationForUser(auth: AuthContext) {
+export async function getConfigurationForUser(auth: AuthContext, options: { page?: number; pageSize?: number } = {}) {
   const current = await getCurrentConfiguration();
   assertConfigurationPermission(auth, current.values);
+  const parsed = paginationQuerySchema.parse({ page: options.page ?? 1, pageSize: options.pageSize ?? 20 });
+  const [countRow] = await getDb().select({ count: sql<number>`count(*)::int` }).from(configurationVersions);
+  const total = countRow?.count ?? 0;
   const history = await getDb().select({ version: configurationVersions.version, versionId: configurationVersions.id,
     values: configurationVersions.values, changedAt: configurationVersions.createdAt,
     changedById: users.id, changedByDisplayName: users.displayName,
     changedValues: configurationAudits.changedValues,
   }).from(configurationVersions).leftJoin(users, eq(configurationVersions.changedByUserId, users.id))
     .leftJoin(configurationAudits, eq(configurationAudits.newVersionId, configurationVersions.id))
-    .orderBy(desc(configurationVersions.version)).limit(100);
+    .orderBy(desc(configurationVersions.version)).limit(parsed.pageSize).offset(paginationOffset(parsed.page, parsed.pageSize));
   return {
     version: current.version,
     versionId: current.id,
@@ -155,6 +159,7 @@ export async function getConfigurationForUser(auth: AuthContext) {
     changedBy: publicActor(current.changedByUserId ? (await getDb().select({ id: users.id, displayName: users.displayName }).from(users).where(eq(users.id, current.changedByUserId)).limit(1))[0] ?? null : null),
     history: history.map((row) => ({ version: row.version, versionId: row.versionId, values: normalizeConfigurationValues(row.values), changedAt: row.changedAt,
       changedBy: publicActor(row.changedById ? { id: row.changedById, displayName: row.changedByDisplayName! } : null), changedValues: row.changedValues ?? row.values })),
+    ...paginationMeta(total, parsed.page, parsed.pageSize),
   };
 }
 

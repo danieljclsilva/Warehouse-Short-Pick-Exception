@@ -5,8 +5,9 @@ import { auditLog, caseEvents, caseMessages, checkTasks, configurationVersions, 
 import { addLineSchema, CaseApiError, createCaseSchema, getCaseForUser, hasCurrentCaseResponsibility, normalizeOrderNumber, projectLines, summarizeDashboard } from "@/server/cases";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
-import { insertMonitoringNotifications, insertResponsibilityNotification } from "@/server/notifications";
 import { getCurrentConfiguration, normalizeConfigurationValues } from "@/server/configuration";
+import { insertMonitoringNotifications, insertResponsibilityNotification } from "@/server/notifications";
+import { paginationMeta, paginationOffset, paginationQuerySchema } from "@/server/pagination";
 
 const activePhase = ne(orderCases.phase, "CLOSED");
 const terminalStates = new Set(["RESOLVED", "CANCELLED"]);
@@ -28,14 +29,19 @@ function requireManager(auth: AuthContext) {
   if (!hasAuthPermission(auth, "VIEW_ALL_OPEN_CASES")) throw new CaseApiError("CASE_ACCESS_DENIED", "Manager access required", 403);
 }
 
-export async function getOperationsDashboard(auth: AuthContext) {
+export const operationsDashboardQuerySchema = paginationQuerySchema;
+
+export async function getOperationsDashboard(auth: AuthContext, options: { page?: number; pageSize?: number } = {}) {
   requireManager(auth);
+  const parsed = operationsDashboardQuerySchema.parse({ page: options.page ?? 1, pageSize: options.pageSize ?? 20 });
   const db = getDb();
   const now = new Date();
   const today = new Date(now); today.setHours(0, 0, 0, 0);
   const configuration = (await getCurrentConfiguration(db)).values;
   const threshold = configuration.CRITICAL_THRESHOLD_MINUTES;
-  const rows = await db.select().from(orderCases).where(activePhase).orderBy(orderCases.createdAt).limit(500);
+  const [openCountRow] = await db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(activePhase);
+  const openTotal = openCountRow?.count ?? 0;
+  const rows = await db.select().from(orderCases).where(activePhase).orderBy(orderCases.createdAt).limit(parsed.pageSize).offset(paginationOffset(parsed.page, parsed.pageSize));
   const closedRows = await db.select().from(orderCases).where(eq(orderCases.phase, "CLOSED")).orderBy(desc(orderCases.resolvedAt)).limit(50);
   const configurationVersionIds = [...new Set(rows.map((row) => row.configurationVersionId))];
   const versionRows = configurationVersionIds.length
@@ -86,14 +92,16 @@ export async function getOperationsDashboard(auth: AuthContext) {
   const [resolved] = await db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(and(eq(orderCases.phase, "CLOSED"), gte(orderCases.resolvedAt, today)));
   const resolvedToday = resolved?.count ?? 0;
   const summary = summarizeDashboard(cases, resolvedToday);
+  // Metrics describe the requested page; openCases/openShortPicks totals come from openTotal below.
   return { metrics: {
-    openCases: summary.openCases,
+    openCases: openTotal,
     openShortPicks: cases.reduce((total, item) => total + item.missingCount, 0),
     checking: summary.checking,
     staged: summary.staged,
     overThreshold: summary.overThreshold,
     resolvedToday: summary.resolvedToday,
-  }, summary, attentionThresholdMinutes: threshold, thresholds: { warning: configuration.WARNING_THRESHOLD_MINUTES, attention: configuration.ATTENTION_THRESHOLD_MINUTES, critical: configuration.CRITICAL_THRESHOLD_MINUTES }, cases,
+  }, summary: { ...summary, openCases: openTotal }, attentionThresholdMinutes: threshold, thresholds: { warning: configuration.WARNING_THRESHOLD_MINUTES, attention: configuration.ATTENTION_THRESHOLD_MINUTES, critical: configuration.CRITICAL_THRESHOLD_MINUTES }, cases,
+    ...paginationMeta(openTotal, parsed.page, parsed.pageSize),
     recentClosedCases: closedRows.map((row) => ({
       id: row.id, orderNumber: row.orderNumber, phase: "CLOSED" as const, createdAt: row.createdAt, resolvedAt: row.resolvedAt,
       pickerName: row.pickingUserId ? names.get(row.pickingUserId) ?? null : null,

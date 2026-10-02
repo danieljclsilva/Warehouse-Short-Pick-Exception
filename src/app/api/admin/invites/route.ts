@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, notInArray, or } from "drizzle-orm";
+import { and, desc, eq, inArray, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { auditLog, invites } from "@/db/schema";
@@ -6,6 +6,7 @@ import { canManageRole, defaultPermissions as rolePermissions, permissionsAllowe
 import { authenticate, hasAuthPermission } from "@/server/auth";
 import { createToken, digestToken } from "@/server/security";
 import { handleRouteError, jsonError, parseJson } from "@/server/http";
+import { parsePaginationParams, paginationMeta, paginationOffset } from "@/server/pagination";
 import { getCurrentConfiguration } from "@/server/configuration";
 
 const schema = z.object({
@@ -16,19 +17,27 @@ const schema = z.object({
 });
 
 export async function GET(request: Request) {
-  const auth = await authenticate(request);
-  if (!auth) return jsonError("Unauthenticated", 401);
-  if (!hasAuthPermission(auth, "CREATE_INVITES")) return jsonError("Forbidden", 403);
-  const query = getDb().select({ id: invites.id, expiresAt: invites.expiresAt, maxRegistrations: invites.maxRegistrations, registrationsUsed: invites.registrationsUsed, defaultRole: invites.defaultRole, createdBy: invites.createdBy, createdAt: invites.createdAt, revokedAt: invites.revokedAt }).from(invites);
-  // Manager (and Admin) invitations are hidden from pickers, team leaders, assistants, and
-  // troubleshooters; only Admin sees them. canManageRole already blocks non-Admin creation.
-  const roleScope = auth.user.role === "ADMIN" ? undefined : notInArray(invites.defaultRole, ["ADMIN", "MANAGER"]);
-  const assistantScope = auth.user.role === "ASSISTANT"
-    ? or(eq(invites.createdBy, auth.user.id), inArray(invites.defaultRole, ["PICKER", "TROUBLESHOOTER"]))
-    : undefined;
-  const scope = roleScope && assistantScope ? and(roleScope, assistantScope) : roleScope ?? assistantScope;
-  const rows = await (scope ? query.where(scope) : query).orderBy(desc(invites.createdAt)).limit(100);
-  return Response.json({ invites: rows });
+  try {
+    const auth = await authenticate(request);
+    if (!auth) return jsonError("Unauthenticated", 401);
+    if (!hasAuthPermission(auth, "CREATE_INVITES")) return jsonError("Forbidden", 403);
+    const { page, pageSize } = parsePaginationParams(new URL(request.url).searchParams);
+    // Manager (and Admin) invitations are hidden from pickers, team leaders, assistants, and
+    // troubleshooters; only Admin sees them. canManageRole already blocks non-Admin creation.
+    const roleScope = auth.user.role === "ADMIN" ? undefined : notInArray(invites.defaultRole, ["ADMIN", "MANAGER"]);
+    const assistantScope = auth.user.role === "ASSISTANT"
+      ? or(eq(invites.createdBy, auth.user.id), inArray(invites.defaultRole, ["PICKER", "TROUBLESHOOTER"]))
+      : undefined;
+    const scope = roleScope && assistantScope ? and(roleScope, assistantScope) : roleScope ?? assistantScope;
+    const countQuery = getDb().select({ count: sql<number>`count(*)::int` }).from(invites);
+    const listQuery = getDb().select({ id: invites.id, expiresAt: invites.expiresAt, maxRegistrations: invites.maxRegistrations, registrationsUsed: invites.registrationsUsed, defaultRole: invites.defaultRole, createdBy: invites.createdBy, createdAt: invites.createdAt, revokedAt: invites.revokedAt }).from(invites);
+    const [[countRow], rows] = await Promise.all([
+      scope ? countQuery.where(scope) : countQuery,
+      (scope ? listQuery.where(scope) : listQuery).orderBy(desc(invites.createdAt), desc(invites.id)).limit(pageSize).offset(paginationOffset(page, pageSize)),
+    ]);
+    const total = countRow?.count ?? 0;
+    return Response.json({ invites: rows, ...paginationMeta(total, page, pageSize) });
+  } catch (error) { return handleRouteError(error); }
 }
 
 export async function POST(request: Request) {

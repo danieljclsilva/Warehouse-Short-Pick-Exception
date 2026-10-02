@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MessageKey } from "@/i18n/messages";
+import { PaginationControls } from "@/components/pagination-controls";
 import { PushSettings } from "@/components/push-settings";
 import styles from "./notification-center.module.css";
 
@@ -150,6 +151,8 @@ async function readBody<T>(response: Response): Promise<T> {
 export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCase, onReviewPhotos, onUnreadChange }: Props) {
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageMeta, setPageMeta] = useState({ total: 0, page: 1, pageSize: 50, totalPages: 1 });
   const [preferences, setPreferences] = useState<PreferenceState>(defaultPreferences);
   const [thresholds, setThresholds] = useState<ThresholdState>(defaultThresholds);
   const [loading, setLoading] = useState(true);
@@ -162,13 +165,20 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
   const [preferencesError, setPreferencesError] = useState("");
   const [saved, setSaved] = useState(false);
 
-  const loadNotifications = useCallback(async (silent = false) => {
+  const loadNotifications = useCallback(async (silent = false, nextPage = 1) => {
     if (!silent) setLoading(true);
     try {
-      const response = await fetch("/api/notifications", { credentials: "same-origin", cache: "no-store" });
-      const body = await readBody<NotificationsResponse>(response);
+      const response = await fetch(`/api/notifications?page=${nextPage}&pageSize=50`, { credentials: "same-origin", cache: "no-store" });
+      const body = await readBody<NotificationsResponse & { total?: number; page?: number; pageSize?: number; totalPages?: number }>(response);
       if (!response.ok) throw new Error(body.error || tr("notificationsLoadError"));
       setNotifications(body.notifications || []);
+      setPage(typeof body.page === "number" && body.page >= 1 ? body.page : nextPage);
+      setPageMeta({
+        total: typeof body.total === "number" ? body.total : (body.notifications || []).length,
+        page: typeof body.page === "number" && body.page >= 1 ? body.page : nextPage,
+        pageSize: typeof body.pageSize === "number" && body.pageSize >= 1 ? body.pageSize : 50,
+        totalPages: typeof body.totalPages === "number" && body.totalPages >= 1 ? body.totalPages : 1,
+      });
       const nextUnread = typeof body.unreadCount === "number" ? body.unreadCount : (body.notifications || []).filter((notification) => !notification.readAt).length;
       setUnreadCount(nextUnread);
       onUnreadChange?.(nextUnread);
@@ -197,12 +207,14 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
     }
   }, [canManagePreferences, tr]);
 
+  const pageRef = useRef(page);
+  useEffect(() => { pageRef.current = page; }, [page]);
   useEffect(() => {
     const initialTimer = window.setTimeout(() => {
-      void loadNotifications();
+      void loadNotifications(false, pageRef.current);
       if (canManagePreferences) void loadPreferences();
     }, 0);
-    const timer = window.setInterval(() => { void loadNotifications(true); }, 10_000);
+    const timer = window.setInterval(() => { void loadNotifications(true, pageRef.current); }, 10_000);
     return () => { window.clearTimeout(initialTimer); window.clearInterval(timer); };
   }, [canManagePreferences, loadNotifications, loadPreferences]);
 
@@ -324,14 +336,14 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
           <h2 id="notification-list-title">{tr("notificationUpdates")}</h2>
           <div className={styles.headingActions}>
             <button type="button" className={styles.refreshButton} onClick={() => void markAllRead()} disabled={markAllBusy || loading || unreadCount === 0}>{markAllBusy ? tr("saving") : tr("markAllNotificationsRead")}</button>
-            <button type="button" className={styles.refreshButton} onClick={() => void loadNotifications()} disabled={loading}>{tr("refresh")}</button>
+            <button type="button" className={styles.refreshButton} onClick={() => void loadNotifications(false, pageRef.current)} disabled={loading}>{tr("refresh")}</button>
           </div>
         </div>
         {markAllError && <p className={styles.preferenceError} role="alert">{markAllError}</p>}
         {loading ? <p className={styles.loading} aria-live="polite">{tr("notificationsLoading")}</p> : error ? (
-          <div className={styles.error} role="alert"><span>{error}</span><div className={styles.errorActions}><button type="button" className={styles.refreshButton} onClick={() => void loadNotifications()}>{tr("tryAgain")}</button></div></div>
+          <div className={styles.error} role="alert"><span>{error}</span><div className={styles.errorActions}><button type="button" className={styles.refreshButton} onClick={() => void loadNotifications(false, pageRef.current)}>{tr("tryAgain")}</button></div></div>
         ) : notificationRows.length === 0 ? <p className={styles.empty}>{tr("notificationsEmpty")}</p> : (
-          <div className={styles.list}>
+          <><div className={styles.list}>
             {notificationRows.map(({ notification, payload, detailParts, isPhotoApproval }) => (
               <article className={`${styles.row} ${notification.readAt ? "" : styles.rowUnread}`} key={notification.id}>
                 <span className={styles.dot} aria-hidden="true" />
@@ -349,6 +361,7 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
               </article>
             ))}
           </div>
+          <PaginationControls tr={tr} meta={pageMeta} loading={loading} onPage={(next) => void loadNotifications(false, next)} /></>
         )}
       </section>
 

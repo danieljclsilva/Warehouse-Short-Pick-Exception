@@ -13,6 +13,7 @@ import { ProfilePanel } from "@/components/profile-panel";
 import { UserManagement } from "@/components/user-management";
 import { PhotoApproval } from "@/components/photo-approval";
 import { EnvironmentBanner } from "@/components/environment-banner";
+import { PaginationControls } from "@/components/pagination-controls";
 import { ThemePicker } from "@/components/theme-picker";
 import {
   getMessages,
@@ -45,7 +46,7 @@ type Invite = {
   createdAt: string;
   revokedAt: string | null;
 };
-type InviteResponse = { invites?: Invite[]; invite?: Invite & { token: string; registrationUrl: string }; error?: string };
+type InviteResponse = { invites?: Invite[]; invite?: Invite & { token: string; registrationUrl: string }; error?: string; total?: number; page?: number; pageSize?: number; totalPages?: number };
 
 type AuthAppProps = { initialInviteToken?: string; initialView?: View };
 
@@ -461,6 +462,16 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [invites, setInvites] = useState<Invite[]>([]);
   const [invitesLoading, setInvitesLoading] = useState(true);
+  const [invitePage, setInvitePage] = useState({ total: 0, page: 1, pageSize: 20, totalPages: 1 });
+  const applyInvitePage = (body: InviteResponse, nextPage: number) => {
+    setInvites(body.invites || []);
+    setInvitePage({
+      total: typeof body.total === "number" ? body.total : (body.invites || []).length,
+      page: typeof body.page === "number" && body.page >= 1 ? body.page : nextPage,
+      pageSize: typeof body.pageSize === "number" && body.pageSize >= 1 ? body.pageSize : 20,
+      totalPages: typeof body.totalPages === "number" && body.totalPages >= 1 ? body.totalPages : 1,
+    });
+  };
   const [inviteCheckTime, setInviteCheckTime] = useState(0);
   const [inviteBusy, setInviteBusy] = useState(false);
   const [revokingId, setRevokingId] = useState("");
@@ -588,10 +599,10 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
         return;
       }
       try {
-        const response = await fetch("/api/admin/profile-photos", { credentials: "same-origin", cache: "no-store" });
+        const response = await fetch("/api/admin/profile-photos?page=1&pageSize=1", { credentials: "same-origin", cache: "no-store" });
         if (response.ok) {
-          const body = (await response.json()) as { photos?: unknown[] };
-          if (!cancelled) setPendingPhotoCount(Array.isArray(body.photos) ? body.photos.length : 0);
+          const body = (await response.json()) as { photos?: unknown[]; total?: number };
+          if (!cancelled) setPendingPhotoCount(typeof body.total === "number" ? body.total : (Array.isArray(body.photos) ? body.photos.length : 0));
         }
       } catch { /* badge-only; queue shows errors */ }
     };
@@ -663,12 +674,15 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
     router.replace("/", { scroll: false });
   }, [router]);
 
-  const loadInvites = useCallback(async () => {
+  const invitePageRef = useRef(invitePage.page);
+  useEffect(() => { invitePageRef.current = invitePage.page; }, [invitePage.page]);
+  const loadInvites = useCallback(async (nextPage?: number) => {
     try {
-      const response = await fetch("/api/admin/invites", { credentials: "same-origin", cache: "no-store" });
+      const page = typeof nextPage === "number" && nextPage >= 1 ? nextPage : invitePageRef.current;
+      const response = await fetch(`/api/admin/invites?page=${page}&pageSize=20`, { credentials: "same-origin", cache: "no-store" });
       const body = (await response.json()) as InviteResponse;
       if (!response.ok) throw new Error(body.error || tr("unknownError"));
-      setInvites(body.invites || []);
+      applyInvitePage(body, page);
       setInviteCheckTime(Date.now());
       setInviteError("");
     } catch (error) {
@@ -681,12 +695,12 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
   useEffect(() => {
     if (view !== "workspace" || !canCreateInvites) return;
     let cancelled = false;
-    fetch("/api/admin/invites", { credentials: "same-origin", cache: "no-store" })
+    fetch("/api/admin/invites?page=1&pageSize=20", { credentials: "same-origin", cache: "no-store" })
       .then(async (response) => {
         const body = (await response.json()) as InviteResponse;
         if (!response.ok) throw new Error(body.error || tr("unknownError"));
         if (!cancelled) {
-          setInvites(body.invites || []);
+          applyInvitePage(body, 1);
           setInviteCheckTime(Date.now());
           setInviteError("");
         }
@@ -1000,7 +1014,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
                 <section className="invite-list-section" aria-labelledby="invite-list-title">
                   <div className="invite-list-heading"><h2 id="invite-list-title">{tr("inviteListTitle")}</h2></div>
                   {invitesLoading ? <p className="invite-empty" aria-live="polite">{tr("loading")}</p> : invites.length === 0 ? <p className="invite-empty">{tr("inviteListEmpty")}</p> : (
-                    <div className="invite-list">
+                    <><div className="invite-list">
                       {invites.map((invite) => {
                         const isExpired = inviteCheckTime > 0 && new Date(invite.expiresAt).getTime() <= inviteCheckTime;
                         const isRevoked = Boolean(invite.revokedAt);
@@ -1013,7 +1027,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
                           {!(isRevoked || isExpired || isExhausted) && <button type="button" className="revoke-button" disabled={revokingId === invite.id} onClick={() => void handleRevokeInvite(invite)}>{revokingId === invite.id ? tr("inviteRevoking") : tr("inviteRevoke")}</button>}
                         </article>;
                       })}
-                    </div>
+                    </div><PaginationControls tr={tr} meta={invitePage} loading={invitesLoading} onPage={(next) => { setInvitesLoading(true); void loadInvites(next); }} /></>
                   )}
                 </section>
               </>

@@ -600,6 +600,14 @@ button { color: inherit; }
 .photo-queue-details span { color: var(--muted); font-size: 12px; }
 .photo-queue-actions { display: grid; gap: 8px; }
 .photo-queue-actions .primary-button, .photo-queue-actions .revoke-button { width: 135px; min-height: 43px; margin: 0; }
+.pagination-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.pagination-pages { display: flex; align-items: center; gap: 6px; }
+.pagination-page, .pagination-prev, .pagination-next, .pagination-more { min-height: 38px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 13px; font-weight: 550; cursor: pointer; }
+.pagination-page:disabled, .pagination-prev:disabled, .pagination-next:disabled, .pagination-more:disabled { opacity: .55; cursor: default; }
+.pagination-current { border-color: var(--accent, var(--line-strong)); font-weight: 700; }
+.pagination-gap { color: var(--muted); }
+.pagination-total { color: var(--muted); font-size: 12px; }
+.pagination-more { width: 100%; margin-top: 14px; }
 .case-overlay-backdrop { position: fixed; z-index: 70; inset: 0; display: grid; align-items: start; justify-items: center; padding: 24px 16px; background: var(--backdrop); overflow-y: auto; overscroll-behavior: contain; }
 .case-overlay { width: min(100%, 760px); max-height: calc(100vh - 48px); overflow-y: auto; overscroll-behavior: contain; padding: 20px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); box-shadow: 0 24px 80px var(--shadow-strong); }
 .case-overlay-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }

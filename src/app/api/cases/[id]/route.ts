@@ -1,6 +1,7 @@
 import { authenticate } from "@/server/auth";
-import { getCaseForUser } from "@/server/cases";
+import { caseTimelineQuerySchema, getCaseForUser } from "@/server/cases";
 import { handleRouteError, jsonError } from "@/server/http";
+import { parsePaginationParams } from "@/server/pagination";
 import { getDb } from "@/db";
 import { caseEvents } from "@/db/schema";
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -10,7 +11,9 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     const auth = await authenticate(request);
     if (!auth) return jsonError("Unauthenticated", 401);
     const { id } = await context.params;
-    const detail = (await getCaseForUser(auth, id)) as Record<string, unknown> & {
+    const { page, pageSize } = parsePaginationParams(new URL(request.url).searchParams, 50);
+    const timeline = caseTimelineQuerySchema.parse({ page, pageSize });
+    const detail = (await getCaseForUser(auth, id, { page: timeline.page, pageSize: timeline.pageSize })) as Record<string, unknown> & {
       lines?: Array<Record<string, unknown> & { id?: string }>;
       lineProjections?: Array<Record<string, unknown>>;
       projection?: { lines?: Array<Record<string, unknown>> };

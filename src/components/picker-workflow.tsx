@@ -7,6 +7,7 @@ import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import { CaseStatusBadge } from "@/components/case-status-badge";
 import { CaseTimeline, type CaseTimelineEvent, type CaseTimelineMessage } from "@/components/case-timeline";
+import { PaginationControls } from "@/components/pagination-controls";
 
 type ShortPickLine = { id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation?: string | null; retrievalState?: string; retrievalResponsibleUserId?: string | null; replenishmentState?: string | null; replenishmentNote?: string | null };
 type OrderCase = {
@@ -18,6 +19,7 @@ type OrderCase = {
   lines: ShortPickLine[];
   lineProjections?: Array<{ lineId: string; replenishment?: { state?: string; note?: string | null } }>;
   events?: CaseTimelineEvent[];
+  eventsPagination?: { total: number; page: number; pageSize: number; totalPages: number } | null;
   messages?: CaseTimelineMessage[];
 };
 type CaseSummary = Omit<OrderCase, "lines"> & { lines?: ShortPickLine[]; missingCount?: number; foundCount?: number; checkingCount?: number };
@@ -128,6 +130,8 @@ function LocationReportForm({ tr, caseId, lineId, onReported }: {
 
 export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canViewOwnCases, canOverrideDuplicateLine, canStage, canConfirmRetrieval, canClose, canReportLocation = false, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: PickerWorkflowProps) {
   const [cases, setCases] = useState<CaseSummary[]>([]);
+  const [pageMeta, setPageMeta] = useState({ total: 0, page: 1, pageSize: 20, totalPages: 1 });
+  const [timelinePages, setTimelinePages] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(canViewOwnCases);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -152,38 +156,50 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
     return () => window.clearTimeout(timer);
   }, [actionNotice]);
 
-  const loadCases = useCallback(async () => {
+  const applyCasePage = useCallback((body: ApiError & { cases?: CaseSummary[]; total?: number; page?: number; pageSize?: number; totalPages?: number }, nextPage: number) => {
+    setCases(body.cases || []);
+    setPageMeta({
+      total: typeof body.total === "number" ? body.total : (body.cases || []).length,
+      page: typeof body.page === "number" && body.page >= 1 ? body.page : nextPage,
+      pageSize: typeof body.pageSize === "number" && body.pageSize >= 1 ? body.pageSize : 20,
+      totalPages: typeof body.totalPages === "number" && body.totalPages >= 1 ? body.totalPages : 1,
+    });
+  }, []);
+
+  const loadCases = useCallback(async (nextPage = 1) => {
     if (!canViewOwnCases) { setCases([]); setLoading(false); return; }
     try {
-      const response = await fetch("/api/picker/cases", { credentials: "same-origin", cache: "no-store" });
+      const response = await fetch(`/api/picker/cases?page=${nextPage}&pageSize=20`, { credentials: "same-origin", cache: "no-store" });
       const body = await readBody(response);
       if (!response.ok) throw new Error(tr("caseLoadError"));
-      setCases(body.cases || []);
+      applyCasePage(body, nextPage);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : tr("caseLoadError"));
     } finally {
       setLoading(false);
     }
-  }, [canViewOwnCases, tr]);
+  }, [applyCasePage, canViewOwnCases, tr]);
 
   const activeCaseId = activeCase?.id;
+  const pickerPageRef = useRef(pageMeta.page);
+  useEffect(() => { pickerPageRef.current = pageMeta.page; }, [pageMeta.page]);
   const refreshLiveData = useCallback(async () => {
     if (canViewOwnCases) {
-      const response = await fetch("/api/picker/cases", { credentials: "same-origin", cache: "no-store" });
+      const response = await fetch(`/api/picker/cases?page=${pickerPageRef.current}&pageSize=20`, { credentials: "same-origin", cache: "no-store" });
       const body = await readBody(response);
       if (!response.ok) throw new Error(tr("caseLoadError"));
-      setCases(body.cases || []);
+      applyCasePage(body, pickerPageRef.current);
       setLoading(false);
     }
     if (activeCaseId) {
-      const response = await fetch(`/api/cases/${encodeURIComponent(activeCaseId)}`, { credentials: "same-origin", cache: "no-store" });
+      const timelinePage = timelinePages[activeCaseId] ?? 1;
+      const response = await fetch(`/api/cases/${encodeURIComponent(activeCaseId)}?page=${timelinePage}&pageSize=50`, { credentials: "same-origin", cache: "no-store" });
       const body = await readBody(response);
       if (!response.ok || !body.case) throw new Error(tr("caseLoadError"));
       setActiveCase(withReplenishmentFolded(body.case));
     }
-  }, [activeCaseId, canViewOwnCases, tr]);
+  }, [activeCaseId, applyCasePage, canViewOwnCases, timelinePages, tr]);
   const liveState = useLiveRefresh(refreshLiveData, 5_000, canViewOwnCases || Boolean(activeCase));
-
   const prepareCase = (number: string, historicalIds: string[], preserveDraft = false) => {
     if (!preserveDraft) { setLocation(""); setSku(""); setQuantity(1); }
     setPendingOrder(number);
@@ -194,13 +210,14 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
     setDuplicateLine(null);
   };
 
-  const openCase = useCallback(async (id: string) => {
+  const openCase = useCallback(async (id: string, timelinePage = 1) => {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`/api/cases/${encodeURIComponent(id)}`, { credentials: "same-origin", cache: "no-store" });
+      const response = await fetch(`/api/cases/${encodeURIComponent(id)}?page=${timelinePage}&pageSize=50`, { credentials: "same-origin", cache: "no-store" });
       const body = await readBody(response);
       if (!response.ok || !body.case) throw new Error(tr("caseLoadError"));
+      setTimelinePages((current) => ({ ...current, [id]: timelinePage }));
       setActiveCase(withReplenishmentFolded(body.case));
       setHistory([]);
       setShowLineForm(false);
@@ -442,7 +459,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
               {!duplicateLine && <button className="primary-button" type="submit" disabled={busy}>{busy ? tr("savingLine") : tr("saveMissingItem")}</button>}
             </form>
           ))}
-          {displayCase.id && (displayCase.events?.length || displayCase.messages?.length) ? <section className="case-timeline-section" aria-label={tr("caseTimeline")}><h3>{tr("caseTimeline")}</h3><CaseTimeline events={displayCase.events || []} messages={displayCase.messages || []} tr={tr} formatDate={(value) => formatDate(value, locale)} className="case-shared-timeline" /></section> : null}
+          {displayCase.id && (displayCase.events?.length || displayCase.messages?.length) ? <section className="case-timeline-section" aria-label={tr("caseTimeline")}><h3>{tr("caseTimeline")}</h3><CaseTimeline events={displayCase.events || []} messages={displayCase.messages || []} tr={tr} formatDate={(value) => formatDate(value, locale)} className="case-shared-timeline" />{activeCase && activeCase.eventsPagination && activeCase.eventsPagination.totalPages > 1 ? <PaginationControls tr={tr} variant="more" meta={activeCase.eventsPagination} loading={busy} onPage={(next) => void openCase(activeCase.id, next)} /> : null}</section> : null}
           {activeCase && canStage && activeCase.phase === "PICKING" && <div className="case-stage-panel">{stageConfirm ? <><p>{tr("stagingConfirm")}</p><div className="case-stage-actions"><button className="secondary-button" type="button" onClick={() => setStageConfirm(false)} disabled={busy}>{tr("cancel")}</button><button className="primary-button" type="button" onClick={() => void stageOrder()} disabled={busy}>{tr("stagingConfirmButton")}</button></div></> : <button className="secondary-button" type="button" onClick={() => setStageConfirm(true)} disabled={busy}>{tr("stagingAction")}</button>}</div>}
           {activeCase && canClose && activeCase.phase !== "CLOSED" && activeCase.lines.length > 0 && activeCase.lines.every((line) => ["RESOLVED", "CANCELLED"].includes(line.state)) && <button className="secondary-button case-close-button" type="button" disabled={busy} onClick={() => void closeResolvedCase()}>{tr("closeCase")}</button>}
         </section>
@@ -461,14 +478,14 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
             </section>}
           </section>}
           {canViewOwnCases && <section className="my-cases-section" aria-labelledby="my-cases-title">
-            <div className="invite-list-heading"><h2 id="my-cases-title">{tr("myShortPickOrders")}</h2><div className="live-refresh-controls"><LiveRefreshStatus state={liveState} tr={tr} /><button className="refresh-cases-button" type="button" onClick={() => void loadCases()} disabled={loading}>{tr("refresh")}</button></div></div>
-            {loading ? <p className="case-list-empty" aria-live="polite">{tr("loadingCases")}</p> : cases.length === 0 ? <p className="case-list-empty">{tr("noActiveCases")}</p> : <div className="picker-case-list">{cases.map((item) => {
+            <div className="invite-list-heading"><h2 id="my-cases-title">{tr("myShortPickOrders")}</h2><div className="live-refresh-controls"><LiveRefreshStatus state={liveState} tr={tr} /><button className="refresh-cases-button" type="button" onClick={() => void loadCases(pickerPageRef.current)} disabled={loading}>{tr("refresh")}</button></div></div>
+            {loading ? <p className="case-list-empty" aria-live="polite">{tr("loadingCases")}</p> : cases.length === 0 ? <p className="case-list-empty">{tr("noActiveCases")}</p> : <><div className="picker-case-list">{cases.map((item) => {
               const lines = item.lines || [];
               const missing = item.missingCount ?? lines.reduce((sum, line) => sum + (line.state.toUpperCase() === "OPEN" || line.state.toUpperCase() === "CHECKING" ? line.quantity : 0), 0);
               const found = item.foundCount ?? lines.reduce((sum, line) => sum + (line.state.toUpperCase() === "FOUND" || line.state.toUpperCase() === "RETRIEVED" ? line.quantity : 0), 0);
               const checking = item.checkingCount ?? lines.filter((line) => line.state.toUpperCase() === "CHECKING").length;
               return <article className="picker-case-row" key={item.id}><div className="picker-case-main"><strong>{item.orderNumber}</strong><CaseStatusBadge status={(item.lines?.[0]?.state ?? (checking > 0 ? "CHECKING" : found > 0 ? "FOUND" : "OPEN"))} tr={tr} /><span>{tr("missingCount", { count: String(missing) })}{found > 0 ? ` · ${tr("foundCount", { count: String(found) })}` : ""}{checking > 0 ? ` · ${tr("checkingCount", { count: String(checking) })}` : ""}</span></div><button className="case-open-button" type="button" onClick={() => void openCase(item.id)} disabled={busy}>{tr("openCase")}</button></article>;
-            })}</div>}
+            })}</div><PaginationControls tr={tr} meta={pageMeta} loading={loading} onPage={(next) => void loadCases(next)} /></>}
           </section>}
         </>
       )}

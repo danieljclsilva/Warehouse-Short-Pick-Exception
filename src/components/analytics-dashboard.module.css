@@ -55,7 +55,16 @@
 .reportFilename { overflow: hidden; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; }
 .reportMeta { color: var(--muted); font-size: 11px; }
 .reportActions { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 8px; }
-.dataNote { margin: -6px 0 0; color: var(--muted); font-size: 11px; }
+.chartFigure { margin: 16px 0 0; }
+.chartFigure :global(.recharts-wrapper) { outline: none; }
+.chartNote { margin: 10px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.chartEmpty { margin: 16px 0 0; color: var(--muted); font-size: 13px; }
+.filterSubhead { margin: 18px 0 0; color: var(--ink-soft); font-size: 12px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; }
+.filterToggleRow { display: inline-flex; align-items: center; gap: 10px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 14px 0 0; padding: 0; list-style: none; }
+.chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--hover); color: var(--ink); font-size: 12px; }
+.chip button { display: inline-flex; width: 24px; height: 24px; align-items: center; justify-content: center; border: 1px solid var(--line-strong); border-radius: 50%; background: var(--surface); color: var(--ink-soft); font-size: 14px; line-height: 1; cursor: pointer; }
+.chip button:hover { background: var(--green-wash); color: var(--green); }
 .srOnly { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 
 @media (max-width: 1040px) {

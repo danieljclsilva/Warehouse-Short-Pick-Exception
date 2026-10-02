@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import Image from "next/image";
 import { PERMISSIONS, permissionsAllowedForRole, type Role } from "@/domain/permissions";
+import { PaginationControls } from "@/components/pagination-controls";
 import type { MessageKey } from "@/i18n/messages";
 
 type ManagedUser = { id: string; displayName: string; loginIdentifier: string; role: string; status: "ACTIVE" | "DISABLED" | "ARCHIVED"; preferredLanguage: string; permissions: string[]; profilePhotoStatus?: string; photoUrl?: string | null };
@@ -22,28 +23,40 @@ export function UserManagement({ actorId, actorRole, actorPermissions, tr }: Pro
   const [permissionTarget, setPermissionTarget] = useState("");
   const [permissions, setPermissions] = useState<string[]>([]);
 
-  const loadUsers = useCallback(async () => {
+  const [pageMeta, setPageMeta] = useState({ total: 0, page: 1, pageSize: 20, totalPages: 1 });
+
+  const applyUserPage = useCallback((body: { users?: ManagedUser[]; error?: string; total?: number; page?: number; pageSize?: number; totalPages?: number }, nextPage: number) => {
+    setUsers(body.users || []);
+    setPageMeta({
+      total: typeof body.total === "number" ? body.total : (body.users || []).length,
+      page: typeof body.page === "number" && body.page >= 1 ? body.page : nextPage,
+      pageSize: typeof body.pageSize === "number" && body.pageSize >= 1 ? body.pageSize : 20,
+      totalPages: typeof body.totalPages === "number" && body.totalPages >= 1 ? body.totalPages : 1,
+    });
+  }, []);
+
+  const loadUsers = useCallback(async (nextPage = 1) => {
     setError("");
     try {
-      const response = await fetch("/api/admin/users", { credentials: "same-origin", cache: "no-store" });
-      const body = await response.json() as { users?: ManagedUser[]; error?: string };
+      const response = await fetch(`/api/admin/users?page=${nextPage}&pageSize=20`, { credentials: "same-origin", cache: "no-store" });
+      const body = await response.json() as { users?: ManagedUser[]; error?: string; total?: number; page?: number; pageSize?: number; totalPages?: number };
       if (!response.ok) throw new Error(body.error || tr("usersLoadError"));
-      setUsers(body.users || []);
+      applyUserPage(body, nextPage);
     } catch (cause) { setError(cause instanceof Error ? cause.message : tr("unknownError")); }
     finally { setLoading(false); }
-  }, [tr]);
+  }, [applyUserPage, tr]);
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/admin/users", { credentials: "same-origin", cache: "no-store" })
+    fetch("/api/admin/users?page=1&pageSize=20", { credentials: "same-origin", cache: "no-store" })
       .then(async (response) => {
-        const body = await response.json() as { users?: ManagedUser[]; error?: string };
+        const body = await response.json() as { users?: ManagedUser[]; error?: string; total?: number; page?: number; pageSize?: number; totalPages?: number };
         if (!response.ok) throw new Error(body.error || tr("usersLoadError"));
-        if (!cancelled) setUsers(body.users || []);
+        if (!cancelled) applyUserPage(body, 1);
       })
       .catch((cause: unknown) => { if (!cancelled) setError(cause instanceof Error ? cause.message : tr("unknownError")); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [tr]);
+  }, [applyUserPage, tr]);
 
   const mutate = async (target: ManagedUser, input: Record<string, unknown>, success: string) => {
     setBusyId(target.id); setError(""); setNotice("");
@@ -96,7 +109,7 @@ export function UserManagement({ actorId, actorRole, actorPermissions, tr }: Pro
           {actorPermissions.includes("REVOKE_USER_SESSIONS") && <button className="text-button" type="button" disabled={busyId === target.id} onClick={() => void mutate(target, { action: "revokeSessions" }, tr("sessionsRevoked"))}>{tr("revokeSessions")}</button>}
         </div>}
       </article>;
-    })}</div>}
+    })}<PaginationControls tr={tr} meta={pageMeta} loading={loading} onPage={(next) => { setLoading(true); void loadUsers(next); }} /></div>}
     {pinTarget && <div className="profile-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPinTarget(""); }}><section className="profile-dialog" role="dialog" aria-modal="true" aria-labelledby="pin-dialog-title"><h2 id="pin-dialog-title">{tr(credentialAction === "resetPin" ? "resetPin" : "resetPassword")}</h2><form className="profile-form" onSubmit={savePin}>{credentialAction === "resetPin" ? <label className="form-field"><span>{tr("newPin")}</span><input type="password" inputMode="numeric" pattern="[0-9]{6,}" minLength={6} autoComplete="new-password" required value={pin} onChange={(event) => setPin(event.target.value)} /></label> : <label className="form-field"><span>{tr("newCredentialPASSWORD")}</span><input type="password" minLength={8} maxLength={200} autoComplete="new-password" required value={pin} onChange={(event) => setPin(event.target.value)} /></label>}<div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setPinTarget("")}>{tr("cancel")}</button><button className="primary-button" type="submit">{tr("savePin")}</button></div></form></section></div>}
     {permissionTarget && users.find((target) => target.id === permissionTarget) && <div className="profile-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPermissionTarget(""); }}><section className="profile-dialog permission-dialog" role="dialog" aria-modal="true" aria-labelledby="permission-dialog-title"><h2 id="permission-dialog-title">{tr("editPermissions")}</h2><p>{users.find((target) => target.id === permissionTarget)?.displayName}</p><p className="permission-bounds-hint">{tr("permissionsRoleBoundsHint")}</p><form onSubmit={savePermissions}><div className="permission-list">{PERMISSIONS.filter((permission) => editablePermission(users.find((target) => target.id === permissionTarget)!, permission)).map((permission) => <label key={permission} className="permission-option"><input type="checkbox" checked={permissions.includes(permission)} onChange={(event) => setPermissions((current) => event.target.checked ? [...current, permission] : current.filter((item) => item !== permission))} /><span>{tr(`permission_${permission}` as MessageKey)}</span></label>)}</div><div className="dialog-actions"><button className="secondary-button" type="button" onClick={() => setPermissionTarget("")}>{tr("cancel")}</button><button className="primary-button" type="submit" disabled={busyId === permissionTarget}>{tr("savePermissions")}</button></div></form></section></div>}
   </div>;

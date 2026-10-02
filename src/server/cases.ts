@@ -6,6 +6,7 @@ import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { insertMonitoringNotifications } from "@/server/notifications";
 import { getCurrentConfiguration } from "@/server/configuration";
+import { paginationMeta, paginationOffset, paginationQuerySchema } from "@/server/pagination";
 import { CaseApiError } from "@/server/case-errors";
 
 export const orderNumberSchema = z.string().trim().regex(/^\d+$/, "Order number must contain digits only").max(64);
@@ -144,13 +145,23 @@ export function summarizeDashboard(cases: Array<{ phase: string; openLineCount: 
 
 const isOpen = ne(orderCases.phase, "CLOSED");
 
-async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: string, includeMessages: boolean) {
+export const caseTimelineQuerySchema = paginationQuerySchema;
+
+export type CaseTimelinePage = { page?: number; pageSize?: number };
+
+async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: string, includeMessages: boolean, timeline: CaseTimelinePage = {}) {
   const [record] = await db.select().from(orderCases).where(eq(orderCases.id, caseId)).limit(1);
   if (!record) return null;
   const lines = await db.select().from(shortPickLines).where(eq(shortPickLines.caseId, caseId)).orderBy(shortPickLines.createdAt, shortPickLines.id);
   const checks = lines.length ? await db.select().from(checkTasks).where(inArray(checkTasks.shortPickLineId, lines.map((line) => line.id))).orderBy(checkTasks.createdAt, checkTasks.id) : [];
+  const timelineParsed = caseTimelineQuerySchema.parse({ page: timeline.page ?? 1, pageSize: timeline.pageSize ?? 50 });
+  const timelineWhere = eq(caseEvents.caseId, caseId);
+  const [eventCountRow] = await db.select({ count: sql<number>`count(*)::int` }).from(caseEvents).where(timelineWhere);
+  const eventTotal = eventCountRow?.count ?? 0;
+  // Keyset would fit a feed better, but offset keeps the contract uniform; created_at+id order is stable.
   const events = await db.select({ id: caseEvents.id, shortPickLineId: caseEvents.shortPickLineId, actorUserId: caseEvents.actorUserId, actorName: users.displayName, eventType: caseEvents.eventType, details: caseEvents.details, createdAt: caseEvents.createdAt })
-    .from(caseEvents).leftJoin(users, eq(caseEvents.actorUserId, users.id)).where(eq(caseEvents.caseId, caseId)).orderBy(caseEvents.createdAt, caseEvents.id);
+    .from(caseEvents).leftJoin(users, eq(caseEvents.actorUserId, users.id)).where(timelineWhere).orderBy(caseEvents.createdAt, caseEvents.id)
+    .limit(timelineParsed.pageSize).offset(paginationOffset(timelineParsed.page, timelineParsed.pageSize));
   const locationByLine = new Map(lines.map((line) => [line.id, { originalLocation: line.originalLocation, discoveredLocation: line.discoveredLocation }]));
   const shapedEvents = events.map((event) => {
     const raw = (event.details ?? {}) as Record<string, unknown>;
@@ -204,7 +215,7 @@ async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: st
       responsibleName: line.currentResponsibleUserId ? (names.get(line.currentResponsibleUserId) ?? null) : null,
       reporterName: names.get(line.reportedByUserId) ?? null, reporterIdentifier: identifiers.get(line.reportedByUserId) ?? null })),
     checks: checks.map((check) => { const workerId = check.assignedToUserId ?? check.claimedByUserId; return { ...check, assigneeName: workerId ? (names.get(workerId) ?? null) : null }; }),
-    events: shapedWithAssignee, messages, projection, lineProjections };
+    events: shapedWithAssignee, eventsPagination: paginationMeta(eventTotal, timelineParsed.page, timelineParsed.pageSize), messages, projection, lineProjections };
 }
 
 function canReadCase(auth: AuthContext, row: typeof orderCases.$inferSelect) {
@@ -344,7 +355,7 @@ export async function addCaseLine(auth: AuthContext, caseId: string, input: z.in
   return { ...result.line, location: result.line.originalLocation, quantity: result.line.missingQuantity };
 }
 
-export async function getCaseForUser(auth: AuthContext, caseId: string) {
+export async function getCaseForUser(auth: AuthContext, caseId: string, timeline: CaseTimelinePage = {}) {
   return getDb().transaction(async (tx) => {
     const [row] = await tx.select().from(orderCases).where(eq(orderCases.id, caseId)).limit(1);
     if (!row) throw new CaseApiError("CASE_NOT_FOUND", "Case not found", 404);
@@ -352,7 +363,7 @@ export async function getCaseForUser(auth: AuthContext, caseId: string) {
       const isManager = hasAuthPermission(auth, "VIEW_ALL_OPEN_CASES");
       const isParticipant = hasAuthPermission(auth, "VIEW_OWN_CASES") && (await isRecordedCaseParticipant(tx, auth, row));
       if (!isManager && !isParticipant) throw new CaseApiError("CASE_ACCESS_DENIED", "You cannot access this closed case", 403);
-      const detail = await readCase(tx, caseId, hasAuthPermission(auth, "VIEW_CASE_MESSAGES"));
+      const detail = await readCase(tx, caseId, hasAuthPermission(auth, "VIEW_CASE_MESSAGES"), timeline);
       return { ...detail, readOnly: true as const };
     }
     if (!canReadCase(auth, row)) {
@@ -360,18 +371,28 @@ export async function getCaseForUser(auth: AuthContext, caseId: string) {
         throw new CaseApiError("CASE_ACCESS_DENIED", "You cannot access this case", 403);
       }
     }
-    return readCase(tx, caseId, hasAuthPermission(auth, "VIEW_CASE_MESSAGES"));
+    return readCase(tx, caseId, hasAuthPermission(auth, "VIEW_CASE_MESSAGES"), timeline);
   });
 }
 
-export async function listCasesForUser(auth: AuthContext, scope: "mine" | "active") {
+export const caseListQuerySchema = paginationQuerySchema.extend({
+  scope: z.enum(["mine", "active"]).default("mine"),
+});
+
+export async function listCasesForUser(auth: AuthContext, scope: "mine" | "active", options: { page?: number; pageSize?: number } = {}) {
   const db = getDb();
   if (scope === "active" && !hasAuthPermission(auth, "VIEW_ALL_OPEN_CASES")) throw new CaseApiError("CASE_ACCESS_DENIED", "You cannot view all active cases", 403);
   if (scope === "mine" && !hasAuthPermission(auth, "VIEW_OWN_CASES")) throw new CaseApiError("CASE_ACCESS_DENIED", "You cannot view your cases", 403);
-  const rows = await db.select().from(orderCases).where(and(isOpen, ...(scope === "mine" ? [eq(orderCases.pickingUserId, auth.user.id)] : []))).orderBy(desc(orderCases.updatedAt)).limit(250);
+  const parsed = caseListQuerySchema.parse({ scope, page: options.page ?? 1, pageSize: options.pageSize ?? 20 });
+  const where = and(isOpen, ...(scope === "mine" ? [eq(orderCases.pickingUserId, auth.user.id)] : []));
+  const [countRow] = await db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(where);
+  const total = countRow?.count ?? 0;
+  // Empty pages stay empty: no clamping to the last page, so filters survive paging.
+  const rows = await db.select().from(orderCases).where(where).orderBy(desc(orderCases.updatedAt)).limit(parsed.pageSize).offset(paginationOffset(parsed.page, parsed.pageSize));
   const ids = rows.map((row) => row.id);
   const lines = ids.length ? await db.select().from(shortPickLines).where(inArray(shortPickLines.caseId, ids)).orderBy(shortPickLines.createdAt) : [];
   const grouped = new Map<string, typeof lines>();
   for (const line of lines) grouped.set(line.caseId, [...(grouped.get(line.caseId) ?? []), line]);
-  return rows.map((row) => ({ ...row, lines: (grouped.get(row.id) ?? []).map((line) => ({ id: line.id, state: line.state, quantity: line.missingQuantity, location: line.originalLocation, sku: line.sku })) }));
+  const cases = rows.map((row) => ({ ...row, lines: (grouped.get(row.id) ?? []).map((line) => ({ id: line.id, state: line.state, quantity: line.missingQuantity, location: line.originalLocation, sku: line.sku })) }));
+  return { cases, ...paginationMeta(total, parsed.page, parsed.pageSize) };
 }

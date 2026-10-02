@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
-import { and, asc, desc, eq, inArray, ne, or, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, or, isNull, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { auditLog, notifications, profilePhotos, pushOutbox, users } from "@/db/schema";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/cases";
 import { insertNotification } from "@/server/notifications";
+import { paginationMeta, paginationOffset, paginationQuerySchema } from "@/server/pagination";
 import { assertStorageConfigured, getStorage } from "@/server/storage";
 import { logServerError } from "@/server/logger";
 
@@ -110,13 +111,19 @@ export async function getProfilePhoto(auth: AuthContext, userId: string) {
   return { body: object.body, contentType: photo.contentType };
 }
 
-export async function listPendingProfilePhotos(auth: AuthContext) {
+export async function listPendingProfilePhotos(auth: AuthContext, options: { page?: number; pageSize?: number } = {}) {
   requirePhotoApprover(auth);
-  const rows = await getDb().select({ id: profilePhotos.id, userId: users.id, displayName: users.displayName,
+  const parsed = paginationQuerySchema.parse({ page: options.page ?? 1, pageSize: options.pageSize ?? 20 });
+  const db = getDb();
+  const scope = eq(profilePhotos.status, "PENDING");
+  const [countRow] = await db.select({ count: sql<number>`count(*)::int` }).from(profilePhotos).where(scope);
+  const total = countRow?.count ?? 0;
+  const rows = await db.select({ id: profilePhotos.id, userId: users.id, displayName: users.displayName,
     createdAt: profilePhotos.createdAt, contentType: profilePhotos.contentType })
     .from(profilePhotos).innerJoin(users, eq(profilePhotos.userId, users.id))
-    .where(eq(profilePhotos.status, "PENDING")).orderBy(asc(profilePhotos.createdAt));
-  return { photos: rows.map((row) => ({ ...row, photoUrl: `/api/profile/photo?userId=${row.userId}` })) };
+    .where(scope).orderBy(asc(profilePhotos.createdAt))
+    .limit(parsed.pageSize).offset(paginationOffset(parsed.page, parsed.pageSize));
+  return { photos: rows.map((row) => ({ ...row, photoUrl: `/api/profile/photo?userId=${row.userId}` })), ...paginationMeta(total, parsed.page, parsed.pageSize) };
 }
 
 export async function removeProfilePhoto(auth: AuthContext) {
