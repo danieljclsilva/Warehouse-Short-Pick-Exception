@@ -70,8 +70,9 @@ type ClosedCaseSummary = {
   pickerName: string | null;
   responsibleName: string | null;
 };
+type ClosedPageMeta = { total: number; page: number; pageSize: number; totalPages: number };
 type Worker = { id: string; displayName: string; role: string; status: string };
-type DashboardResponse = { metrics?: Metrics; attentionThresholdMinutes?: number; thresholds?: { warning?: number; attention?: number; critical?: number }; cases?: CaseSummary[]; recentClosedCases?: ClosedCaseSummary[] };
+type DashboardResponse = { metrics?: Metrics; attentionThresholdMinutes?: number; thresholds?: { warning?: number; attention?: number; critical?: number }; cases?: CaseSummary[]; recentClosedCases?: ClosedCaseSummary[]; closedPagination?: ClosedPageMeta };
 type HistoricalCase = { id: string; createdAt: string; phase: string };
 type CaseResponse = { case?: CaseSummary; history?: HistoricalCase[]; code?: string; users?: Worker[] };
 type Props = {
@@ -185,8 +186,9 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
   const [attentionThresholdMinutes, setAttentionThresholdMinutes] = useState(15);
   const [thresholds, setThresholds] = useState({ warning: 5, attention: 10, critical: 15 });
   const [cases, setCases] = useState<CaseSummary[]>([]);
-  const [recentClosedCases, setRecentClosedCases] = useState<ClosedCaseSummary[]>([]);
   const [pageMeta, setPageMeta] = useState({ total: 0, page: 1, pageSize: 20, totalPages: 1 });
+  const [recentClosedCases, setRecentClosedCases] = useState<ClosedCaseSummary[]>([]);
+  const [closedPageMeta, setClosedPageMeta] = useState<ClosedPageMeta>({ total: 0, page: 1, pageSize: 20, totalPages: 1 });
   const [timelinePages, setTimelinePages] = useState<Record<string, number>>({});
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [selected, setSelected] = useState<CaseSummary | null>(null);
@@ -219,12 +221,13 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
   const [reopenPhase, setReopenPhase] = useState<"PICKING" | "STAGED">("PICKING");
   const [reopenResponsible, setReopenResponsible] = useState("");
   const [clockNow, setClockNow] = useState<number | null>(null);
-
-  const fetchDashboard = useCallback(async (nextPage = 1) => {
+  const closedPageRef = useRef(1);
+  const fetchDashboard = useCallback(async (nextPage = 1, nextClosedPage?: number) => {
     if (dashboardRequestInFlight.current) return true;
     dashboardRequestInFlight.current = true;
     try {
-      const response = await fetch(`/api/operations/dashboard?page=${nextPage}&pageSize=20`, { cache: "no-store" });
+      const targetClosedPage = nextClosedPage ?? closedPageRef.current;
+      const response = await fetch(`/api/operations/dashboard?page=${nextPage}&pageSize=20&closedPage=${targetClosedPage}`, { cache: "no-store" });
       const body = await readBody<DashboardResponse & { total?: number; page?: number; pageSize?: number; totalPages?: number }>(response);
       if (!response.ok) throw new Error(tr("operationsLoadFailed"));
       setMetrics({ ...EMPTY_METRICS, ...(body.metrics || {}) });
@@ -238,6 +241,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
         totalPages: typeof body.totalPages === "number" && body.totalPages >= 1 ? body.totalPages : 1,
       });
       setRecentClosedCases(body.recentClosedCases || []);
+      setClosedPageMeta(body.closedPagination ?? { total: (body.recentClosedCases || []).length, page: targetClosedPage, pageSize: 20, totalPages: 1 });
       setError("");
       return true;
     } catch (cause) {
@@ -251,8 +255,9 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
   const selectedCaseId = selected?.id;
   const pageRef = useRef(pageMeta.page);
   useEffect(() => { pageRef.current = pageMeta.page; }, [pageMeta.page]);
+  useEffect(() => { closedPageRef.current = closedPageMeta.page; }, [closedPageMeta.page]);
   const refreshLiveData = useCallback(async () => {
-    if (!await fetchDashboard(pageRef.current)) throw new Error("refresh failed");
+    if (!await fetchDashboard(pageRef.current, closedPageRef.current)) throw new Error("refresh failed");
     if (selectedCaseId) {
       const timelinePage = timelinePages[selectedCaseId] ?? 1;
       const response = await fetch(`/api/cases/${encodeURIComponent(selectedCaseId)}?page=${timelinePage}&pageSize=50`, { cache: "no-store" });
@@ -463,14 +468,14 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
       </div><PaginationControls tr={tr} meta={pageMeta} loading={loading} onPage={(next) => void fetchDashboard(next)} /></> : <p className={styles.empty}>{tr("noOpenCases")}</p>}
     </section>
     <section className={styles.queue}>
-      <div className={styles.queueHeader}><div><p className={styles.eyebrow}>{tr("caseClosed")}</p><h2>{tr("recentClosedCases")}</h2></div><span className={styles.count}>{recentClosedCases.length}</span></div>
-      {recentClosedCases.length ? <div className={styles.caseList}>
+      <div className={styles.queueHeader}><div><p className={styles.eyebrow}>{tr("caseClosed")}</p><h2>{tr("recentClosedCases")}</h2></div><span className={styles.count}>{closedPageMeta.total || recentClosedCases.length}</span></div>
+      {loading ? <p className={styles.empty}>{tr("loadingCases")}</p> : recentClosedCases.length ? <><div className={styles.caseList}>
         {recentClosedCases.map((item) => <button type="button" className={`${styles.caseCard} ${styles.closedCard}`} key={item.id} onClick={() => void loadCase(item.id)}>
           <div className={styles.caseTop}><strong>{tr("orderLabel")} {item.orderNumber}</strong><span className={`${styles.phase} ${styles.phaseClosed}`}>{tr("caseClosed")}</span></div>
           <div className={styles.caseData}><span>{tr("caseClosedOn", { date: formatDate(item.resolvedAt || item.createdAt, locale) })}</span></div>
           <div className={styles.caseFoot}><span>{item.pickerName || tr("unknownPicker")}</span><span>{item.responsibleName || "—"}</span></div>
         </button>)}
-      </div> : <p className={styles.empty}>{tr("noRecentClosedCases")}</p>}
+      </div><PaginationControls tr={tr} meta={closedPageMeta} loading={loading} onPage={(next) => void fetchDashboard(pageRef.current, next)} /></> : <p className={styles.empty}>{tr("noRecentClosedCases")}</p>}
     </section>
     {selected && <div className={`${styles.backdrop}${focusOverlay ? ` ${styles.notificationOverlay}` : ""}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setSelected(null); setFocusOverlayNonce(0); onFocusedClose?.(); } }}>
       <section className={styles.drawer} role="dialog" aria-modal="true" aria-labelledby="case-drawer-title">

@@ -67,8 +67,8 @@ export function SharedCaseLineCard({
   return (
     <div>
       <strong>{line.location} · {line.sku} ×{line.quantity}</strong>
-      {line.responsibleName ? <p><span className="responsible-badge">{tr("checkResponsibleBadge", { name: line.responsibleName })}</span></p> : null}
       <CaseStatusBadge kind="line" status={status} retrievalState={line.retrievalState} tr={tr} />
+      {line.responsibleName ? <p><span className="responsible-badge">{tr("checkResponsibleBadge", { name: line.responsibleName })}</span></p> : null}
       {(line.reporterName || line.reporterIdentifier) ? (
         <small>{tr("lineReportedBy", { name: line.reporterName || line.reporterIdentifier || "" })}<br />{line.reporterIdentifier ? tr("lineReporterId", { id: line.reporterIdentifier }) : ""}</small>
       ) : null}

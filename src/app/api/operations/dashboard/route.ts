@@ -8,7 +8,7 @@ export async function GET(request: Request) {
     const auth = await authenticate(request);
     if (!auth) return jsonError("Unauthenticated", 401);
     const { page, pageSize } = parsePaginationParams(new URL(request.url).searchParams);
-    const parsed = operationsDashboardQuerySchema.parse({ page, pageSize });
-    return Response.json(await getOperationsDashboard(auth, { page: parsed.page, pageSize: parsed.pageSize }));
+    const parsed = operationsDashboardQuerySchema.parse({ page, pageSize, closedPage: new URL(request.url).searchParams.get("closedPage") ?? undefined });
+    return Response.json(await getOperationsDashboard(auth, { page: parsed.page, pageSize: parsed.pageSize, closedPage: parsed.closedPage }));
   } catch (error) { return handleRouteError(error); }
 }

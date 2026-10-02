@@ -29,11 +29,13 @@ function requireManager(auth: AuthContext) {
   if (!hasAuthPermission(auth, "VIEW_ALL_OPEN_CASES")) throw new CaseApiError("CASE_ACCESS_DENIED", "Manager access required", 403);
 }
 
-export const operationsDashboardQuerySchema = paginationQuerySchema;
+export const operationsDashboardQuerySchema = paginationQuerySchema.extend({
+  closedPage: z.coerce.number().int().min(1).max(10_000).default(1),
+});
 
-export async function getOperationsDashboard(auth: AuthContext, options: { page?: number; pageSize?: number } = {}) {
+export async function getOperationsDashboard(auth: AuthContext, options: { page?: number; pageSize?: number; closedPage?: number } = {}) {
   requireManager(auth);
-  const parsed = operationsDashboardQuerySchema.parse({ page: options.page ?? 1, pageSize: options.pageSize ?? 20 });
+  const parsed = operationsDashboardQuerySchema.parse({ page: options.page ?? 1, pageSize: options.pageSize ?? 20, closedPage: options.closedPage ?? 1 });
   const db = getDb();
   const now = new Date();
   const today = new Date(now); today.setHours(0, 0, 0, 0);
@@ -42,7 +44,9 @@ export async function getOperationsDashboard(auth: AuthContext, options: { page?
   const [openCountRow] = await db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(activePhase);
   const openTotal = openCountRow?.count ?? 0;
   const rows = await db.select().from(orderCases).where(activePhase).orderBy(orderCases.createdAt).limit(parsed.pageSize).offset(paginationOffset(parsed.page, parsed.pageSize));
-  const closedRows = await db.select().from(orderCases).where(eq(orderCases.phase, "CLOSED")).orderBy(desc(orderCases.resolvedAt)).limit(50);
+  const [closedCountRow] = await db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(eq(orderCases.phase, "CLOSED"));
+  const closedTotal = closedCountRow?.count ?? 0;
+  const closedRows = await db.select().from(orderCases).where(eq(orderCases.phase, "CLOSED")).orderBy(desc(orderCases.resolvedAt)).limit(parsed.pageSize).offset(paginationOffset(parsed.closedPage, parsed.pageSize));
   const configurationVersionIds = [...new Set(rows.map((row) => row.configurationVersionId))];
   const versionRows = configurationVersionIds.length
     ? await db.select({ id: configurationVersions.id, values: configurationVersions.values }).from(configurationVersions).where(inArray(configurationVersions.id, configurationVersionIds))
@@ -106,7 +110,8 @@ export async function getOperationsDashboard(auth: AuthContext, options: { page?
       id: row.id, orderNumber: row.orderNumber, phase: "CLOSED" as const, createdAt: row.createdAt, resolvedAt: row.resolvedAt,
       pickerName: row.pickingUserId ? names.get(row.pickingUserId) ?? null : null,
       responsibleName: row.currentCaseResponsibleUserId ? names.get(row.currentCaseResponsibleUserId) ?? null : null,
-    })) };
+    })),
+    closedPagination: paginationMeta(closedTotal, parsed.closedPage, parsed.pageSize) };
 }
 
 export async function createManualCase(auth: AuthContext, input: z.infer<typeof manualCaseSchema>) {

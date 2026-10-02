@@ -341,17 +341,20 @@ function SameLocationFoundSection({ summary, byUser, tr, locale, canExport, down
   if (!summary && !byUser.length) return null;
   const range = summary && summary.from && summary.to ? tr("analyticsSameLocationDateRangeValue", { from: dateLabel(summary.from, locale), to: dateLabel(summary.to, locale) }) : "";
   return <section className={styles.card} aria-labelledby="analytics-same-location-title">
-    <div className={styles.sectionHeading}><div><h2 id="analytics-same-location-title">{tr("analyticsSameLocationTitle")}</h2>
-      <p className={styles.subtle}>{tr("analyticsSameLocationDescription")}</p></div>
-      {canExport && <div className={styles.reportActions}><button className={styles.exportButton} type="button" onClick={() => onDownload("same-location-found")} disabled={Boolean(downloading)}>{tr("analyticsSameLocationExport")}</button></div>}
+    <div className={styles.sameLocationHead}>
+      <div className={styles.sameLocationTitleRow}>
+        <h2 id="analytics-same-location-title">{tr("analyticsSameLocationTitle")}</h2>
+        {canExport && <div className={styles.reportActions}><button className={styles.exportButton} type="button" onClick={() => onDownload("same-location-found")} disabled={Boolean(downloading)}>{tr("analyticsSameLocationExport")}</button></div>}
+      </div>
+      <p className={styles.subtle}>{tr("analyticsSameLocationDescription")}</p>
     </div>
-    {summary && <div className={styles.timingGrid}>
+    {summary && <div className={`${styles.timingGrid} ${styles.sameLocationStats}`}>
       <div className={styles.timing}><span>{tr("analyticsSameLocationEligible")}</span><strong>{summary.numerator} / {summary.denominator}</strong></div>
       <div className={styles.timing}><span>{tr("analyticsSameLocationRate")}</span><strong>{summary.percentage === null ? tr("analyticsSameLocationRateHidden") : `${summary.percentage}%`}</strong></div>
       <div className={styles.timing}><span>{tr("analyticsSameLocationDateRange")}</span><strong>{range || "—"}</strong></div>
       <div className={styles.timing}><span>{tr("analyticsSameLocationOutcomes")}</span><strong>{summary.counts.FOUND_AT_ORIGINAL} / {summary.counts.FOUND} / {summary.counts.NOT_FOUND} / {summary.counts.WRONG_LOCATION}</strong></div>
     </div>}
-    {byUser.length ? <div className={styles.tableWrap}><table><thead><tr><th scope="col">{tr("analyticsSameLocationReporter")}</th><th scope="col">{tr("analyticsRoleFilter")}</th><th scope="col">{tr("analyticsSameLocationEligible")}</th><th scope="col">{tr("analyticsSameLocationRate")}</th><th scope="col">{tr("analyticsSameLocationOutcomeCounts")}</th></tr></thead><tbody>
+    {byUser.length ? <div className={`${styles.tableWrap} ${styles.sameLocationTable}`}><table><thead><tr><th scope="col">{tr("analyticsSameLocationReporter")}</th><th scope="col">{tr("analyticsRoleFilter")}</th><th scope="col">{tr("analyticsSameLocationEligible")}</th><th scope="col">{tr("analyticsSameLocationRate")}</th><th scope="col">{tr("analyticsSameLocationOutcomeCounts")}</th></tr></thead><tbody>
       {byUser.map((row) => <tr key={row.userId}><th scope="row">{row.displayName}</th><td>{roleLabel(row.role)}</td><td>{row.numerator} / {row.denominator}</td><td>{row.percentage === null ? tr("analyticsSameLocationCountsOnly") : `${row.percentage}%`}</td><td>{row.counts.FOUND_AT_ORIGINAL} / {row.counts.FOUND} / {row.counts.NOT_FOUND} / {row.counts.WRONG_LOCATION}</td></tr>)}
     </tbody></table></div> : <p className={styles.empty}>{tr("analyticsNoData")}</p>}
   </section>;
