@@ -85,18 +85,31 @@ export function CaseDetailView({
   );
 }
 
-export function CaseSummaryCard({ tr, responsibleName, responsibleIdentifier, source, missingCount }: {
+export function formatCaseElapsedTime(createdAt?: string) {
+  if (!createdAt) return "—";
+  const start = new Date(createdAt).getTime();
+  const end = Date.now();
+  const minutes = Math.max(0, Math.floor((end - start) / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
+export function CaseSummaryCard({ tr, responsibleName, responsibleIdentifier, source, missingCount, elapsedTime }: {
   tr: Translator;
   responsibleName: string | null | undefined;
   responsibleIdentifier?: string | null;
-  source: string;
-  missingCount: number;
+  source?: string;
+  missingCount?: number;
+  elapsedTime: string;
 }) {
   return (
     <section className="case-summary-card" aria-label={tr("caseDetails")}>
       <div><span>{tr("caseResponsible")}</span><strong>{responsibleName || "—"}</strong>{responsibleIdentifier ? <small>{tr("lineReporterId", { id: responsibleIdentifier })}</small> : null}</div>
-      <div><span>{tr("caseSource")}</span><strong>{tr(`source_${source}` as MessageKey)}</strong></div>
-      <div><span>{tr("missingItemsLabel")}</span><strong>{missingCount}</strong></div>
+      <div><span>{tr("caseSource")}</span><strong>{source ? tr(`source_${source}` as MessageKey) : "—"}</strong></div>
+      <div><span>{tr("missingItemsLabel")}</span><strong>{missingCount ?? "—"}</strong></div>
+      <div><span>{tr("caseElapsedTime")}</span><strong>{elapsedTime}</strong></div>
     </section>
   );
 }
