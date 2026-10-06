@@ -96,7 +96,7 @@ export function CaseTimeline({
       .map((event) => ({
         id: event.id,
         createdAt: event.createdAt,
-        who: tr("systemActor"),
+        who: event.actorName || tr("systemActor"),
         text: timelineLabelFor(event, tr),
         kind: "event" as const,
       })),
