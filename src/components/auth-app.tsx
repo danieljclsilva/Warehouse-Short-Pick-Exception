@@ -15,7 +15,9 @@ import { UserManagement } from "@/components/user-management";
 import { PhotoApproval } from "@/components/photo-approval";
 import { EnvironmentBanner } from "@/components/environment-banner";
 import { PaginationControls } from "@/components/pagination-controls";
-import { CaseTimeline, type CaseTimelineEvent, type CaseTimelineMessage } from "@/components/case-timeline";
+import type { CaseTimelineEvent, CaseTimelineMessage } from "@/components/case-timeline";
+import { CaseDetailView } from "@/components/case-detail-view";
+import { SharedCaseLineCard, type SharedCaseLine } from "@/components/case-line-card";
 import { ThemePicker } from "@/components/theme-picker";
 import {
   getMessages,
@@ -272,57 +274,71 @@ export function DeepCaseView({ tr, locale = "en", data, lineId, canViewMessages,
   const instructionKey = instructionTarget ? `${data.id}:${instructionTarget.id}:${instructionTarget.nextActionCode ?? ""}` : null;
   const instruction = !closed && instructionTarget && instructionKey !== dismissedInstructionKey ? briefInstructionForLine(instructionTarget) : null;
   return (
-    <section className="deep-case-panel" aria-labelledby="deep-case-title">
-      <div className="deep-case-head">
-        <h2 id="deep-case-title" ref={headingRef} tabIndex={-1}>{tr("orderLabel")} {data.orderNumber}</h2>
-        {closed ? <span className="invite-status status-muted">{tr("caseClosedBadge")}</span> : null}
-      </div>
-      <p className="deep-case-meta">{data.phase === "STAGED" ? tr("phaseStaged") : data.phase === "CLOSED" ? tr("caseClosed") : tr("phasePicking")} · {data.pickerName || tr("unknownPicker")}</p>
-      {closed ? <p className="profile-message" role="note">{tr("caseClosedReadOnlyNote")}</p> : null}
-      {instruction ? (
-        <p className="deep-case-instruction" role="status">
-          <span>{tr(instruction.key, instruction.values)}</span>
-          <button className="text-button" type="button" onClick={() => setDismissedInstructionKey(instructionKey)}>{tr("navInstructionDismiss")}</button>
-        </p>
-      ) : null}
-      {lines.length ? (
+    <CaseDetailView
+      tr={tr}
+      id="deep-case-panel"
+      titleId="deep-case-title"
+      headingRef={headingRef}
+      tabIndex={-1}
+      orderNumber={data.orderNumber}
+      phaseLabel={data.phase === "STAGED" ? tr("phaseStaged") : data.phase === "CLOSED" ? tr("caseClosed") : tr("phasePicking")}
+      headingActions={closed ? <span className="case-badges"><span className="case-status-badge case-status-done">{tr("caseClosedBadge")}</span></span> : undefined}
+      summary={<>
+        <p className="deep-case-meta">{data.phase === "STAGED" ? tr("phaseStaged") : data.phase === "CLOSED" ? tr("caseClosed") : tr("phasePicking")} · {data.pickerName || tr("unknownPicker")}</p>
+        {closed ? <p className="profile-message" role="note">{tr("caseClosedReadOnlyNote")}</p> : null}
+        {instruction ? <p className="deep-case-instruction" role="status"><span>{tr(instruction.key, instruction.values)}</span><button className="text-button" type="button" onClick={() => setDismissedInstructionKey(instructionKey)}>{tr("navInstructionDismiss")}</button></p> : null}
+      </>}
+      showLinesHeading
+      linesClassName="deep-case-line-list"
+      lines={lines.length ? (
         <ul className="deep-case-lines">
           {lines.map((line) => {
             const current = lineId !== null && line.id === lineId;
             const quantity = line.missingQuantity ?? line.quantity;
-            const stepperStage = closed ? "done" : stepperStageForLine(line);
+            const sharedLine: SharedCaseLine = {
+              id: line.id,
+              location: line.originalLocation || line.location || "—",
+              sku: line.sku || "—",
+              quantity: typeof quantity === "number" ? quantity : 0,
+              state: closed ? "RESOLVED" : line.state || line.displayStatus || "OPEN",
+              displayStatus: closed ? "RESOLVED" : line.displayStatus,
+              discoveredLocation: line.discoveredLocation,
+              replenishmentState: line.replenishmentState,
+              reporterName: line.reporterName,
+            };
             return (
               <li key={line.id}>
                 <article className="deep-case-line" data-current={current ? "true" : "false"} aria-current={current ? "true" : undefined} ref={current ? currentLineRef : undefined}>
-                  <div className="deep-case-line-top"><strong>{line.originalLocation || line.location || "—"}</strong><span>{line.sku || "—"} ×{typeof quantity === "number" ? quantity : "—"}</span></div>
-                  <span className={`case-status-badge case-status-${stepperStage}`} role="status">
-                    {stepperStage === "waiting" ? tr("stepperWaiting") : stepperStage === "ready" ? (line.pickerRetrieval === true ? tr("stepperPickerRetrieval") : tr("stepperReady")) : tr("stepperDone")}
-                  </span>
-                  <dl className="deep-case-facts">
-                    <div><dt>{tr("lineOriginalLocation")}</dt><dd>{line.originalLocation || line.location || "—"}</dd></div>
-                    <div><dt>{tr("lineKnownNewLocation")}</dt><dd>{line.discoveredLocation || tr("lineNoKnownNewLocation")}</dd></div>
-                    {line.reporterName ? <div><dt>{tr("lineReporter")}</dt><dd>{line.reporterName}</dd></div> : null}
-                    {line.checkerName ? <div><dt>{tr("lineChecker")}</dt><dd>{line.checkerName}</dd></div> : null}
-                    {line.retrieverName ? <div><dt>{tr("lineRetriever")}</dt><dd>{line.retrieverName}</dd></div> : null}
-                    {line.replenishmentState ? <div><dt>{tr("lineReplenishmentState")}</dt><dd>{tr(`replenishmentState${line.replenishmentState}` as MessageKey)}{line.replenishmentNote ? ` · ${line.replenishmentNote}` : ""}{line.replenishmentActorName ? ` · ${line.replenishmentActorName}` : ""}</dd></div> : null}
-                    {line.nextActionCode ? <div><dt>{tr("lineNextStep")}</dt><dd>{tr(`nextAction${line.nextActionCode}` as MessageKey)}</dd></div> : null}
-                    {line.blockingReasonCode ? <div><dt>{tr("attentionLevelLabel")}</dt><dd>{tr(`blockingReason${line.blockingReasonCode}` as MessageKey)}</dd></div> : null}
-                  </dl>
+                  <SharedCaseLineCard
+                    tr={tr}
+                    caseId={data.id}
+                    casePhase={closed ? "CLOSED" : data.phase}
+                    line={sharedLine}
+                    projections={new Map()}
+                    actions={{ canRecordReplenishment: false, canRetrieve: false, canReportLocation: false, busyId: "", onSaved: () => {}, onRetrieve: () => {}, reportForm: () => null }}
+                    showRetrievalNotRequired={false}
+                    additionalDetails={<dl className="deep-case-facts">
+                      {line.originalLocation || line.location ? <div><dt>{tr("lineOriginalLocation")}</dt><dd>{line.originalLocation || line.location}</dd></div> : null}
+                      {!line.discoveredLocation ? <div><dt>{tr("lineKnownNewLocation")}</dt><dd>{tr("lineNoKnownNewLocation")}</dd></div> : null}
+                      {line.checkerName ? <div><dt>{tr("lineChecker")}</dt><dd>{line.checkerName}</dd></div> : null}
+                      {line.retrieverName ? <div><dt>{tr("lineRetriever")}</dt><dd>{line.retrieverName}</dd></div> : null}
+                      {line.replenishmentNote || line.replenishmentActorName ? <div><dt>{tr("lineReplenishmentState")}</dt><dd>{line.replenishmentNote}{line.replenishmentActorName ? ` · ${line.replenishmentActorName}` : ""}</dd></div> : null}
+                      {line.nextActionCode ? <div><dt>{tr("lineNextStep")}</dt><dd>{tr(`nextAction${line.nextActionCode}` as MessageKey)}</dd></div> : null}
+                      {line.blockingReasonCode ? <div><dt>{tr("attentionLevelLabel")}</dt><dd>{tr(`blockingReason${line.blockingReasonCode}` as MessageKey)}</dd></div> : null}
+                    </dl>}
+                  />
                 </article>
               </li>
             );
           })}
         </ul>
-      ) : (
-        <p className="profile-empty">{tr("noItemsYet")}</p>
-      )}
-      <section className="case-timeline-section" aria-label={tr("caseTimeline")}>
-        <h3>{tr("caseTimeline")}</h3>
-        <CaseTimeline events={data.events ?? []} messages={visibleMessages} tr={tr} formatDate={(value) => formatDate(value, locale)} className="case-shared-timeline" />
-        {timelinePagination}
-      </section>
-      <div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose}>{tr("caseDeepLinkClose")}</button></div>
-    </section>
+      ) : <p className="profile-empty">{tr("noItemsYet")}</p>}
+      events={data.events ?? []}
+      messages={visibleMessages}
+      formatTimestamp={(value) => formatDate(value, locale)}
+      timelinePagination={timelinePagination}
+      afterTimeline={<div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose}>{tr("caseDeepLinkClose")}</button></div>}
+    />
   );
 }
 type DeepTarget = { view: "live"; section: MessageKey } | { view: "readonly" };

@@ -75,6 +75,7 @@
 .empty { color: var(--ops-muted); margin: 0; padding: 24px 4px; text-align: center; }
 .backdrop { background: var(--backdrop); display: flex; inset: 0; justify-content: flex-end; position: fixed; z-index: 80; }
 .drawer { background: var(--surface); box-shadow: -18px 0 50px var(--shadow-strong); height: 100%; max-width: 680px; overflow-y: auto; padding: 24px clamp(18px, 3vw, 30px) 36px; width: min(100%, 680px); }
+.drawerDetail { padding: 0; border: 0; background: transparent; box-shadow: none; }
 .notificationOverlay { z-index: 90; }
 .drawerHead { align-items: flex-start; }.drawerHead h2 { font-size: 25px; letter-spacing: -.035em; margin: 0; }.drawerSummary { color: var(--ops-muted); font-size: 13px; margin: 10px 0 19px; }
 .detailGrid { background: var(--surface); border: 1px solid var(--ops-line); border-radius: 12px; display: grid; gap: 12px; grid-template-columns: repeat(3, 1fr); padding: 14px; }

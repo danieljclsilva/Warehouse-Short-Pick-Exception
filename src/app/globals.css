@@ -342,6 +342,7 @@ button { color: inherit; }
 .case-detail-view { display: grid; gap: 15px; padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); scroll-margin-top: 84px; }
 .case-detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .case-detail-heading h2 { margin: 0; font-size: 29px; line-height: 1.2; letter-spacing: -.04em; }
+.case-detail-heading h2:focus { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 .case-detail-view .case-detail-heading > .case-badges { justify-content: flex-end; margin-left: auto; text-align: right; }
 .case-detail-section-title { margin: 4px 0 0; color: var(--ink); font-size: 16px; }
 .case-phase { display: inline-flex; min-height: 29px; align-items: center; padding: 0 11px; border-radius: 20px; color: var(--green); background: var(--green-wash); font-size: 11px; font-weight: 700; text-transform: capitalize; }

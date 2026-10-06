@@ -7,9 +7,10 @@ import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import styles from "./operations-dashboard.module.css";
 import { CaseStatusBadge } from "@/components/case-status-badge";
-import { CaseTimeline, type CaseTimelineEvent } from "@/components/case-timeline";
+import type { CaseTimelineEvent } from "@/components/case-timeline";
 import { PaginationControls } from "@/components/pagination-controls";
 import { SharedCaseLineCard } from "@/components/case-line-card";
+import { CaseDetailView } from "@/components/case-detail-view";
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
 type Metrics = {
@@ -479,11 +480,25 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
     </section>
     {selected && <div className={`${styles.backdrop}${focusOverlay ? ` ${styles.notificationOverlay}` : ""}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setSelected(null); setFocusOverlayNonce(0); onFocusedClose?.(); } }}>
       <section className={styles.drawer} role="dialog" aria-modal="true" aria-labelledby="case-drawer-title">
-        <header className={styles.drawerHead}><div><p className={styles.eyebrow}>{tr("caseDetails")}</p><h2 id="case-drawer-title">{tr("orderLabel")} {selected.orderNumber}</h2></div><button className={styles.iconButton} type="button" aria-label={tr("closePanel")} onClick={() => { setSelected(null); setFocusOverlayNonce(0); onFocusedClose?.(); }}>×</button></header>
-        <p className={styles.caseStatusBadge}><CaseStatusBadge status={selected.phase === "CLOSED" ? "CLOSED" : (selected.lineProjections?.[0]?.displayStatus ?? selected.lines?.[0]?.state ?? selected.phase)} tr={tr} />{selected.phase === "CLOSED" ? null : <span className={`${styles.phase} ${selected.phase === "STAGED" ? styles.phaseStaged : ""}`}>{selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span>}</p>
-        <p className={styles.drawerSummary}>{selected.phase === "CLOSED" ? `${tr("caseClosed")} · ${tr("caseClosedOn", { date: formatDate(selected.resolvedAt || selected.createdAt, locale) })}` : `${selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · ${formatAge(selected.createdAt)}`} · {selected.pickerName || tr("unknownPicker")}</p>
-        <div className={styles.detailGrid}><div><span>{tr("caseResponsible")}</span><strong>{selected.responsibleName || "—"}</strong>{selected.responsibleIdentifier ? <small className={styles.drawerPhysical}>{tr("lineReporterId", { id: selected.responsibleIdentifier })}</small> : null}</div><div><span>{tr("caseSource")}</span><strong>{tr(`source_${selected.source}` as MessageKey)}</strong></div><div><span>{tr("missingItemsLabel")}</span><strong>{selected.missingCount}</strong></div></div>
-        <section className={styles.detailSection}><h3>{tr("reportedItems")}</h3>{selected.lines?.length ? <div className={styles.lineList}>{(() => {
+        <CaseDetailView
+          tr={tr}
+          id="case-drawer-detail"
+          titleId="case-drawer-title"
+          className={styles.drawerDetail}
+          orderNumber={selected.orderNumber}
+          phaseLabel={selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}
+          headingActions={<span className={`case-badges ${styles.caseStatusBadge}`}>
+            <CaseStatusBadge status={selected.phase === "CLOSED" ? "CLOSED" : (selected.lineProjections?.[0]?.displayStatus ?? selected.lines?.[0]?.state ?? selected.phase)} tr={tr} />
+            {selected.phase === "CLOSED" ? null : <span className={`${styles.phase} ${selected.phase === "STAGED" ? styles.phaseStaged : ""}`}>{selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span>}
+            <button className={styles.iconButton} type="button" aria-label={tr("closePanel")} onClick={() => { setSelected(null); setFocusOverlayNonce(0); onFocusedClose?.(); }}>×</button>
+          </span>}
+          summary={<>
+            <p className={styles.drawerSummary}>{selected.phase === "CLOSED" ? `${tr("caseClosed")} · ${tr("caseClosedOn", { date: formatDate(selected.resolvedAt || selected.createdAt, locale) })}` : `${selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · ${formatAge(selected.createdAt)}`} · {selected.pickerName || tr("unknownPicker")}</p>
+            <div className={styles.detailGrid}><div><span>{tr("caseResponsible")}</span><strong>{selected.responsibleName || "—"}</strong>{selected.responsibleIdentifier ? <small className={styles.drawerPhysical}>{tr("lineReporterId", { id: selected.responsibleIdentifier })}</small> : null}</div><div><span>{tr("caseSource")}</span><strong>{tr(`source_${selected.source}` as MessageKey)}</strong></div><div><span>{tr("missingItemsLabel")}</span><strong>{selected.missingCount}</strong></div></div>
+          </>}
+          showLinesHeading
+          linesClassName={styles.lineList}
+          lines={selected.lines?.length ? (() => {
           const projections = new Map((selected.lineProjections ?? []).map((entry) => [entry.lineId, { lineId: entry.lineId, displayStatus: entry.displayStatus, replenishment: entry.replenishment ?? null }]));
           return selected.lines.map((line) => (
             <article className={styles.line} key={line.id}><SharedCaseLineCard tr={tr} caseId={selected.id} casePhase={selected.phase} line={line} projections={projections}
@@ -492,14 +507,19 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
                 onRetrieve: () => {},
                 reportForm: () => (<LocationReporter tr={tr} caseId={selected.id} lineId={line.id} onReported={async () => { setNotice(tr("reportLocationSaved")); await fetchDashboard(); await loadCase(selected.id, timelinePages[selected.id] ?? 1); }} />) }} /></article>
           ));
-        })()}</div> : <p>{tr("noItemsYet")}</p>}</section>
-        {(selected.events?.length || selected.messages?.length) ? <section className={styles.detailSection}><h3>{tr("caseTimeline")}</h3><CaseTimeline events={(selected.events || []) as CaseTimelineEvent[]} messages={selected.messages || []} tr={tr} formatDate={(value) => formatDate(value, locale)} className={styles.timeline} />{selected.eventsPagination && selected.eventsPagination.totalPages > 1 ? <PaginationControls tr={tr} variant="more" meta={selected.eventsPagination} loading={busy} onPage={(next) => void loadCase(selected.id, next)} /> : null}</section> : null}
-        {canMessage && selected.phase !== "CLOSED" && !selected.closedAt && <form className={styles.messageForm} onSubmit={postMessage}><label><span>{tr("caseMessageLabel")}</span><textarea required maxLength={2000} rows={3} value={messageText} onChange={(event) => setMessageText(event.target.value)} placeholder={tr("caseMessagePlaceholder")} /></label><button type="submit" className={styles.primary} disabled={busy || !messageText.trim()}>{tr("sendCaseMessage")}</button></form>}
-        <div className={styles.caseActions}>
+          })() : <p>{tr("noItemsYet")}</p>}
+          events={(selected.events || []) as CaseTimelineEvent[]}
+          messages={selected.messages || []}
+          formatTimestamp={(value) => formatDate(value, locale)}
+          showTimeline={Boolean(selected.events?.length || selected.messages?.length)}
+          timelinePagination={selected.eventsPagination && selected.eventsPagination.totalPages > 1 ? <PaginationControls tr={tr} variant="more" meta={selected.eventsPagination} loading={busy} onPage={(next) => void loadCase(selected.id, next)} /> : null}
+          messageComposer={canMessage && selected.phase !== "CLOSED" && !selected.closedAt ? <form className={styles.messageForm} onSubmit={postMessage}><label><span>{tr("caseMessageLabel")}</span><textarea required maxLength={2000} rows={3} value={messageText} onChange={(event) => setMessageText(event.target.value)} placeholder={tr("caseMessagePlaceholder")} /></label><button type="submit" className={styles.primary} disabled={busy || !messageText.trim()}>{tr("sendCaseMessage")}</button></form> : null}
+          afterTimeline={<div className={styles.caseActions}>
           {selected.phase !== "CLOSED" && !selected.closedAt && canChangePhase && <div className={styles.reopenAction}><label><span>{tr("orderStatusLabel")}</span><select value={selected.phase === "STAGED" ? "STAGED" : "PICKING"} disabled={busy} onChange={(event) => void changePhase(event.target.value as "PICKING" | "STAGED")}><option value="PICKING">{tr("phasePicking")}</option><option value="STAGED">{tr("phaseStaged")}</option></select></label></div>}
           {selected.phase !== "CLOSED" && !selected.closedAt && canClose && <div className={styles.closeAction}><label><span>{tr("administrativeResolutionOptional")}</span><input maxLength={300} minLength={5} value={adminResolution} onChange={(event) => setAdminResolution(event.target.value)} placeholder={tr("administrativeResolutionPlaceholder")} /><small>{tr("administrativeResolutionHint")}</small></label><button type="button" className={styles.secondary} disabled={busy} onClick={() => { if (window.confirm(tr("closeCaseConfirm"))) void mutateCase(`/api/cases/${selected.id}/close`, "POST", adminResolution.trim() ? { administrativeResolutionReason: adminResolution.trim() } : {}, "caseClosedNotice"); }}>{tr("closeCase")}</button></div>}
           {(selected.phase === "CLOSED" || selected.closedAt) && canReopen && <div className={styles.reopenAction}><label><span>{tr("reopenPhase")}</span><select value={reopenPhase} onChange={(event) => setReopenPhase(event.target.value as "PICKING" | "STAGED")}><option value="PICKING">{tr("phasePicking")}</option><option value="STAGED">{tr("phaseStaged")}</option></select></label><label><span>{tr("reopenResponsible")}</span><select required value={reopenResponsible} onChange={(event) => setReopenResponsible(event.target.value)}><option value="">{tr("selectWorker")}</option>{workers.filter((worker) => reopenPhase === "PICKING" ? worker.role === "PICKER" : worker.status === "ACTIVE").map((worker) => <option key={worker.id} value={worker.id}>{worker.displayName}</option>)}</select></label><button type="button" className={styles.primary} disabled={busy || !reopenResponsible} onClick={() => void mutateCase(`/api/cases/${selected.id}/reopen`, "POST", { phase: reopenPhase, responsibleUserId: reopenResponsible, lineIds: selected.lines?.map((line) => line.id) || [] }, "caseReopenedNotice")}>{tr("reopenCase")}</button></div>}
-        </div>
+          </div>}
+        />
       </section>
     </div>}
   </main>;

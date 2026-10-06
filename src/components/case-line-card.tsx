@@ -52,6 +52,7 @@ export function SharedCaseLineCard({
   actions,
   showRetrievalNotRequired = true,
   retrievalPrompt,
+  additionalDetails,
 }: {
   tr: SharedTranslator;
   caseId: string;
@@ -61,11 +62,13 @@ export function SharedCaseLineCard({
   actions: SharedLineActions;
   showRetrievalNotRequired?: boolean;
   retrievalPrompt?: React.ReactNode;
+  additionalDetails?: React.ReactNode;
 }) {
   const status = lineStatus(line, projections);
   const replenishment = (projections.get(line.id)?.replenishment?.state ?? line.replenishmentState ?? "NONE").toUpperCase();
   const retrieval = (line.retrievalState ?? "NOT_REQUIRED").toUpperCase();
-  const retrievalPending = actions.canRetrieve && line.state === "FOUND" && (retrieval === "PENDING" || retrieval === "FAILED");
+  const isClosed = casePhase === "CLOSED";
+  const retrievalPending = !isClosed && actions.canRetrieve && line.state === "FOUND" && (retrieval === "PENDING" || retrieval === "FAILED");
   const showWriter = actions.canRecordReplenishment && replenishment !== "COMPLETED"
     && !["RESOLVED", "CANCELLED"].includes(line.state) && casePhase !== "CLOSED";
   return (
@@ -82,6 +85,7 @@ export function SharedCaseLineCard({
       {(line.reporterName || line.reporterIdentifier) ? (
         <small>{tr("lineReportedBy", { name: line.reporterName || line.reporterIdentifier || "" })}<br />{line.reporterIdentifier ? tr("lineReporterId", { id: line.reporterIdentifier }) : ""}</small>
       ) : null}
+      {additionalDetails}
       {replenishment !== "NONE" ? <p className="replenishment-badge" data-state={replenishment}>{tr(`replenishmentState${replenishment}` as MessageKey)}</p> : null}
       {showRetrievalNotRequired && retrieval === "NOT_REQUIRED" && casePhase !== "STAGED" ? <p className="retrieval-badge" data-state="NOT_REQUIRED">{tr("retrievalNotRequired")}</p> : null}
       {showWriter ? (
@@ -94,7 +98,7 @@ export function SharedCaseLineCard({
           <button className="primary-button" type="button" disabled={Boolean(actions.busyId)} onClick={() => actions.onRetrieve(line.id, "RETRIEVED")}>{tr("confirmRetrieved")}</button>
         </div>
       ) : null}
-      {actions.canReportLocation && actions.reportForm(line.id)}
+      {actions.canReportLocation && !isClosed && actions.reportForm(line.id)}
     </div>
   );
 }

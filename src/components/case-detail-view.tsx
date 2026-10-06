@@ -13,8 +13,10 @@ export function CaseDetailView({
   panelRef,
   className = "",
   titleId,
+  headingRef,
   orderNumber,
   phaseLabel,
+  headingActions,
   summary,
   lines,
   linesClassName,
@@ -34,8 +36,10 @@ export function CaseDetailView({
   panelRef?: RefObject<HTMLElement | null>;
   className?: string;
   titleId: string;
+  headingRef?: RefObject<HTMLHeadingElement | null>;
   orderNumber: string;
   phaseLabel: string;
+  headingActions?: ReactNode;
   summary?: ReactNode;
   lines: ReactNode;
   linesClassName: string;
@@ -60,9 +64,9 @@ export function CaseDetailView({
       <header className="case-detail-heading">
         <div>
           <p className="case-eyebrow">{tr("orderLabel")}</p>
-          <h2 id={titleId}>{orderNumber}</h2>
+          <h2 id={titleId} ref={headingRef}>{orderNumber}</h2>
         </div>
-        <span className="case-badges"><span className="case-phase">{phaseLabel}</span></span>
+        {headingActions ?? <span className="case-badges"><span className="case-phase">{phaseLabel}</span></span>}
       </header>
       {summary}
       {showLinesHeading ? <h3 className="case-detail-section-title">{tr("reportedItems")}</h3> : null}
