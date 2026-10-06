@@ -288,7 +288,6 @@ export function DeepCaseView({ tr, locale = "en", data, lineId, canViewMessages,
       phaseLabel={data.phase === "STAGED" ? tr("phaseStaged") : data.phase === "CLOSED" ? tr("caseClosed") : tr("phasePicking")}
       headingActions={closed ? <span className="case-badges"><span className="case-status-badge case-status-done">{tr("caseClosedBadge")}</span></span> : undefined}
       summary={<>
-        <p className="deep-case-meta">{data.phase === "STAGED" ? tr("phaseStaged") : data.phase === "CLOSED" ? tr("caseClosed") : tr("phasePicking")} · {data.pickerName || tr("unknownPicker")}</p>
         <CaseSummaryCard tr={tr} responsibleName={data.responsibleName} responsibleIdentifier={data.responsibleIdentifier} source={data.source} missingCount={data.missingCount} elapsedTime={formatCaseElapsedTime(data.createdAt)} />
         {closed ? <p className="profile-message" role="note">{tr("caseClosedReadOnlyNote")}</p> : null}
         {instruction ? <p className="deep-case-instruction" role="status"><span>{tr(instruction.key, instruction.values)}</span><button className="text-button" type="button" onClick={() => setDismissedInstructionKey(instructionKey)}>{tr("navInstructionDismiss")}</button></p> : null}
