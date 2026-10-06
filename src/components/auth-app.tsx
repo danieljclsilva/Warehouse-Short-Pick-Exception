@@ -16,7 +16,7 @@ import { PhotoApproval } from "@/components/photo-approval";
 import { EnvironmentBanner } from "@/components/environment-banner";
 import { PaginationControls } from "@/components/pagination-controls";
 import type { CaseTimelineEvent, CaseTimelineMessage } from "@/components/case-timeline";
-import { CaseDetailView } from "@/components/case-detail-view";
+import { CaseDetailView, CaseSummaryCard } from "@/components/case-detail-view";
 import { SharedCaseLineCard, type SharedCaseLine } from "@/components/case-line-card";
 import { ThemePicker } from "@/components/theme-picker";
 import {
@@ -193,6 +193,9 @@ type DeepLinkCase = {
   phase: string;
   pickerName?: string | null;
   responsibleName?: string | null;
+  responsibleIdentifier?: string | null;
+  source: string;
+  missingCount: number;
   closedAt?: string | null;
   resolvedAt?: string | null;
   lines?: DeepLinkLine[] | null;
@@ -285,6 +288,7 @@ export function DeepCaseView({ tr, locale = "en", data, lineId, canViewMessages,
       headingActions={closed ? <span className="case-badges"><span className="case-status-badge case-status-done">{tr("caseClosedBadge")}</span></span> : undefined}
       summary={<>
         <p className="deep-case-meta">{data.phase === "STAGED" ? tr("phaseStaged") : data.phase === "CLOSED" ? tr("caseClosed") : tr("phasePicking")} · {data.pickerName || tr("unknownPicker")}</p>
+        <CaseSummaryCard tr={tr} responsibleName={data.responsibleName} responsibleIdentifier={data.responsibleIdentifier} source={data.source} missingCount={data.missingCount} />
         {closed ? <p className="profile-message" role="note">{tr("caseClosedReadOnlyNote")}</p> : null}
         {instruction ? <p className="deep-case-instruction" role="status"><span>{tr(instruction.key, instruction.values)}</span><button className="text-button" type="button" onClick={() => setDismissedInstructionKey(instructionKey)}>{tr("navInstructionDismiss")}</button></p> : null}
       </>}

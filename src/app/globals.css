@@ -345,6 +345,11 @@ button { color: inherit; }
 .case-detail-heading h2:focus { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 .case-detail-view .case-detail-heading > .case-badges { justify-content: flex-end; margin-left: auto; text-align: right; }
 .case-detail-section-title { margin: 4px 0 0; color: var(--ink); font-size: 16px; }
+.case-summary-card { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.case-summary-card > div { display: grid; align-content: start; gap: 6px; min-width: 0; }
+.case-summary-card > div > span { color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; }
+.case-summary-card strong { color: var(--ink); font-size: 13px; overflow-wrap: anywhere; }
+.case-summary-card small { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .case-phase { display: inline-flex; min-height: 29px; align-items: center; padding: 0 11px; border-radius: 20px; color: var(--green); background: var(--green-wash); font-size: 11px; font-weight: 700; text-transform: capitalize; }
 .case-physical-state { margin: 8px 0 20px; color: var(--ink-soft); font-size: 13px; text-transform: capitalize; }
 /* Shared case status badges (Odoo-style Waiting → Ready → Done). */
@@ -490,6 +495,7 @@ button { color: inherit; }
   .case-detail-heading { align-items: flex-start; }
   .case-detail-heading h2 { font-size: 26px; }
   .case-detail-view { padding: 18px 15px; }
+  .case-summary-card { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
   .add-line-panel { padding: 15px 12px; }
   .quantity-control { width: 100%; grid-template-columns: 64px minmax(0, 1fr) 64px; }
   .invite-create-panel { padding: 19px 16px; }

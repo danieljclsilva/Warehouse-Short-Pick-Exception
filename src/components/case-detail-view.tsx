@@ -84,3 +84,19 @@ export function CaseDetailView({
     </section>
   );
 }
+
+export function CaseSummaryCard({ tr, responsibleName, responsibleIdentifier, source, missingCount }: {
+  tr: Translator;
+  responsibleName: string | null | undefined;
+  responsibleIdentifier?: string | null;
+  source: string;
+  missingCount: number;
+}) {
+  return (
+    <section className="case-summary-card" aria-label={tr("caseDetails")}>
+      <div><span>{tr("caseResponsible")}</span><strong>{responsibleName || "—"}</strong>{responsibleIdentifier ? <small>{tr("lineReporterId", { id: responsibleIdentifier })}</small> : null}</div>
+      <div><span>{tr("caseSource")}</span><strong>{tr(`source_${source}` as MessageKey)}</strong></div>
+      <div><span>{tr("missingItemsLabel")}</span><strong>{missingCount}</strong></div>
+    </section>
+  );
+}

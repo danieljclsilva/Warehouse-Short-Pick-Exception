@@ -10,7 +10,7 @@ import { CaseStatusBadge } from "@/components/case-status-badge";
 import type { CaseTimelineEvent } from "@/components/case-timeline";
 import { PaginationControls } from "@/components/pagination-controls";
 import { SharedCaseLineCard } from "@/components/case-line-card";
-import { CaseDetailView } from "@/components/case-detail-view";
+import { CaseDetailView, CaseSummaryCard } from "@/components/case-detail-view";
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
 type Metrics = {
@@ -494,7 +494,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
           </span>}
           summary={<>
             <p className={styles.drawerSummary}>{selected.phase === "CLOSED" ? `${tr("caseClosed")} · ${tr("caseClosedOn", { date: formatDate(selected.resolvedAt || selected.createdAt, locale) })}` : `${selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · ${formatAge(selected.createdAt)}`} · {selected.pickerName || tr("unknownPicker")}</p>
-            <div className={styles.detailGrid}><div><span>{tr("caseResponsible")}</span><strong>{selected.responsibleName || "—"}</strong>{selected.responsibleIdentifier ? <small className={styles.drawerPhysical}>{tr("lineReporterId", { id: selected.responsibleIdentifier })}</small> : null}</div><div><span>{tr("caseSource")}</span><strong>{tr(`source_${selected.source}` as MessageKey)}</strong></div><div><span>{tr("missingItemsLabel")}</span><strong>{selected.missingCount}</strong></div></div>
+            <CaseSummaryCard tr={tr} responsibleName={selected.responsibleName} responsibleIdentifier={selected.responsibleIdentifier} source={selected.source} missingCount={selected.missingCount} />
           </>}
           showLinesHeading
           linesClassName={styles.lineList}
