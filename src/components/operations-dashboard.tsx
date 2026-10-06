@@ -493,7 +493,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
             <button className={styles.iconButton} type="button" aria-label={tr("closePanel")} onClick={() => { setSelected(null); setFocusOverlayNonce(0); onFocusedClose?.(); }}>×</button>
           </span>}
           summary={<>
-            <p className={styles.drawerSummary}>{selected.phase === "CLOSED" ? `${tr("caseClosed")} · ${tr("caseClosedOn", { date: formatDate(selected.resolvedAt || selected.createdAt, locale) })}` : `${selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · ${formatAge(selected.createdAt)}`} · {selected.pickerName || tr("unknownPicker")}</p>
+            <p className={styles.drawerSummary}>{selected.phase === "CLOSED" ? `${tr("caseClosed")} · ${tr("caseClosedOn", { date: formatDate(selected.resolvedAt || selected.createdAt, locale) })}` : selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")} · {selected.pickerName || tr("unknownPicker")}</p>
             <CaseSummaryCard tr={tr} responsibleName={selected.responsibleName} responsibleIdentifier={selected.responsibleIdentifier} source={selected.source} missingCount={selected.missingCount} elapsedTime={formatCaseElapsedTime(selected.createdAt)} />
           </>}
           showLinesHeading
