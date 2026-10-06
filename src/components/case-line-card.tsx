@@ -50,6 +50,8 @@ export function SharedCaseLineCard({
   line,
   projections,
   actions,
+  showRetrievalNotRequired = true,
+  retrievalPrompt,
 }: {
   tr: SharedTranslator;
   caseId: string;
@@ -57,6 +59,8 @@ export function SharedCaseLineCard({
   line: SharedCaseLine;
   projections: Map<string, SharedLineProjection>;
   actions: SharedLineActions;
+  showRetrievalNotRequired?: boolean;
+  retrievalPrompt?: React.ReactNode;
 }) {
   const status = lineStatus(line, projections);
   const replenishment = (projections.get(line.id)?.replenishment?.state ?? line.replenishmentState ?? "NONE").toUpperCase();
@@ -66,17 +70,24 @@ export function SharedCaseLineCard({
     && !["RESOLVED", "CANCELLED"].includes(line.state) && casePhase !== "CLOSED";
   return (
     <div>
-      <strong>{line.location} · {line.sku} ×{line.quantity}</strong>
-      <CaseStatusBadge kind="line" status={status} retrievalState={line.retrievalState} tr={tr} />
+      <div className="shared-case-line-heading">
+        <div className="shared-case-line-product">
+          <strong>{line.location}</strong>
+          <span className="shared-case-line-sku">{line.sku} ×{line.quantity}</span>
+        </div>
+        <CaseStatusBadge kind="line" status={status} retrievalState={line.retrievalState} tr={tr} />
+      </div>
+      {line.discoveredLocation ? <p className="case-discovered-location">{tr("newLocation" as MessageKey)}: <strong>{line.discoveredLocation}</strong></p> : null}
       {line.responsibleName ? <p><span className="responsible-badge">{tr("checkResponsibleBadge", { name: line.responsibleName })}</span></p> : null}
       {(line.reporterName || line.reporterIdentifier) ? (
         <small>{tr("lineReportedBy", { name: line.reporterName || line.reporterIdentifier || "" })}<br />{line.reporterIdentifier ? tr("lineReporterId", { id: line.reporterIdentifier }) : ""}</small>
       ) : null}
       {replenishment !== "NONE" ? <p className="replenishment-badge" data-state={replenishment}>{tr(`replenishmentState${replenishment}` as MessageKey)}</p> : null}
-      {retrieval === "NOT_REQUIRED" && casePhase !== "STAGED" ? <p className="retrieval-badge" data-state="NOT_REQUIRED">{tr("retrievalNotRequired")}</p> : null}
+      {showRetrievalNotRequired && retrieval === "NOT_REQUIRED" && casePhase !== "STAGED" ? <p className="retrieval-badge" data-state="NOT_REQUIRED">{tr("retrievalNotRequired")}</p> : null}
       {showWriter ? (
         <ReplenishmentForm tr={tr} caseId={caseId} lineId={line.id} currentState={replenishment} compact onSaved={actions.onSaved} />
       ) : null}
+      {retrievalPending ? retrievalPrompt : null}
       {retrievalPending ? (
         <div className="check-card-actions">
           <button className="secondary-button" type="button" disabled={Boolean(actions.busyId)} onClick={() => actions.onRetrieve(line.id, "FAILED")}>{tr("reportRetrievalFailed")}</button>

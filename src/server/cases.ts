@@ -396,3 +396,16 @@ export async function listCasesForUser(auth: AuthContext, scope: "mine" | "activ
   const cases = rows.map((row) => ({ ...row, lines: (grouped.get(row.id) ?? []).map((line) => ({ id: line.id, state: line.state, quantity: line.missingQuantity, location: line.originalLocation, sku: line.sku })) }));
   return { cases, ...paginationMeta(total, parsed.page, parsed.pageSize) };
 }
+
+export async function listCaseHistoryForUser(auth: AuthContext, options: { page?: number; pageSize?: number } = {}) {
+  const db = getDb();
+  if (!hasAuthPermission(auth, "VIEW_OWN_CASES")) throw new CaseApiError("CASE_ACCESS_DENIED", "You cannot view your case history", 403);
+  const parsed = paginationQuerySchema.parse(options);
+  const where = and(eq(orderCases.phase, "CLOSED"), eq(orderCases.pickingUserId, auth.user.id));
+  const [countRow] = await db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(where);
+  const total = countRow?.count ?? 0;
+  const rows = await db.select({ id: orderCases.id, orderNumber: orderCases.orderNumber, createdAt: orderCases.createdAt, resolvedAt: orderCases.resolvedAt })
+    .from(orderCases).where(where).orderBy(desc(orderCases.resolvedAt), desc(orderCases.createdAt))
+    .limit(parsed.pageSize).offset(paginationOffset(parsed.page, parsed.pageSize));
+  return { cases: rows, ...paginationMeta(total, parsed.page, parsed.pageSize) };
+}

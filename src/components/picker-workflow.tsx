@@ -2,14 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Locale, MessageKey } from "@/i18n/messages";
-import { LiveRefreshStatus } from "@/components/live-refresh-status";
 import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
-import { CaseStatusBadge } from "@/components/case-status-badge";
-import { CaseTimeline, type CaseTimelineEvent, type CaseTimelineMessage } from "@/components/case-timeline";
+import type { CaseTimelineEvent, CaseTimelineMessage } from "@/components/case-timeline";
+import { CaseDetailView } from "@/components/case-detail-view";
+import { SharedCaseLineCard } from "@/components/case-line-card";
 import { PaginationControls } from "@/components/pagination-controls";
 
-type ShortPickLine = { id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation?: string | null; retrievalState?: string; retrievalResponsibleUserId?: string | null; replenishmentState?: string | null; replenishmentNote?: string | null };
+type ShortPickLine = { id: string; location: string; sku: string; quantity: number; state: string; displayStatus?: string | null; discoveredLocation?: string | null; retrievalState?: string; retrievalResponsibleUserId?: string | null; replenishmentState?: string | null; replenishmentNote?: string | null };
 type OrderCase = {
   id: string;
   orderNumber: string;
@@ -17,12 +17,12 @@ type OrderCase = {
   physicalState: string;
   createdAt: string;
   lines: ShortPickLine[];
-  lineProjections?: Array<{ lineId: string; replenishment?: { state?: string; note?: string | null } }>;
+  lineProjections?: Array<{ lineId: string; displayStatus?: string; replenishment?: { state?: string; note?: string | null } }>;
   events?: CaseTimelineEvent[];
   eventsPagination?: { total: number; page: number; pageSize: number; totalPages: number } | null;
   messages?: CaseTimelineMessage[];
 };
-type CaseSummary = Omit<OrderCase, "lines"> & { lines?: ShortPickLine[]; missingCount?: number; foundCount?: number; checkingCount?: number };
+type OpenCaseTab = { id: string; orderNumber: string };
 type PriorCase = { id: string; createdAt: string; phase: string };
 type ApiError = { code?: string; error?: string; case?: OrderCase & { lines?: ShortPickLine[] }; history?: PriorCase[]; line?: ShortPickLine };
 
@@ -31,7 +31,8 @@ type PickerWorkflowProps = {
   locale: Locale;
   tr: (key: MessageKey, values?: Record<string, string>) => string;
   canReportShortPick: boolean;
-  canViewOwnCases: boolean;
+  /** Enables tabs for switching between the picker’s open cases. */
+  canViewOwnCases?: boolean;
   canOverrideDuplicateLine: boolean;
   canStage: boolean;
   canConfirmRetrieval: boolean;
@@ -39,6 +40,8 @@ type PickerWorkflowProps = {
   /** Legacy: pickers never record replenishment; retained for caller compat, ignored. */
   canRecordReplenishment?: boolean;
   canReportLocation?: boolean;
+  canViewMessages?: boolean;
+  canAddMessages?: boolean;
   focusedCaseId?: string | null;
   focusedNonce?: number;
   focusFromNotification?: boolean;
@@ -49,6 +52,11 @@ type PickerWorkflowProps = {
 function formatDate(value: string, locale: Locale) {
   const locales: Record<Locale, string> = { en: "en-GB", nl: "nl-NL", pl: "pl-PL", es: "es-ES" };
   return new Intl.DateTimeFormat(locales[locale], { dateStyle: "medium" }).format(new Date(value));
+}
+
+function formatTimestamp(value: string, locale: Locale) {
+  const locales: Record<Locale, string> = { en: "en-GB", nl: "nl-NL", pl: "pl-PL", es: "es-ES" };
+  return new Intl.DateTimeFormat(locales[locale], { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
 
@@ -66,19 +74,24 @@ function physicalStateLabel(state: string, tr: PickerWorkflowProps["tr"]) {
 }
 
 async function readBody(response: Response) {
-  return (await response.json().catch(() => ({}))) as ApiError & { kind?: string; normalizedOrderNumber?: string; history?: PriorCase[]; cases?: CaseSummary[]; case?: OrderCase; line?: ShortPickLine };
+  return (await response.json().catch(() => ({}))) as ApiError & { kind?: string; normalizedOrderNumber?: string; history?: PriorCase[]; cases?: OpenCaseTab[]; case?: OrderCase; line?: ShortPickLine };
 }
 function withReplenishmentFolded(caseData: OrderCase): OrderCase {
-  const entries = (caseData.lineProjections ?? []) as Array<{ lineId: string; replenishment?: { state?: string; note?: string | null } }>;
+  const entries = caseData.lineProjections ?? [];
   if (entries.length === 0) return caseData;
-  const byLineId: Record<string, { state?: string; note?: string | null } | undefined> = {};
-  for (const entry of entries) byLineId[entry.lineId] = entry.replenishment;
+  const byLineId: Record<string, { displayStatus?: string; state?: string; note?: string | null } | undefined> = {};
+  for (const entry of entries) byLineId[entry.lineId] = { displayStatus: entry.displayStatus, ...entry.replenishment };
   return {
     ...caseData,
     lines: (caseData.lines ?? []).map((line) => {
       const projected = byLineId[line.id];
-      if (!projected?.state) return line;
-      return { ...line, replenishmentState: projected.state, replenishmentNote: projected.note ?? line.replenishmentNote ?? null };
+      if (!projected) return line;
+      return {
+        ...line,
+        displayStatus: projected.displayStatus ?? line.displayStatus,
+        replenishmentState: projected.state ?? line.replenishmentState,
+        replenishmentNote: projected.note ?? line.replenishmentNote ?? null,
+      };
     }),
   };
 }
@@ -128,11 +141,10 @@ function LocationReportForm({ tr, caseId, lineId, onReported }: {
   );
 }
 
-export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canViewOwnCases, canOverrideDuplicateLine, canStage, canConfirmRetrieval, canClose, canReportLocation = false, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: PickerWorkflowProps) {
-  const [cases, setCases] = useState<CaseSummary[]>([]);
-  const [pageMeta, setPageMeta] = useState({ total: 0, page: 1, pageSize: 20, totalPages: 1 });
+export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canViewOwnCases = false, canOverrideDuplicateLine, canStage, canConfirmRetrieval, canClose, canReportLocation = false, canViewMessages = false, canAddMessages = false, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: PickerWorkflowProps) {
   const [timelinePages, setTimelinePages] = useState<Record<string, number>>({});
-  const [loading, setLoading] = useState(canViewOwnCases);
+  const [openCaseTabs, setOpenCaseTabs] = useState<OpenCaseTab[]>([]);
+  const [openCasesLoading, setOpenCasesLoading] = useState(canViewOwnCases);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [orderNumber, setOrderNumber] = useState("");
@@ -149,6 +161,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
   const [duplicateLine, setDuplicateLine] = useState<ShortPickLine | null>(null);
   const [stageConfirm, setStageConfirm] = useState(false);
   const [actionNotice, setActionNotice] = useState("");
+  const [caseMessage, setCaseMessage] = useState("");
   // Success confirmations dismiss themselves; errors stay until the next action.
   useEffect(() => {
     if (!actionNotice) return;
@@ -156,41 +169,30 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
     return () => window.clearTimeout(timer);
   }, [actionNotice]);
 
-  const applyCasePage = useCallback((body: ApiError & { cases?: CaseSummary[]; total?: number; page?: number; pageSize?: number; totalPages?: number }, nextPage: number) => {
-    setCases(body.cases || []);
-    setPageMeta({
-      total: typeof body.total === "number" ? body.total : (body.cases || []).length,
-      page: typeof body.page === "number" && body.page >= 1 ? body.page : nextPage,
-      pageSize: typeof body.pageSize === "number" && body.pageSize >= 1 ? body.pageSize : 20,
-      totalPages: typeof body.totalPages === "number" && body.totalPages >= 1 ? body.totalPages : 1,
-    });
-  }, []);
-
-  const loadCases = useCallback(async (nextPage = 1) => {
-    if (!canViewOwnCases) { setCases([]); setLoading(false); return; }
-    try {
-      const response = await fetch(`/api/picker/cases?page=${nextPage}&pageSize=20`, { credentials: "same-origin", cache: "no-store" });
-      const body = await readBody(response);
-      if (!response.ok) throw new Error(tr("caseLoadError"));
-      applyCasePage(body, nextPage);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : tr("caseLoadError"));
-    } finally {
-      setLoading(false);
-    }
-  }, [applyCasePage, canViewOwnCases, tr]);
-
   const activeCaseId = activeCase?.id;
-  const pickerPageRef = useRef(pageMeta.page);
-  useEffect(() => { pickerPageRef.current = pageMeta.page; }, [pageMeta.page]);
+  const fetchOpenCaseTabs = useCallback(async () => {
+    const response = await fetch("/api/picker/cases?page=1&pageSize=100", { credentials: "same-origin", cache: "no-store" });
+    const body = await readBody(response);
+    if (!response.ok) throw new Error(tr("caseLoadError"));
+    return (body.cases || []).map(({ id, orderNumber }) => ({ id, orderNumber }));
+  }, [tr]);
+  const loadOpenCaseTabs = useCallback(async () => {
+    if (!canViewOwnCases) return;
+    try {
+      setOpenCaseTabs(await fetchOpenCaseTabs());
+    } catch (cause) { setError(cause instanceof Error ? cause.message : tr("caseLoadError")); }
+    finally { setOpenCasesLoading(false); }
+  }, [canViewOwnCases, fetchOpenCaseTabs, tr]);
+  useEffect(() => {
+    if (!canViewOwnCases) return;
+    let cancelled = false;
+    fetchOpenCaseTabs()
+      .then((tabs) => { if (!cancelled) setOpenCaseTabs(tabs); })
+      .catch((cause: unknown) => { if (!cancelled) setError(cause instanceof Error ? cause.message : tr("caseLoadError")); })
+      .finally(() => { if (!cancelled) setOpenCasesLoading(false); });
+    return () => { cancelled = true; };
+  }, [canViewOwnCases, fetchOpenCaseTabs, tr]);
   const refreshLiveData = useCallback(async () => {
-    if (canViewOwnCases) {
-      const response = await fetch(`/api/picker/cases?page=${pickerPageRef.current}&pageSize=20`, { credentials: "same-origin", cache: "no-store" });
-      const body = await readBody(response);
-      if (!response.ok) throw new Error(tr("caseLoadError"));
-      applyCasePage(body, pickerPageRef.current);
-      setLoading(false);
-    }
     if (activeCaseId) {
       const timelinePage = timelinePages[activeCaseId] ?? 1;
       const response = await fetch(`/api/cases/${encodeURIComponent(activeCaseId)}?page=${timelinePage}&pageSize=50`, { credentials: "same-origin", cache: "no-store" });
@@ -198,8 +200,8 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
       if (!response.ok || !body.case) throw new Error(tr("caseLoadError"));
       setActiveCase(withReplenishmentFolded(body.case));
     }
-  }, [activeCaseId, applyCasePage, canViewOwnCases, timelinePages, tr]);
-  const liveState = useLiveRefresh(refreshLiveData, 5_000, canViewOwnCases || Boolean(activeCase));
+  }, [activeCaseId, timelinePages, tr]);
+  useLiveRefresh(refreshLiveData, 5_000, Boolean(activeCase));
   const prepareCase = (number: string, historicalIds: string[], preserveDraft = false) => {
     if (!preserveDraft) { setLocation(""); setSku(""); setQuantity(1); }
     setPendingOrder(number);
@@ -219,6 +221,8 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
       if (!response.ok || !body.case) throw new Error(tr("caseLoadError"));
       setTimelinePages((current) => ({ ...current, [id]: timelinePage }));
       setActiveCase(withReplenishmentFolded(body.case));
+      setCaseMessage("");
+      await loadOpenCaseTabs();
       setHistory([]);
       setShowLineForm(false);
       setStageConfirm(false);
@@ -227,7 +231,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
     } finally {
       setBusy(false);
     }
-  }, [tr]);
+  }, [loadOpenCaseTabs, tr]);
   const focusConsumedRef = useRef(0);
   const [focusOverlayNonce, setFocusOverlayNonce] = useState(0);
   useEffect(() => {
@@ -237,9 +241,6 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
     void openCase(focusedCaseId).finally(() => { onFocusConsumed?.(); });
   }, [focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, openCase]);
   const focusOverlay = focusOverlayNonce !== 0;
-  const detailRef = useRef<HTMLElement | null>(null);
-  const openedCaseKey = useRef<string | null>(null);
-
   const stageOrder = async () => {
     if (!activeCase) return;
     setBusy(true); setError(""); setActionNotice("");
@@ -247,7 +248,6 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
       const response = await fetch(`/api/cases/${activeCase.id}/stage`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmedPhysicalPlacement: true }) });
       if (!response.ok) throw new Error(tr("checkActionFailed"));
       await openCase(activeCase.id);
-      await loadCases();
       setActionNotice(tr("stagingSuccess"));
     } catch (cause) { setError(cause instanceof Error ? cause.message : tr("checkActionFailed")); }
     finally { setBusy(false); setStageConfirm(false); }
@@ -260,7 +260,6 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
       const response = await fetch(`/api/cases/${activeCase.id}/lines/${lineId}/retrieve`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ result }) });
       if (!response.ok) throw new Error(tr("checkActionFailed"));
       await openCase(activeCase.id);
-      await loadCases();
       setActionNotice(tr("checkActionSaved"));
     } catch (cause) { setError(cause instanceof Error ? cause.message : tr("checkActionFailed")); }
     finally { setBusy(false); }
@@ -273,8 +272,26 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
       const response = await fetch(`/api/cases/${activeCase.id}/close`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" });
       if (!response.ok) throw new Error(tr("caseActionFailed"));
       await openCase(activeCase.id);
-      await loadCases();
+      await loadOpenCaseTabs();
       setActionNotice(tr("caseClosedNotice"));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : tr("caseActionFailed")); }
+    finally { setBusy(false); }
+  };
+
+  const submitCaseMessage = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const message = caseMessage.trim();
+    if (!activeCase || !message || busy || !canAddMessages) return;
+    setBusy(true); setError(""); setActionNotice("");
+    try {
+      const response = await fetch(`/api/cases/${encodeURIComponent(activeCase.id)}/messages`, {
+        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message }),
+      });
+      if (!response.ok) throw new Error(tr("caseActionFailed"));
+      setCaseMessage("");
+      await openCase(activeCase.id, timelinePages[activeCase.id] ?? 1);
+      setActionNotice(tr("caseMessageSent"));
     } catch (cause) { setError(cause instanceof Error ? cause.message : tr("caseActionFailed")); }
     finally { setBusy(false); }
   };
@@ -300,9 +317,10 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
       if (!response.ok) throw new Error(tr("caseLookupError"));
       if (body.kind === "OPEN" && body.case) {
         setActiveCase(withReplenishmentFolded(body.case));
+        await loadOpenCaseTabs();
         setPendingOrder("");
+        setOrderNumber("");
         setLocation(""); setSku(""); setQuantity(1);
-        await loadCases();
       } else if (body.kind === "HISTORY") {
         setNormalizedOrder(body.normalizedOrderNumber || normalized);
         setHistory(body.history || []);
@@ -324,10 +342,10 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
     const body = await readBody(response);
     if (response.status === 409 && body.code === "OPEN_CASE_EXISTS" && body.case) {
       setActiveCase(body.case);
+      await loadOpenCaseTabs();
       setPendingOrder("");
       setHistory([]);
       setShowLineForm(true);
-      await loadCases();
       return;
     }
     if (response.status === 409 && body.code === "HISTORICAL_CONFIRMATION_REQUIRED") {
@@ -339,6 +357,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
     }
     if (!response.ok || !body.case) throw new Error(tr("caseCreateError"));
     setActiveCase(body.case);
+    await loadOpenCaseTabs();
     setPendingOrder("");
     setOrderNumber("");
     setHistory([]);
@@ -347,7 +366,6 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
     setSku("");
     setQuantity(1);
     setShowLineForm(false);
-    await loadCases();
   };
 
   const addLine = async (confirmDuplicate: boolean) => {
@@ -377,7 +395,6 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
       setQuantity(1);
       setShowLineForm(false);
       await openCase(activeCase.id);
-      await loadCases();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : tr(pendingOrder ? "caseCreateError" : "lineCreateError"));
     } finally {
@@ -401,51 +418,67 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
     setActionNotice("");
     setFocusOverlayNonce(0);
     if (wasFocused) onFocusedClose?.();
-    else void loadCases();
   };
 
   const displayCase: OrderCase | null = activeCase ?? (pendingOrder
     ? { id: "", orderNumber: pendingOrder, phase: "PICKING", physicalState: "WITH_PICKER", createdAt: "", lines: [] }
     : null);
-  const displayCaseKey = activeCase ? activeCase.id : pendingOrder ? `pending:${pendingOrder}` : null;
-  useEffect(() => {
-    if (!displayCaseKey || openedCaseKey.current === displayCaseKey) return;
-    openedCaseKey.current = displayCaseKey;
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    detailRef.current?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
-    detailRef.current?.focus({ preventScroll: true });
-  }, [displayCaseKey]);
-  useEffect(() => { if (!displayCaseKey) openedCaseKey.current = null; }, [displayCaseKey]);
 
   return (
     <div className="picker-workflow">
       {error && <p className="case-alert" role="alert">{error}</p>}
       {actionNotice && <p className="check-notice" role="status">{actionNotice}</p>}
+      {canReportShortPick && <section className="order-lookup-panel" aria-labelledby="report-short-pick-title">
+        <div className="content-heading picker-heading"><div><p className="case-eyebrow">{tr("pickerWorkspace")}</p><h1 id="report-short-pick-title">{tr("reportShortPick")}</h1><p>{tr("reportShortPickDescription")}</p></div></div>
+        <form className="order-lookup-form" onSubmit={submitOrder}>
+          <label className="form-field"><span>{tr("orderNumber")}</span><ScanInput type="text" inputMode="numeric" pattern="[0-9]*" autoComplete="off" value={orderNumber} onChange={setOrderNumber} placeholder={tr("orderNumberPlaceholder")} required tr={tr} scanKind="order" fieldLabel={tr("orderNumber")} /></label>
+          <button className="primary-button" type="submit" disabled={busy}>{busy ? tr("checkingOrder") : tr("findOrder")}</button>
+        </form>
+        {history.length > 0 && <section className="history-warning" aria-labelledby="history-warning-title">
+          <p className="warning-eyebrow">{tr("orderSeenBefore")}</p><h2 id="history-warning-title">{normalizedOrder}</h2><p>{tr("historicalCaseDescription")}</p>
+          <ul>{history.map((item) => <li key={item.id}><time dateTime={item.createdAt}>{formatDate(item.createdAt, locale)}</time><span>{tr("casePhase", { phase: phaseLabel(item.phase, tr) })}</span></li>)}</ul>
+          <div className="warning-actions"><button type="button" className="secondary-button" onClick={() => { setHistory([]); setHistoryDraftOrder(""); setOrderNumber(""); setLocation(""); setSku(""); setQuantity(1); }} disabled={busy}>{tr("cancel")}</button><button type="button" className="primary-button" onClick={() => prepareCase(normalizedOrder, history.map((item) => item.id), historyDraftOrder === normalizedOrder)} disabled={busy}>{tr("createNewCase")}</button></div>
+        </section>}
+      </section>}
+      {canViewOwnCases && <section className="picker-open-cases" aria-labelledby="my-open-cases-title">
+        <div className="invite-list-heading"><h2 id="my-open-cases-title">{tr("myOpenCases")}</h2><button className="refresh-cases-button" type="button" onClick={() => void loadOpenCaseTabs()} disabled={openCasesLoading}>{tr("refresh")}</button></div>
+        {openCasesLoading ? <p className="case-list-empty" aria-live="polite">{tr("loadingCases")}</p> : openCaseTabs.length ? <div className="case-order-tabs" role="group" aria-label={tr("myOpenCases")}>
+          {openCaseTabs.map((item) => <button key={item.id} type="button" aria-current={item.id === activeCase?.id ? "page" : undefined} className={`case-order-tab${item.id === activeCase?.id ? " case-order-tab-active" : ""}`} onClick={() => item.id !== activeCase?.id && void openCase(item.id)} disabled={busy}>{item.orderNumber}</button>)}
+        </div> : <p className="case-list-empty">{tr("noActiveCases")}</p>}
+      </section>}
       {displayCase ? (
-        <section ref={detailRef} tabIndex={-1} className={`case-detail${focusOverlay ? " case-notification-overlay" : ""}`} aria-labelledby="case-detail-title">
-          <button className="case-back-button" type="button" onClick={closeDetail} disabled={busy}>‹ {tr("backToMyOrders")}</button>
-          <div className="case-detail-heading">
-            <div><p className="case-eyebrow">{tr("orderLabel")}</p><h2 id="case-detail-title">{displayCase.orderNumber}</h2></div>
-            <span className="case-badges"><span className="case-phase">{tr("casePhase", { phase: phaseLabel(displayCase.phase, tr) })}</span><CaseStatusBadge status={displayCase.phase === "CLOSED" ? "CLOSED" : (displayCase.lines[0]?.state ?? displayCase.phase)} retrievalState={displayCase.lines[0]?.retrievalState ?? null} tr={tr} /></span>
-          </div>
-          <p className="case-physical-state">{tr("physicalState", { state: physicalStateLabel(displayCase.physicalState, tr) })}</p>
-          <div className="case-line-list" aria-label={tr("reportedItems")}>
-            {displayCase.lines.length === 0 ? <p className="case-empty-lines">{tr("noItemsYet")}</p> : displayCase.lines.map((line) => {
-              const awaitingRetrieval = canConfirmRetrieval && line.state === "FOUND" && line.retrievalResponsibleUserId === userId && ["PENDING", "FAILED"].includes(line.retrievalState || "");
-              return (
-              <article className="case-line" key={line.id}>
-                <div className="case-line-primary"><strong>{line.location}</strong><span>{line.sku} ×{line.quantity}</span></div>
-                <span className="case-badges"><CaseStatusBadge status={line.state} retrievalState={line.retrievalState ?? null} tr={tr} kind="line" /></span>
-                {line.discoveredLocation && <p className="case-discovered-location">{tr("newLocation")}: <strong>{line.discoveredLocation}</strong></p>}
-                {line.replenishmentState && line.replenishmentState !== "NONE" ? <p className="replenishment-badge" data-state={line.replenishmentState}>{tr(`replenishmentState${line.replenishmentState}` as MessageKey)}</p> : null}
-                {awaitingRetrieval && <p className="picker-retrieval-prompt" role="status">{tr("pickerRetrievalPrompt" as MessageKey, { location: line.discoveredLocation || line.location })}</p>}
-                {awaitingRetrieval && <div className="case-retrieval-actions"><button type="button" className="secondary-button" disabled={busy} onClick={() => void confirmLineRetrieval(line.id, "FAILED")}>{tr("reportRetrievalFailed")}</button><button type="button" className="primary-button" disabled={busy} onClick={() => void confirmLineRetrieval(line.id, "RETRIEVED")}>{tr("confirmRetrieved")}</button></div>}
-                {canReportLocation && activeCase && activeCase.phase !== "CLOSED" && !["RESOLVED", "CANCELLED"].includes(line.state) ? <LocationReportForm tr={tr} caseId={activeCase.id} lineId={line.id} onReported={async () => { await openCase(activeCase.id); await loadCases(); setActionNotice(tr("reportLocationSaved" as MessageKey)); }} /> : null}
-              </article>
-              );
+        <CaseDetailView
+          className={`case-detail${focusOverlay ? " case-notification-overlay" : ""}`}
+          titleId="case-detail-title"
+          tr={tr}
+          orderNumber={displayCase.orderNumber}
+          phaseLabel={tr("casePhase", { phase: phaseLabel(displayCase.phase, tr) })}
+          summary={<p className="case-physical-state">{tr("physicalState", { state: physicalStateLabel(displayCase.physicalState, tr) })}</p>}
+          linesClassName="check-detail-lines"
+          lines={displayCase.lines.length === 0 ? <p className="case-empty-lines">{tr("noItemsYet")}</p> : displayCase.lines.map((line) => {
+              const canRetrieveLine = canConfirmRetrieval && line.state === "FOUND" && line.retrievalResponsibleUserId === userId && ["PENDING", "FAILED"].includes(line.retrievalState || "");
+              const canReportLocationLine = canReportLocation && activeCase && activeCase.phase !== "CLOSED" && !["RESOLVED", "CANCELLED"].includes(line.state);
+              return <SharedCaseLineCard
+                key={line.id}
+                tr={tr}
+                caseId={displayCase.id}
+                casePhase={displayCase.phase}
+                line={line}
+                projections={new Map()}
+                showRetrievalNotRequired={false}
+                retrievalPrompt={canRetrieveLine ? <p className="picker-retrieval-prompt" role="status">{tr("pickerRetrievalPrompt" as MessageKey, { location: line.discoveredLocation || line.location })}</p> : null}
+                actions={{
+                  canRecordReplenishment: false,
+                  canRetrieve: canRetrieveLine,
+                  canReportLocation: Boolean(canReportLocationLine),
+                  busyId: busy ? activeCase?.id ?? "busy" : "",
+                  onSaved: () => {},
+                  onRetrieve: (_lineId, result) => void confirmLineRetrieval(line.id, result),
+                  reportForm: (lineId) => canReportLocationLine && activeCase ? <LocationReportForm tr={tr} caseId={activeCase.id} lineId={lineId} onReported={async () => { await openCase(activeCase.id); setActionNotice(tr("reportLocationSaved" as MessageKey)); }} /> : null,
+                }}
+              />;
             })}
-          </div>
-          {canReportShortPick && displayCase.phase === "PICKING" && (!showLineForm ? <button className="primary-button add-line-button" type="button" onClick={() => { setShowLineForm(true); setDuplicateLine(null); }}>{tr("addMissingItem")}</button> : (
+          afterLines={canReportShortPick && displayCase.phase === "PICKING" && (!showLineForm ? <button className="primary-button add-line-button" type="button" onClick={() => { setShowLineForm(true); setDuplicateLine(null); }}>{tr("addMissingItem")}</button> : (
             <form className="add-line-panel" onSubmit={(event) => { event.preventDefault(); void addLine(false); }}>
               <div className="add-line-heading"><h3>{tr("addMissingItem")}</h3><button className="text-button" type="button" onClick={() => { if (pendingOrder) closeDetail(); else { setShowLineForm(false); setDuplicateLine(null); } }}>{tr("cancel")}</button></div>
               <label className="form-field"><span>{tr("location")}</span><ScanInput autoComplete="off" autoCapitalize="characters" value={location} onChange={(value) => { setLocation(value); setDuplicateLine(null); }} onScannedExtra={() => setDuplicateLine(null)} required tr={tr} scanKind="location" fieldLabel={tr("location")} /></label>
@@ -459,36 +492,21 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
               {!duplicateLine && <button className="primary-button" type="submit" disabled={busy}>{busy ? tr("savingLine") : tr("saveMissingItem")}</button>}
             </form>
           ))}
-          {displayCase.id && (displayCase.events?.length || displayCase.messages?.length) ? <section className="case-timeline-section" aria-label={tr("caseTimeline")}><h3>{tr("caseTimeline")}</h3><CaseTimeline events={displayCase.events || []} messages={displayCase.messages || []} tr={tr} formatDate={(value) => formatDate(value, locale)} className="case-shared-timeline" />{activeCase && activeCase.eventsPagination && activeCase.eventsPagination.totalPages > 1 ? <PaginationControls tr={tr} variant="more" meta={activeCase.eventsPagination} loading={busy} onPage={(next) => void openCase(activeCase.id, next)} /> : null}</section> : null}
-          {activeCase && canStage && activeCase.phase === "PICKING" && <div className="case-stage-panel">{stageConfirm ? <><p>{tr("stagingConfirm")}</p><div className="case-stage-actions"><button className="secondary-button" type="button" onClick={() => setStageConfirm(false)} disabled={busy}>{tr("cancel")}</button><button className="primary-button" type="button" onClick={() => void stageOrder()} disabled={busy}>{tr("stagingConfirmButton")}</button></div></> : <button className="secondary-button" type="button" onClick={() => setStageConfirm(true)} disabled={busy}>{tr("stagingAction")}</button>}</div>}
-          {activeCase && canClose && activeCase.phase !== "CLOSED" && activeCase.lines.length > 0 && activeCase.lines.every((line) => ["RESOLVED", "CANCELLED"].includes(line.state)) && <button className="secondary-button case-close-button" type="button" disabled={busy} onClick={() => void closeResolvedCase()}>{tr("closeCase")}</button>}
-        </section>
-      ) : (
-        <>
-          {canReportShortPick && <section className="order-lookup-panel" aria-labelledby="report-short-pick-title">
-            <div className="content-heading picker-heading"><div><p className="case-eyebrow">{tr("pickerWorkspace")}</p><h1 id="report-short-pick-title">{tr("reportShortPick")}</h1><p>{tr("reportShortPickDescription")}</p></div></div>
-            <form className="order-lookup-form" onSubmit={submitOrder}>
-              <label className="form-field"><span>{tr("orderNumber")}</span><ScanInput type="text" inputMode="numeric" pattern="[0-9]*" autoComplete="off" value={orderNumber} onChange={setOrderNumber} placeholder={tr("orderNumberPlaceholder")} required tr={tr} scanKind="order" fieldLabel={tr("orderNumber")} /></label>
-              <button className="primary-button" type="submit" disabled={busy}>{busy ? tr("checkingOrder") : tr("findOrder")}</button>
-            </form>
-            {history.length > 0 && <section className="history-warning" aria-labelledby="history-warning-title">
-              <p className="warning-eyebrow">{tr("orderSeenBefore")}</p><h2 id="history-warning-title">{normalizedOrder}</h2><p>{tr("historicalCaseDescription")}</p>
-              <ul>{history.map((item) => <li key={item.id}><time dateTime={item.createdAt}>{formatDate(item.createdAt, locale)}</time><span>{tr("casePhase", { phase: phaseLabel(item.phase, tr) })}</span></li>)}</ul>
-              <div className="warning-actions"><button type="button" className="secondary-button" onClick={() => { setHistory([]); setHistoryDraftOrder(""); setOrderNumber(""); setLocation(""); setSku(""); setQuantity(1); }} disabled={busy}>{tr("cancel")}</button><button type="button" className="primary-button" onClick={() => prepareCase(normalizedOrder, history.map((item) => item.id), historyDraftOrder === normalizedOrder)} disabled={busy}>{tr("createNewCase")}</button></div>
-            </section>}
-          </section>}
-          {canViewOwnCases && <section className="my-cases-section" aria-labelledby="my-cases-title">
-            <div className="invite-list-heading"><h2 id="my-cases-title">{tr("myShortPickOrders")}</h2><div className="live-refresh-controls"><LiveRefreshStatus state={liveState} tr={tr} /><button className="refresh-cases-button" type="button" onClick={() => void loadCases(pickerPageRef.current)} disabled={loading}>{tr("refresh")}</button></div></div>
-            {loading ? <p className="case-list-empty" aria-live="polite">{tr("loadingCases")}</p> : cases.length === 0 ? <p className="case-list-empty">{tr("noActiveCases")}</p> : <><div className="picker-case-list">{cases.map((item) => {
-              const lines = item.lines || [];
-              const missing = item.missingCount ?? lines.reduce((sum, line) => sum + (line.state.toUpperCase() === "OPEN" || line.state.toUpperCase() === "CHECKING" ? line.quantity : 0), 0);
-              const found = item.foundCount ?? lines.reduce((sum, line) => sum + (line.state.toUpperCase() === "FOUND" || line.state.toUpperCase() === "RETRIEVED" ? line.quantity : 0), 0);
-              const checking = item.checkingCount ?? lines.filter((line) => line.state.toUpperCase() === "CHECKING").length;
-              return <article className="picker-case-row" key={item.id}><div className="picker-case-main"><strong>{item.orderNumber}</strong><CaseStatusBadge status={(item.lines?.[0]?.state ?? (checking > 0 ? "CHECKING" : found > 0 ? "FOUND" : "OPEN"))} tr={tr} /><span>{tr("missingCount", { count: String(missing) })}{found > 0 ? ` · ${tr("foundCount", { count: String(found) })}` : ""}{checking > 0 ? ` · ${tr("checkingCount", { count: String(checking) })}` : ""}</span></div><button className="case-open-button" type="button" onClick={() => void openCase(item.id)} disabled={busy}>{tr("openCase")}</button></article>;
-            })}</div><PaginationControls tr={tr} meta={pageMeta} loading={loading} onPage={(next) => void loadCases(next)} /></>}
-          </section>}
-        </>
-      )}
+          events={displayCase.events ?? []}
+          messages={canViewMessages ? activeCase?.messages ?? [] : []}
+          formatTimestamp={(value) => formatTimestamp(value, locale)}
+          showTimeline={Boolean(displayCase.id && (displayCase.events?.length || (canViewMessages && activeCase?.messages?.length) || (canAddMessages && activeCase && activeCase.phase !== "CLOSED")))}
+          timelinePagination={activeCase && activeCase.eventsPagination && activeCase.eventsPagination.totalPages > 1 ? <PaginationControls tr={tr} variant="more" meta={activeCase.eventsPagination} loading={busy} onPage={(next) => void openCase(activeCase.id, next)} /> : null}
+          messageComposer={activeCase && canAddMessages && activeCase.phase !== "CLOSED" ? <form className="case-message-form" onSubmit={submitCaseMessage}>
+              <label className="form-field"><span>{tr("caseMessageLabel")}</span><textarea value={caseMessage} onChange={(event) => setCaseMessage(event.target.value)} placeholder={tr("caseMessagePlaceholder")} maxLength={2000} rows={3} required /></label>
+              <button className="primary-button" type="submit" disabled={busy || !caseMessage.trim()}>{tr("sendCaseMessage")}</button>
+            </form> : null}
+          afterTimeline={<>
+            {activeCase && canStage && activeCase.phase === "PICKING" && <div className="case-stage-panel">{stageConfirm ? <><p>{tr("stagingConfirm")}</p><div className="case-stage-actions"><button className="secondary-button" type="button" onClick={() => setStageConfirm(false)} disabled={busy}>{tr("cancel")}</button><button className="primary-button" type="button" onClick={() => void stageOrder()} disabled={busy}>{tr("stagingConfirmButton")}</button></div></> : <button className="secondary-button" type="button" onClick={() => setStageConfirm(true)} disabled={busy}>{tr("stagingAction")}</button>}</div>}
+            {activeCase && canClose && activeCase.phase !== "CLOSED" && activeCase.lines.length > 0 && activeCase.lines.every((line) => ["RESOLVED", "CANCELLED"].includes(line.state)) && <button className="secondary-button case-close-button" type="button" disabled={busy} onClick={() => void closeResolvedCase()}>{tr("closeCase")}</button>}
+          </>}
+        />
+      ) : null}
     </div>
   );
 }

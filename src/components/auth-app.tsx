@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PickerWorkflow } from "@/components/picker-workflow";
+import { CaseHistory } from "@/components/case-history";
 import { CheckWorkflow } from "@/components/check-workflow";
 import { OperationsDashboard } from "@/components/operations-dashboard";
 import { NotificationCenter } from "@/components/notification-center";
@@ -14,6 +15,7 @@ import { UserManagement } from "@/components/user-management";
 import { PhotoApproval } from "@/components/photo-approval";
 import { EnvironmentBanner } from "@/components/environment-banner";
 import { PaginationControls } from "@/components/pagination-controls";
+import { CaseTimeline, type CaseTimelineEvent, type CaseTimelineMessage } from "@/components/case-timeline";
 import { ThemePicker } from "@/components/theme-picker";
 import {
   getMessages,
@@ -51,8 +53,9 @@ type InviteResponse = { invites?: Invite[]; invite?: Invite & { token: string; r
 type AuthAppProps = { initialInviteToken?: string; initialView?: View };
 
 const navigation = [
-  { key: "myWork", permission: ["REPORT_SHORT_PICK", "VIEW_OWN_CASES"] },
-  { key: "checks", permission: ["VIEW_AVAILABLE_CHECKS", "CLAIM_CHECK", "COMPLETE_CHECK", "ASSIGN_CHECK", "REASSIGN_CHECK"] },
+  { key: "myWork", permission: ["REPORT_SHORT_PICK"] },
+  { key: "assignments", permission: ["VIEW_AVAILABLE_CHECKS", "CLAIM_CHECK", "COMPLETE_CHECK", "ASSIGN_CHECK", "REASSIGN_CHECK"] },
+  { key: "history", permission: ["VIEW_OWN_CASES"] },
   { key: "openCases", permission: ["VIEW_ALL_OPEN_CASES"] },
   { key: "reports", permission: ["VIEW_ANALYTICS"] },
   { key: "notifications", permission: [] },
@@ -128,13 +131,13 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
       </svg>
     );
   }
-  if (name === "openCases" || name === "myWork") {
+  if (name === "openCases" || name === "myWork" || name === "history") {
     return <svg {...common}><rect x="4" y="4" width="16" height="16" rx="2" /><path d="M8 9h8M8 13h8M8 17h4" /></svg>;
   }
   if (name === "notifications") {
     return <svg {...common}><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z" /><path d="M10 21h4" /></svg>;
   }
-  if (name === "checks") {
+  if (name === "checks" || name === "assignments") {
     return <svg {...common}><circle cx="12" cy="12" r="8.5" /><path d="m8.5 12 2.3 2.3 4.8-5" /></svg>;
   }
   if (name === "team") {
@@ -182,8 +185,6 @@ type DeepLinkLine = {
   pickerRetrieval?: boolean | null;
 };
 
-type DeepLinkMessage = { id: string; message: string; authorName: string; createdAt: string };
-
 type DeepLinkCase = {
   id: string;
   orderNumber: string;
@@ -193,7 +194,9 @@ type DeepLinkCase = {
   closedAt?: string | null;
   resolvedAt?: string | null;
   lines?: DeepLinkLine[] | null;
-  messages?: DeepLinkMessage[] | null;
+  events?: CaseTimelineEvent[] | null;
+  eventsPagination?: { total: number; page: number; pageSize: number; totalPages: number } | null;
+  messages?: CaseTimelineMessage[] | null;
 };
 
 type BriefInstruction = { key: MessageKey; values?: Record<string, string> };
@@ -228,8 +231,9 @@ export function stepperStageForLine(line: { state?: string | null; displayStatus
   return "waiting";
 }
 
-export function DeepCaseView({ tr, data, lineId, canViewMessages, status, onClose, headingRef, currentLineRef, fromNotification = false }: {
+export function DeepCaseView({ tr, locale = "en", data, lineId, canViewMessages, status, onClose, headingRef, currentLineRef, fromNotification = false, timelinePagination = null }: {
   tr: (key: MessageKey, values?: Record<string, string>) => string;
+  locale?: Locale;
   data: DeepLinkCase | null;
   lineId: string | null;
   canViewMessages: boolean;
@@ -238,6 +242,7 @@ export function DeepCaseView({ tr, data, lineId, canViewMessages, status, onClos
   headingRef: React.RefObject<HTMLHeadingElement | null>;
   currentLineRef: React.RefObject<HTMLElement | null>;
   fromNotification?: boolean;
+  timelinePagination?: ReactNode;
 }) {
   const [dismissedInstructionKey, setDismissedInstructionKey] = useState<string | null>(null);
   if (status === "loading") {
@@ -285,16 +290,14 @@ export function DeepCaseView({ tr, data, lineId, canViewMessages, status, onClos
           {lines.map((line) => {
             const current = lineId !== null && line.id === lineId;
             const quantity = line.missingQuantity ?? line.quantity;
-            const stepperStage = stepperStageForLine(line);
+            const stepperStage = closed ? "done" : stepperStageForLine(line);
             return (
               <li key={line.id}>
                 <article className="deep-case-line" data-current={current ? "true" : "false"} aria-current={current ? "true" : undefined} ref={current ? currentLineRef : undefined}>
                   <div className="deep-case-line-top"><strong>{line.originalLocation || line.location || "—"}</strong><span>{line.sku || "—"} ×{typeof quantity === "number" ? quantity : "—"}</span></div>
-                  <ol className="deep-case-stepper" aria-label={tr("stepperProgressLabel")}>
-                    <li data-stage={stepperStage === "waiting" ? "current" : "done"} aria-current={stepperStage === "waiting" ? "step" : undefined}>{tr("stepperWaiting")}</li>
-                    <li data-stage={stepperStage === "ready" ? "current" : stepperStage === "done" ? "done" : "todo"} aria-current={stepperStage === "ready" ? "step" : undefined}>{line.pickerRetrieval === true ? tr("stepperPickerRetrieval") : tr("stepperReady")}</li>
-                    <li data-stage={stepperStage === "done" ? "current" : "todo"} aria-current={stepperStage === "done" ? "step" : undefined}>{tr("stepperDone")}</li>
-                  </ol>
+                  <span className={`case-status-badge case-status-${stepperStage}`} role="status">
+                    {stepperStage === "waiting" ? tr("stepperWaiting") : stepperStage === "ready" ? (line.pickerRetrieval === true ? tr("stepperPickerRetrieval") : tr("stepperReady")) : tr("stepperDone")}
+                  </span>
                   <dl className="deep-case-facts">
                     <div><dt>{tr("lineOriginalLocation")}</dt><dd>{line.originalLocation || line.location || "—"}</dd></div>
                     <div><dt>{tr("lineKnownNewLocation")}</dt><dd>{line.discoveredLocation || tr("lineNoKnownNewLocation")}</dd></div>
@@ -313,16 +316,11 @@ export function DeepCaseView({ tr, data, lineId, canViewMessages, status, onClos
       ) : (
         <p className="profile-empty">{tr("noItemsYet")}</p>
       )}
-      {visibleMessages.length > 0 ? (
-        <section className="deep-case-messages" aria-label={tr("caseTimeline")}>
-          <h3>{tr("caseTimeline")}</h3>
-          <ol>
-            {visibleMessages.map((entry) => (
-              <li key={entry.id}><span><strong>{entry.authorName}</strong> · </span><span>{entry.message}</span></li>
-            ))}
-          </ol>
-        </section>
-      ) : null}
+      <section className="case-timeline-section" aria-label={tr("caseTimeline")}>
+        <h3>{tr("caseTimeline")}</h3>
+        <CaseTimeline events={data.events ?? []} messages={visibleMessages} tr={tr} formatDate={(value) => formatDate(value, locale)} className="case-shared-timeline" />
+        {timelinePagination}
+      </section>
       <div className="dialog-actions"><button className="secondary-button" type="button" onClick={onClose}>{tr("caseDeepLinkClose")}</button></div>
     </section>
   );
@@ -334,7 +332,7 @@ export function resolveDeepTarget(input: { phase?: string | null; closedAt?: str
   if (closed || !input.canAct) return { view: "readonly" };
   return { view: "live", section: "myWork" };
 }
-export type LiveSection = "myWork" | "checks" | "openCases";
+export type LiveSection = "myWork" | "assignments" | "openCases";
 
 const CHECK_NOTIFICATION_MARKER = "CHECK";
 
@@ -349,10 +347,10 @@ export function liveSectionForUser(
   const canUsePickerWorkflow = ["PICKER", "TROUBLESHOOTER"].includes(account?.role ?? "")
     && (permissions.includes("REPORT_SHORT_PICK") || permissions.includes("VIEW_OWN_CASES"));
   if (canUsePickerWorkflow) {
-    if ((notificationType ?? "").toUpperCase().includes(CHECK_NOTIFICATION_MARKER) && canUseChecks) return "checks";
+    if ((notificationType ?? "").toUpperCase().includes(CHECK_NOTIFICATION_MARKER) && canUseChecks) return "assignments";
     return "myWork";
   }
-  if (canUseChecks) return "checks";
+  if (canUseChecks) return "assignments";
   return null;
 }
 
@@ -382,8 +380,9 @@ function CaseOverlay({ tr, title, onClose, headingId, labelledBy, children }: {
   );
 }
 
-function DeepCasePanel({ tr, caseId, lineId, canViewMessages, canAct, fromNotification = false, overlay = false, onClose, onOpenLive }: {
+function DeepCasePanel({ tr, locale, caseId, lineId, canViewMessages, canAct, fromNotification = false, overlay = false, onClose, onOpenLive }: {
   tr: (key: MessageKey, values?: Record<string, string>) => string;
+  locale: Locale;
   caseId: string;
   lineId: string | null;
   canViewMessages: boolean;
@@ -395,6 +394,7 @@ function DeepCasePanel({ tr, caseId, lineId, canViewMessages, canAct, fromNotifi
 }) {
   const [data, setData] = useState<DeepLinkCase | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "missing" | "forbidden" | "failed">("loading");
+  const [timelinePage, setTimelinePage] = useState(1);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const currentLineRef = useRef<HTMLElement>(null);
 
@@ -405,7 +405,7 @@ function DeepCasePanel({ tr, caseId, lineId, canViewMessages, canAct, fromNotifi
       setStatus("loading");
       setData(null);
     });
-    fetch(`/api/cases/${encodeURIComponent(caseId)}`, { credentials: "same-origin", cache: "no-store" })
+    fetch(`/api/cases/${encodeURIComponent(caseId)}?page=${timelinePage}&pageSize=50`, { credentials: "same-origin", cache: "no-store" })
       .then(async (response) => {
         const envelope = (await response.json().catch(() => ({}))) as { case?: DeepLinkCase };
         if (cancelled) return;
@@ -418,7 +418,7 @@ function DeepCasePanel({ tr, caseId, lineId, canViewMessages, canAct, fromNotifi
       })
       .catch(() => { if (!cancelled) setStatus("failed"); });
     return () => { cancelled = true; };
-  }, [caseId]);
+  }, [caseId, timelinePage]);
 
   useEffect(() => {
     if (status === "ready" && lineId) currentLineRef.current?.scrollIntoView({ block: "nearest" });
@@ -427,14 +427,17 @@ function DeepCasePanel({ tr, caseId, lineId, canViewMessages, canAct, fromNotifi
 
   const openCase = status === "ready" && data !== null && data.phase !== "CLOSED" && !data.closedAt && !data.resolvedAt;
   const target = resolveDeepTarget({ phase: data?.phase ?? null, closedAt: data?.closedAt ?? null, resolvedAt: data?.resolvedAt ?? null, canAct: openCase && canAct });
+  const timelinePagination = status === "ready" && data?.eventsPagination && data.eventsPagination.totalPages > 1 ? (
+    <PaginationControls tr={tr} variant="more" meta={data.eventsPagination} loading={false} onPage={setTimelinePage} />
+  ) : null;
   const body = target.view === "live" && onOpenLive && status === "ready" && data ? (
     <>
-      <DeepCaseView tr={tr} data={data} lineId={lineId} canViewMessages={canViewMessages} status={status} onClose={onClose} headingRef={headingRef} currentLineRef={currentLineRef} fromNotification={fromNotification} />
+      <DeepCaseView tr={tr} locale={locale} data={data} lineId={lineId} canViewMessages={canViewMessages} status={status} onClose={onClose} headingRef={headingRef} currentLineRef={currentLineRef} fromNotification={fromNotification} timelinePagination={timelinePagination} />
       <div className="dialog-actions">
         <button className="primary-button" type="button" onClick={() => onOpenLive(caseId, lineId)}>{tr("navInstructionOpenLiveCase")}</button>
       </div>
     </>
-  ) : <DeepCaseView tr={tr} data={data} lineId={lineId} canViewMessages={canViewMessages} status={status} onClose={onClose} headingRef={headingRef} currentLineRef={currentLineRef} fromNotification={fromNotification} />;
+  ) : <DeepCaseView tr={tr} locale={locale} data={data} lineId={lineId} canViewMessages={canViewMessages} status={status} onClose={onClose} headingRef={headingRef} currentLineRef={currentLineRef} fromNotification={fromNotification} timelinePagination={timelinePagination} />;
   if (!overlay) return body;
   return (
     <CaseOverlay tr={tr} title="caseDetails" onClose={onClose} headingId="notification-case-overlay-title" labelledBy="caseDetails">
@@ -654,6 +657,13 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
     setDeepCaseFromNotification(false);
     setLiveFocus(null);
     router.replace("/", { scroll: false });
+  }, [router]);
+  const openHistoryCase = useCallback((caseId: string) => {
+    setDeepCaseId(caseId);
+    setDeepLineId(null);
+    setDeepCaseFromNotification(false);
+    setLiveFocus(null);
+    router.replace(`/?case=${encodeURIComponent(caseId)}`, { scroll: false });
   }, [router]);
   const consumeLiveFocus = useCallback(() => { setLiveFocus(null); }, []);
   const closeFocusedCase = useCallback(() => {
@@ -949,7 +959,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
           </header>
           <main className="workspace-content">
             {deepCaseId ? (
-              <DeepCasePanel tr={tr} caseId={deepCaseId} lineId={deepLineId} canViewMessages={user.permissions.includes("VIEW_CASE_MESSAGES")} canAct={user.permissions.some((permission) => ["REPORT_SHORT_PICK", "CLAIM_CHECK", "COMPLETE_CHECK", "ASSIGN_CHECK", "REASSIGN_CHECK", "CONFIRM_RETRIEVAL", "ADD_CASE_MESSAGE", "RESOLVE_CASE", "RECORD_REPLENISHMENT", "MARK_ORDER_STAGED"].includes(permission))} fromNotification={deepCaseFromNotification} overlay onClose={closeDeepCase} onOpenLive={openLiveCase} />
+              <DeepCasePanel tr={tr} locale={locale} caseId={deepCaseId} lineId={deepLineId} canViewMessages={user.permissions.includes("VIEW_CASE_MESSAGES")} canAct={user.permissions.some((permission) => ["REPORT_SHORT_PICK", "CLAIM_CHECK", "COMPLETE_CHECK", "ASSIGN_CHECK", "REASSIGN_CHECK", "CONFIRM_RETRIEVAL", "ADD_CASE_MESSAGE", "RESOLVE_CASE", "RECORD_REPLENISHMENT", "MARK_ORDER_STAGED"].includes(permission))} fromNotification={deepCaseFromNotification} overlay onClose={closeDeepCase} onOpenLive={openLiveCase} />
             ) : null}
             {activeSection === "configuration" && allowedNavigation.some((item) => item.key === "configuration") ? (
               <ConfigurationPanel tr={tr} locale={locale} role={user.role} />
@@ -988,9 +998,11 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             ) : activeSection === "reports" && allowedNavigation.some((item) => item.key === "reports") ? (
               <AnalyticsDashboard tr={tr} locale={locale} canExport={user.permissions.includes("EXPORT_ANALYTICS")} />
             ) : canUsePickerWorkflow && activeSection === "myWork" ? (
-              <PickerWorkflow locale={locale} tr={tr} userId={user.id} canReportShortPick={Boolean(user.permissions.includes("REPORT_SHORT_PICK"))} canViewOwnCases={Boolean(user.permissions.includes("VIEW_OWN_CASES"))} canOverrideDuplicateLine={canOverrideDuplicateLine} canStage={user.permissions.includes("MARK_ORDER_STAGED")} canConfirmRetrieval={user.permissions.includes("CONFIRM_RETRIEVAL")} canClose={user.permissions.includes("RESOLVE_CASE")} canRecordReplenishment={user.permissions.includes("RECORD_REPLENISHMENT")} canReportLocation={user.permissions.includes("REPORT_NEW_LOCATION")} focusedCaseId={liveFocus?.section === "myWork" ? liveFocus.caseId : null} focusedNonce={liveFocus?.section === "myWork" ? liveFocus.nonce : 0} focusFromNotification={liveFocus?.section === "myWork"} onFocusConsumed={consumeLiveFocus} onFocusedClose={closeFocusedCase} />
-            ) : activeSection === "checks" && allowedNavigation.some((item) => item.key === "checks") ? (
-              <CheckWorkflow locale={locale} tr={tr} canViewAvailable={user.permissions.includes("VIEW_AVAILABLE_CHECKS") || user.permissions.includes("ASSIGN_CHECK")} canClaim={user.permissions.includes("CLAIM_CHECK")} canComplete={user.permissions.includes("COMPLETE_CHECK")} canAssign={user.permissions.includes("ASSIGN_CHECK")} canReassign={user.permissions.includes("REASSIGN_CHECK")} canRetrieve={user.permissions.includes("CONFIRM_RETRIEVAL")} canMessage={user.permissions.includes("ADD_CASE_MESSAGE")} canRecordReplenishment={user.permissions.includes("RECORD_REPLENISHMENT")} canReportLocation={user.permissions.includes("REPORT_NEW_LOCATION")} canViewAllOpenCases={user.permissions.includes("VIEW_ALL_OPEN_CASES")} focusedCaseId={liveFocus?.section === "checks" ? liveFocus.caseId : null} focusedNonce={liveFocus?.section === "checks" ? liveFocus.nonce : 0} onFocusConsumed={consumeLiveFocus} onFocusedClose={closeFocusedCase} />
+              <PickerWorkflow locale={locale} tr={tr} userId={user.id} canReportShortPick={Boolean(user.permissions.includes("REPORT_SHORT_PICK"))} canViewOwnCases={user.permissions.includes("VIEW_OWN_CASES")} canViewMessages={user.permissions.includes("VIEW_CASE_MESSAGES")} canAddMessages={user.permissions.includes("ADD_CASE_MESSAGE")} canOverrideDuplicateLine={canOverrideDuplicateLine} canStage={user.permissions.includes("MARK_ORDER_STAGED")} canConfirmRetrieval={user.permissions.includes("CONFIRM_RETRIEVAL")} canClose={user.permissions.includes("RESOLVE_CASE")} canRecordReplenishment={user.permissions.includes("RECORD_REPLENISHMENT")} canReportLocation={user.permissions.includes("REPORT_NEW_LOCATION")} focusedCaseId={liveFocus?.section === "myWork" ? liveFocus.caseId : null} focusedNonce={liveFocus?.section === "myWork" ? liveFocus.nonce : 0} focusFromNotification={liveFocus?.section === "myWork"} onFocusConsumed={consumeLiveFocus} onFocusedClose={closeFocusedCase} />
+            ) : activeSection === "history" && allowedNavigation.some((item) => item.key === "history") ? (
+              <CaseHistory locale={locale} tr={tr} onOpenCase={openHistoryCase} />
+            ) : activeSection === "assignments" && allowedNavigation.some((item) => item.key === "assignments") ? (
+              <CheckWorkflow locale={locale} tr={tr} canViewAvailable={user.permissions.includes("VIEW_AVAILABLE_CHECKS") || user.permissions.includes("ASSIGN_CHECK")} canClaim={user.permissions.includes("CLAIM_CHECK")} canComplete={user.permissions.includes("COMPLETE_CHECK")} canAssign={user.permissions.includes("ASSIGN_CHECK")} canReassign={user.permissions.includes("REASSIGN_CHECK")} canRetrieve={user.permissions.includes("CONFIRM_RETRIEVAL")} canMessage={user.permissions.includes("ADD_CASE_MESSAGE")} canRecordReplenishment={user.permissions.includes("RECORD_REPLENISHMENT")} canReportLocation={user.permissions.includes("REPORT_NEW_LOCATION")} canViewAllOpenCases={user.permissions.includes("VIEW_ALL_OPEN_CASES")} focusedCaseId={liveFocus?.section === "assignments" ? liveFocus.caseId : null} focusedNonce={liveFocus?.section === "assignments" ? liveFocus.nonce : 0} onFocusConsumed={consumeLiveFocus} onFocusedClose={closeFocusedCase} />
             ) : canCreateInvites && activeSection === "invitations" ? (
               <>
                 <div className="content-heading"><div><h1>{tr("inviteManagementTitle")}</h1><p>{tr("inviteManagementDescription")}</p></div></div>

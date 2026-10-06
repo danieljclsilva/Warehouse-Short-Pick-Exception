@@ -96,7 +96,7 @@ export function CaseTimeline({
       .map((event) => ({
         id: event.id,
         createdAt: event.createdAt,
-        who: event.actorName || tr("systemActor"),
+        who: tr("systemActor"),
         text: timelineLabelFor(event, tr),
         kind: "event" as const,
       })),
@@ -112,10 +112,10 @@ export function CaseTimeline({
     <ol className={className} data-testid="case-shared-timeline">
       {rows.map((entry) => (
         <li key={entry.id} data-testid={entry.kind === "event" ? "timeline-event" : "timeline-message"}>
-          <time>{formatDate(entry.createdAt)}</time>
+          <time dateTime={entry.createdAt}>{formatDate(entry.createdAt)}</time>
           <span className="timeline-row">
             <strong data-testid="timeline-actor">{entry.who}</strong>
-            <span data-testid="timeline-text">: {entry.text}</span>
+            <span data-testid="timeline-text">{entry.text}</span>
           </span>
         </li>
       ))}

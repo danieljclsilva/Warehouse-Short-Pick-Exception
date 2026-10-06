@@ -5,9 +5,9 @@ import type { Locale, MessageKey } from "@/i18n/messages";
 import { LiveRefreshStatus } from "@/components/live-refresh-status";
 import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
-import { CaseStatusBadge } from "@/components/case-status-badge";
 import { PaginationControls } from "@/components/pagination-controls";
-import { CaseTimeline, type CaseTimelineEvent } from "@/components/case-timeline";
+import type { CaseTimelineEvent, CaseTimelineMessage } from "@/components/case-timeline";
+import { CaseDetailView } from "@/components/case-detail-view";
 import { SharedCaseLineCard, SharedInlineLocationForm } from "@/components/case-line-card";
 
 type Check = {
@@ -42,11 +42,11 @@ type Retrieval = {
 type Worker = { id: string; displayName: string; status: string; permissions: string[] };
 type CaseDetail = {
   id: string; orderNumber: string; phase: string; physicalState: string; physicalLocation: string | null;
-  lines: Array<{ id: string; location: string; sku: string; quantity: number; state: string; discoveredLocation: string | null; retrievalState?: string | null; retrievalResponsibleUserId?: string | null; replenishmentState?: string | null; responsibleName: string | null; reporterName?: string | null; reporterIdentifier?: string | null }>;
+  lines: Array<{ id: string; location: string; sku: string; quantity: number; state: string; displayStatus?: string | null; discoveredLocation: string | null; retrievalState?: string | null; retrievalResponsibleUserId?: string | null; replenishmentState?: string | null; responsibleName: string | null; reporterName?: string | null; reporterIdentifier?: string | null }>;
   checks: Array<{ id: string; shortPickLineId: string; status: string; completionCode: string | null; completedAt: string | null; assigneeName: string | null }>;
   events: Array<{ id: string; eventType: string; actorName: string | null; createdAt: string; completionCode?: string | null; discoveredLocation?: string | null; originalLocation?: string | null; taskId?: string | null; resultMessage?: string | null }>;
   eventsPagination?: { total: number; page: number; pageSize: number; totalPages: number } | null;
-  messages: Array<{ id: string; authorName: string; message: string; createdAt: string }>;
+  messages: CaseTimelineMessage[];
 };
 type Props = {
   locale: Locale;
@@ -75,16 +75,16 @@ async function readJson(response: Response) {
 }
 
 function withReplenishmentProjection(caseDetail: CaseDetail): CaseDetail {
-  const raw = caseDetail as CaseDetail & { lineProjections?: Array<{ lineId: string; replenishment?: { state?: string } }> };
+  const raw = caseDetail as CaseDetail & { lineProjections?: Array<{ lineId: string; displayStatus?: string; replenishment?: { state?: string } }> };
   if (!raw.lineProjections) return caseDetail;
-  const projectedByLineId: Record<string, string | undefined> = {};
+  const projectedByLineId: Record<string, { displayStatus?: string; replenishmentState?: string }> = {};
   for (const entry of raw.lineProjections) {
-    if (entry && typeof entry.lineId === "string") projectedByLineId[entry.lineId] = entry.replenishment?.state;
+    if (entry && typeof entry.lineId === "string") projectedByLineId[entry.lineId] = { displayStatus: entry.displayStatus, replenishmentState: entry.replenishment?.state };
   }
   return { ...raw, lines: raw.lines.map((line) => {
     const projected = projectedByLineId[line.id];
     if (!projected) return line;
-    return { ...line, replenishmentState: projected };
+    return { ...line, displayStatus: projected.displayStatus ?? line.displayStatus, replenishmentState: projected.replenishmentState ?? line.replenishmentState };
   }) };
 }
 function formatCheckAge(iso: string): string {
@@ -315,12 +315,20 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
   if (detail) return <div className="check-workflow">
     {error && <p className="case-alert" role="alert">{error}</p>}
     {notice && <p className="check-notice" role="status">{notice}</p>}
-    <button className="case-back-button" type="button" onClick={closeDetail}>‹ {tr("backToChecks")}</button>
-    <section ref={detailRef} id="check-case-detail" tabIndex={-1} className="check-detail-panel" aria-label={tr("caseDetails")}>
-      <div className="check-detail-heading"><div><span>{tr("orderLabel")}</span><h2>{detail.orderNumber}</h2><span className="case-badges"><CaseStatusBadge status={detail.lines[0]?.state ?? detail.phase} tr={tr} />{detail.phase === "CLOSED" ? null : <span className="case-phase">{detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span>}</span></div></div>
-      <p className="check-detail-state">{detail.phase === "CLOSED" ? tr("caseClosed") : detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}{detail.physicalLocation ? ` · ${detail.physicalLocation}` : ""}</p>
-      <h3>{tr("reportedItems")}</h3>
-      <div className="check-detail-lines">{detail.lines.map((line) => {
+    <button className="case-back-button" type="button" onClick={closeDetail}>‹ {tr("backToAssignments")}</button>
+    <CaseDetailView
+      panelRef={detailRef}
+      id="check-case-detail"
+      tabIndex={-1}
+      className="check-detail-panel"
+      titleId="check-case-title"
+      tr={tr}
+      orderNumber={detail.orderNumber}
+      phaseLabel={detail.phase === "CLOSED" ? tr("caseClosed") : detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}
+      summary={detail.physicalLocation ? <p className="case-physical-state">{detail.physicalLocation}</p> : null}
+      linesClassName="check-detail-lines"
+      showLinesHeading
+      lines={detail.lines.map((line) => {
         const reportable = canReportLocation && detail.phase !== "CLOSED" && !["RESOLVED", "CANCELLED"].includes(line.state);
         const submitReportLocation = (lineId: string) => { void (async () => { setBusyId(lineId); setError(""); setNotice(""); try { const response = await fetch(`/api/cases/${encodeURIComponent(detail.id)}/lines/${encodeURIComponent(lineId)}/discovered-location`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ location: reportLocationValue.trim().toUpperCase() }), cache: "no-store" }); if (!response.ok) throw new Error(tr("reportLocationFailed")); setReportLocationLineId(null); setReportLocationValue(""); await load(); await openDetails(detail.id, detailTimelineRef.current[detail.id] ?? 1); setNotice(tr("reportLocationSaved")); } catch { setError(tr("reportLocationFailed")); } finally { setBusyId(""); } })(); };
         return <SharedCaseLineCard key={line.id} tr={tr} caseId={detail.id} casePhase={detail.phase} line={line} projections={new Map()}
@@ -328,15 +336,16 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
             onSaved: async () => { await openDetails(detail.id, detailTimelineRef.current[detail.id] ?? 1); setNotice(tr("replenishmentSaved")); },
             onRetrieve: (lineId, result) => { void mutate(lineId, `/api/cases/${detail.id}/lines/${lineId}/retrieve`, "POST", { result }); },
             reportForm: (lineId) => (reportable ? (reportLocationLineId === line.id ? <SharedInlineLocationForm tr={tr} placeholder={tr("reportLocationPlaceholder")} value={reportLocationValue} onChange={setReportLocationValue} onSubmit={() => submitReportLocation(lineId)} /> : <button type="button" className="secondary-button" onClick={() => { setReportLocationLineId(line.id); setReportLocationValue(""); }}>{tr("reportLocationAction")}</button>) : null) }} />;
-      })}</div>
-      <h3>{tr("caseTimeline")}</h3>
-      <CaseTimeline events={detail.events as CaseTimelineEvent[]} messages={detail.messages} tr={tr} formatDate={(value) => new Date(value).toLocaleString(locale)} className="check-detail-timeline" />
-      {detail.eventsPagination && detail.eventsPagination.totalPages > 1 ? <PaginationControls tr={tr} variant="more" meta={detail.eventsPagination} loading={Boolean(busyId)} onPage={(next) => void openDetails(detail.id, next)} /> : null}
-      {canMessage && <form className="check-detail-message" onSubmit={async (event) => { event.preventDefault(); if (!message.trim()) return; const saved = await mutate(detail.id, `/api/cases/${detail.id}/messages`, "POST", { message: message.trim() }); if (saved) setMessage(""); }}><label className="form-field"><span>{tr("caseMessageLabel")}</span><textarea value={message} onChange={(event) => setMessage(event.target.value)} maxLength={2000} rows={3} required /></label><button className="primary-button" type="submit" disabled={Boolean(busyId)}>{tr("sendCaseMessage")}</button></form>}
-    </section>
+      })}
+      events={detail.events as CaseTimelineEvent[]}
+      messages={detail.messages}
+      formatTimestamp={(value) => new Date(value).toLocaleString(locale)}
+      timelinePagination={detail.eventsPagination && detail.eventsPagination.totalPages > 1 ? <PaginationControls tr={tr} variant="more" meta={detail.eventsPagination} loading={Boolean(busyId)} onPage={(next) => void openDetails(detail.id, next)} /> : null}
+      messageComposer={canMessage ? <form className="case-message-form" onSubmit={async (event) => { event.preventDefault(); if (!message.trim()) return; const saved = await mutate(detail.id, `/api/cases/${detail.id}/messages`, "POST", { message: message.trim() }); if (saved) setMessage(""); }}><label className="form-field"><span>{tr("caseMessageLabel")}</span><textarea value={message} onChange={(event) => setMessage(event.target.value)} maxLength={2000} rows={3} required /></label><button className="primary-button" type="submit" disabled={Boolean(busyId)}>{tr("sendCaseMessage")}</button></form> : null}
+    />
   </div>;
   return <div className="check-workflow">
-    <div className="content-heading"><div><h1>{tr("checks")}</h1></div><div className="live-refresh-controls"><LiveRefreshStatus state={liveState} tr={tr} /><button type="button" className="refresh-cases-button" onClick={() => void load()}>{tr("refresh")}</button></div></div>
+    <div className="content-heading"><div><h1>{tr("assignments")}</h1></div><div className="live-refresh-controls"><LiveRefreshStatus state={liveState} tr={tr} /><button type="button" className="refresh-cases-button" onClick={() => void load()}>{tr("refresh")}</button></div></div>
     {error && <p className="case-alert" role="alert">{error}</p>}
     {notice && <p className="check-notice" role="status">{notice}</p>}
     {canComplete && <section className="check-section"><h2>{tr("myAssignedChecks")}</h2>{loading ? <p>{tr("loading")}</p> : mine.length ? <><div className="check-card-grid">{mine.map((check) => checkCard(check, "mine"))}</div><CheckSectionPager tr={tr} page={checkPages.mine} meta={mineMeta} onPage={(next) => void loadSection("mine", next)} /></> : <p className="check-empty">{tr("noAssignedChecks")}</p>}</section>}

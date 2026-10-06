@@ -258,25 +258,27 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
     }
   };
 
-  const openNotificationCase = async (notification: NotificationRecord) => {
+  const openNotificationCase = (notification: NotificationRecord) => {
     if (!notification.caseId || !onOpenCase) return;
     if (!notification.readAt && busyId !== notification.id) {
       setBusyId(notification.id);
-      try {
-        const response = await fetch(`/api/notifications/${encodeURIComponent(notification.id)}/read`, { method: "POST", credentials: "same-origin" });
-        const body = await readBody<{ error?: string }>(response);
-        if (!response.ok) throw new Error(body.error || tr("notificationReadError"));
-        const readAt = new Date().toISOString();
-        const nextItems = notifications.map((item) => item.id === notification.id ? { ...item, readAt } : item);
-        const nextUnread = nextItems.filter((item) => !item.readAt).length;
-        setNotifications(nextItems);
-        setUnreadCount(nextUnread);
-        onUnreadChange?.(nextUnread);
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : tr("notificationReadError"));
-      } finally {
-        setBusyId("");
-      }
+      void (async () => {
+        try {
+          const response = await fetch(`/api/notifications/${encodeURIComponent(notification.id)}/read`, { method: "POST", credentials: "same-origin" });
+          const body = await readBody<{ error?: string }>(response);
+          if (!response.ok) throw new Error(body.error || tr("notificationReadError"));
+          const readAt = new Date().toISOString();
+          const nextItems = notifications.map((item) => item.id === notification.id ? { ...item, readAt } : item);
+          const nextUnread = nextItems.filter((item) => !item.readAt).length;
+          setNotifications(nextItems);
+          setUnreadCount(nextUnread);
+          onUnreadChange?.(nextUnread);
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : tr("notificationReadError"));
+        } finally {
+          setBusyId("");
+        }
+      })();
     }
     const lineId = notification.shortPickLineId ?? null;
     const payload = asPayload(notification.payload);

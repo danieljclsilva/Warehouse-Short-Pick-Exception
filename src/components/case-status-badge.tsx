@@ -11,6 +11,8 @@ const READY_STATUSES: Record<string, true> = {
   FOUND_AT_ORIGINAL: true,
   WAITING_RETRIEVAL: true,
   RETRIEVING: true,
+  RETRIEVAL_PENDING: true,
+  READY_TO_CLOSE: true,
 };
 
 const DONE_STATUSES: Record<string, true> = {
@@ -24,6 +26,25 @@ const GROUP_LABEL_KEYS: Record<CaseStatusGroup, MessageKey> = {
   waiting: "badgeStatusWaiting",
   ready: "badgeStatusReady",
   done: "badgeStatusDone",
+};
+
+const STATUS_LABEL_KEYS: Record<string, MessageKey> = {
+  OPEN: "badgeWaitingCheck",
+  CHECKING: "badgeCheckInProgress",
+  FOUND: "badgeReadyToRetrieve",
+  FOUND_AT_ORIGINAL: "badgeReadyToRetrieve",
+  WAITING_RETRIEVAL: "badgeReadyToRetrieve",
+  RETRIEVAL_PENDING: "badgeReadyToRetrieve",
+  RETRIEVAL_FAILED: "badgeRetryRetrieval",
+  RETRIEVING: "badgeRetrievalInProgress",
+  NOT_FOUND: "badgeCheckAgain",
+  WRONG_LOCATION: "badgeCheckAgain",
+  TROUBLESHOOTING: "badgeNeedsFollowUp",
+  RESOLVED: "badgeResolved",
+  READY_TO_CLOSE: "badgeReadyToClose",
+  RETRIEVED: "badgeRetrieved",
+  CLOSED: "badgeClosed",
+  CANCELLED: "badgeCancelled",
 };
 
 /**
@@ -51,7 +72,12 @@ export function CaseStatusBadge({
   kind?: "case" | "line";
 }) {
   const group = statusGroupFor(status, retrievalState);
-  const label = tr(GROUP_LABEL_KEYS[group]);
+  const code = (status || "").toUpperCase();
+  const retrievalFailed = (retrievalState || "").toUpperCase() === "FAILED";
+  const labelKey = retrievalFailed && ["FOUND", "WAITING_RETRIEVAL", "RETRIEVAL_PENDING"].includes(code)
+    ? "badgeRetryRetrieval"
+    : STATUS_LABEL_KEYS[code] ?? GROUP_LABEL_KEYS[group];
+  const label = tr(labelKey);
   const ariaKey: MessageKey = kind === "line" ? "timelineLineStatusLabel" : "timelineCaseStatusLabel";
   return (
     <span
