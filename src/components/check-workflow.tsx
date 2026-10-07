@@ -7,7 +7,7 @@ import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import { PaginationControls } from "@/components/pagination-controls";
 import type { CaseTimelineEvent, CaseTimelineMessage } from "@/components/case-timeline";
-import { CaseDetailView } from "@/components/case-detail-view";
+import { CaseDetailView, CaseSummaryCard, formatCaseElapsedTime } from "@/components/case-detail-view";
 import { SharedCaseLineCard, SharedInlineLocationForm } from "@/components/case-line-card";
 
 type Check = {
@@ -42,6 +42,7 @@ type Retrieval = {
 type Worker = { id: string; displayName: string; status: string; permissions: string[] };
 type CaseDetail = {
   id: string; orderNumber: string; phase: string; physicalState: string; physicalLocation: string | null;
+  createdAt?: string; responsibleName?: string | null; responsibleIdentifier?: string | null; source?: string; missingCount?: number;
   lines: Array<{ id: string; location: string; sku: string; quantity: number; state: string; displayStatus?: string | null; discoveredLocation: string | null; retrievalState?: string | null; retrievalResponsibleUserId?: string | null; replenishmentState?: string | null; responsibleName: string | null; reporterName?: string | null; reporterIdentifier?: string | null }>;
   checks: Array<{ id: string; shortPickLineId: string; status: string; completionCode: string | null; completedAt: string | null; assigneeName: string | null }>;
   events: Array<{ id: string; eventType: string; actorName: string | null; createdAt: string; completionCode?: string | null; discoveredLocation?: string | null; originalLocation?: string | null; taskId?: string | null; resultMessage?: string | null }>;
@@ -325,7 +326,10 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       tr={tr}
       orderNumber={detail.orderNumber}
       phaseLabel={detail.phase === "CLOSED" ? tr("caseClosed") : detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}
-      summary={detail.physicalLocation ? <p className="case-physical-state">{detail.physicalLocation}</p> : null}
+      summary={<>
+        {detail.physicalLocation ? <p className="case-physical-state">{detail.physicalLocation}</p> : null}
+        <CaseSummaryCard tr={tr} responsibleName={detail.responsibleName} responsibleIdentifier={detail.responsibleIdentifier} source={detail.source} missingCount={detail.missingCount} elapsedTime={formatCaseElapsedTime(detail.createdAt)} />
+      </>}
       linesClassName="check-detail-lines"
       showLinesHeading
       lines={detail.lines.map((line) => {

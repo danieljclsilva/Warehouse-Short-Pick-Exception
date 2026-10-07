@@ -55,10 +55,10 @@ type InviteResponse = { invites?: Invite[]; invite?: Invite & { token: string; r
 type AuthAppProps = { initialInviteToken?: string; initialView?: View };
 
 const navigation = [
+  { key: "openCases", permission: ["VIEW_ALL_OPEN_CASES"] },
   { key: "myWork", permission: ["REPORT_SHORT_PICK"] },
   { key: "assignments", permission: ["VIEW_AVAILABLE_CHECKS", "CLAIM_CHECK", "COMPLETE_CHECK", "ASSIGN_CHECK", "REASSIGN_CHECK"] },
   { key: "history", permission: ["VIEW_OWN_CASES"] },
-  { key: "openCases", permission: ["VIEW_ALL_OPEN_CASES"] },
   { key: "reports", permission: ["VIEW_ANALYTICS"] },
   { key: "notifications", permission: [] },
   { key: "invitations", permission: ["CREATE_INVITES"] },
@@ -308,7 +308,6 @@ export function DeepCaseView({ tr, locale = "en", data, lineId, canViewMessages,
               displayStatus: closed ? "RESOLVED" : line.displayStatus,
               discoveredLocation: line.discoveredLocation,
               replenishmentState: line.replenishmentState,
-              reporterName: line.reporterName,
             };
             return (
               <li key={line.id}>

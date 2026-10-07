@@ -5,7 +5,7 @@ import type { Locale, MessageKey } from "@/i18n/messages";
 import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import type { CaseTimelineEvent, CaseTimelineMessage } from "@/components/case-timeline";
-import { CaseDetailView } from "@/components/case-detail-view";
+import { CaseDetailView, CaseSummaryCard, formatCaseElapsedTime } from "@/components/case-detail-view";
 import { SharedCaseLineCard } from "@/components/case-line-card";
 import { PaginationControls } from "@/components/pagination-controls";
 
@@ -16,6 +16,10 @@ type OrderCase = {
   phase: string;
   physicalState: string;
   createdAt: string;
+  responsibleName?: string | null;
+  responsibleIdentifier?: string | null;
+  source?: string;
+  missingCount?: number;
   lines: ShortPickLine[];
   lineProjections?: Array<{ lineId: string; displayStatus?: string; replenishment?: { state?: string; note?: string | null } }>;
   events?: CaseTimelineEvent[];
@@ -453,7 +457,10 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
           tr={tr}
           orderNumber={displayCase.orderNumber}
           phaseLabel={tr("casePhase", { phase: phaseLabel(displayCase.phase, tr) })}
-          summary={<p className="case-physical-state">{tr("physicalState", { state: physicalStateLabel(displayCase.physicalState, tr) })}</p>}
+          summary={<>
+            <p className="case-physical-state">{tr("physicalState", { state: physicalStateLabel(displayCase.physicalState, tr) })}</p>
+            {displayCase.id ? <CaseSummaryCard tr={tr} responsibleName={displayCase.responsibleName} responsibleIdentifier={displayCase.responsibleIdentifier} source={displayCase.source} missingCount={displayCase.missingCount} elapsedTime={formatCaseElapsedTime(displayCase.createdAt)} /> : null}
+          </>}
           linesClassName="check-detail-lines"
           lines={displayCase.lines.length === 0 ? <p className="case-empty-lines">{tr("noItemsYet")}</p> : displayCase.lines.map((line) => {
               const canRetrieveLine = canConfirmRetrieval && line.state === "FOUND" && line.retrievalResponsibleUserId === userId && ["PENDING", "FAILED"].includes(line.retrievalState || "");

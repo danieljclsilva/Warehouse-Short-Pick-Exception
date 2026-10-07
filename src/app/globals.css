@@ -345,7 +345,7 @@ button { color: inherit; }
 .case-detail-heading h2:focus { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 .case-detail-view .case-detail-heading > .case-badges { justify-content: flex-end; margin-left: auto; text-align: right; }
 .case-detail-section-title { margin: 4px 0 0; color: var(--ink); font-size: 16px; }
-.case-summary-card { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.case-summary-card { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .case-summary-card > div { display: grid; align-content: start; gap: 6px; min-width: 0; }
 .case-summary-card > div > span { color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; }
 .case-summary-card strong { color: var(--ink); font-size: 13px; overflow-wrap: anywhere; }

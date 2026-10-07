@@ -82,9 +82,6 @@ export function SharedCaseLineCard({
       </div>
       {line.discoveredLocation ? <p className="case-discovered-location">{tr("newLocation" as MessageKey)}: <strong>{line.discoveredLocation}</strong></p> : null}
       {line.responsibleName ? <p><span className="responsible-badge">{tr("checkResponsibleBadge", { name: line.responsibleName })}</span></p> : null}
-      {(line.reporterName || line.reporterIdentifier) ? (
-        <small>{tr("lineReportedBy", { name: line.reporterName || line.reporterIdentifier || "" })}<br />{line.reporterIdentifier ? tr("lineReporterId", { id: line.reporterIdentifier }) : ""}</small>
-      ) : null}
       {additionalDetails}
       {replenishment !== "NONE" ? <p className="replenishment-badge" data-state={replenishment}>{tr(`replenishmentState${replenishment}` as MessageKey)}</p> : null}
       {showRetrievalNotRequired && retrieval === "NOT_REQUIRED" && casePhase !== "STAGED" ? <p className="retrieval-badge" data-state="NOT_REQUIRED">{tr("retrievalNotRequired")}</p> : null}
