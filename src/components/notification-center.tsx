@@ -164,6 +164,7 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
   const [markAllError, setMarkAllError] = useState("");
   const [preferencesError, setPreferencesError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [pushEnabledHere, setPushEnabledHere] = useState<boolean | null>(null);
 
   const loadNotifications = useCallback(async (silent = false, nextPage = 1) => {
     if (!silent) setLoading(true);
@@ -333,7 +334,7 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
         <span className={styles.unreadBadge} aria-live="polite">{tr("notificationsUnread", { count: String(unreadCount) })}</span>
       </div>
 
-      <section className={styles.section} aria-labelledby="notification-list-title">
+      <section className={`${styles.section} ${styles.notificationsSection} ${pushEnabledHere === false ? styles.notificationsSectionAfterPush : ""}`} aria-labelledby="notification-list-title">
         <div className={styles.sectionHeading}>
           <h2 id="notification-list-title">{tr("notificationUpdates")}</h2>
           <div className={styles.headingActions}>
@@ -367,11 +368,11 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
         )}
       </section>
 
-      <section className={styles.section}>
-        <PushSettings tr={tr} locale={locale} />
+      <section className={`${styles.section} ${styles.pushSettingsSection} ${pushEnabledHere === false ? styles.pushSectionFirst : ""}`}>
+        <PushSettings tr={tr} locale={locale} onDeviceEnabledChange={setPushEnabledHere} />
       </section>
 
-      {canManagePreferences && <section className={styles.section} aria-labelledby="notification-preferences-title">
+      {canManagePreferences && <section className={`${styles.section} ${styles.preferencesSection}`} aria-labelledby="notification-preferences-title">
         <div className={styles.sectionHeading}><h2 id="notification-preferences-title">{tr("notificationPreferencesTitle")}</h2></div>
         <form className={styles.preferences} onSubmit={savePreferences}>
           <p className={styles.preferencesIntro}>{tr("notificationPreferencesDescription")}</p>

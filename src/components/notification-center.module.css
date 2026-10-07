@@ -1,6 +1,15 @@
 .center {
+  display: flex;
+  flex-direction: column;
   width: min(100%, 860px);
 }
+
+.heading { order: 0; }
+.notificationsSection { order: 1; }
+.pushSettingsSection { order: 2; }
+.preferencesSection { order: 3; }
+.notificationsSectionAfterPush { order: 2; }
+.pushSectionFirst { order: 1; }
 
 .heading {
   display: flex;

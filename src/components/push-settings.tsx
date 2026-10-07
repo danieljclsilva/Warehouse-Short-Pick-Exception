@@ -8,7 +8,7 @@ type Translator = (key: MessageKey, values?: Record<string, string>) => string;
 type Device = { id: string; deviceLabel: string; createdAt: string };
 type SubscriptionResponse = { enabled?: boolean; publicKey?: string | null; subscriptions?: Device[]; error?: string };
 type UpsertResponse = { subscription?: Device; error?: string };
-type Props = { tr: Translator; locale?: string };
+type Props = { tr: Translator; locale?: string; onDeviceEnabledChange?: (enabled: boolean) => void };
 
 const messageKeys = {
   title: "pushSettingsTitle",
@@ -54,7 +54,7 @@ function isPushSupported() {
     && "Notification" in window;
 }
 
-export function PushSettings({ tr, locale = "en" }: Props) {
+export function PushSettings({ tr, locale = "en", onDeviceEnabledChange }: Props) {
   const [loading, setLoading] = useState(true);
   const [enabled, setEnabled] = useState(false);
   const [publicKey, setPublicKey] = useState<string | null>(null);
@@ -86,11 +86,19 @@ export function PushSettings({ tr, locale = "en" }: Props) {
     let cancelled = false;
     const initialize = async () => {
       await load();
-      if (cancelled || !isPushSupported() || !window.isSecureContext) return;
+      if (cancelled) return;
+      if (!isPushSupported() || !window.isSecureContext) {
+        onDeviceEnabledChange?.(false);
+        return;
+      }
       try {
         const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/", updateViaCache: "none" });
         const existing = await registration.pushManager.getSubscription();
-        if (!existing || cancelled) return;
+        if (!existing || cancelled) {
+          if (!cancelled) onDeviceEnabledChange?.(false);
+          return;
+        }
+        onDeviceEnabledChange?.(true);
         const response = await fetch("/api/notifications/push-subscriptions", {
           method: "POST",
           credentials: "same-origin",
@@ -103,11 +111,12 @@ export function PushSettings({ tr, locale = "en" }: Props) {
         setDevices((current) => [body.subscription!, ...current.filter((device) => device.id !== body.subscription!.id)]);
       } catch {
         // Existing browser permission remains usable even when the server is temporarily unavailable.
+        if (!cancelled) onDeviceEnabledChange?.(false);
       }
     };
     void initialize();
     return () => { cancelled = true; };
-  }, [load]);
+  }, [load, onDeviceEnabledChange]);
 
   const enablePush = async () => {
     if (!isPushSupported() || !window.isSecureContext || !enabled || !publicKey) return;
@@ -142,6 +151,7 @@ export function PushSettings({ tr, locale = "en" }: Props) {
       const body = await readJson<UpsertResponse>(response);
       if (!response.ok || !body.subscription) throw new Error(body.error || trKey(tr, "enableError"));
       setCurrentDeviceId(body.subscription.id);
+      onDeviceEnabledChange?.(true);
       setDevices((current) => [body.subscription!, ...current.filter((device) => device.id !== body.subscription!.id)]);
       setNotice(trKey(tr, "enabledNotice"));
     } catch (cause) {
@@ -167,6 +177,7 @@ export function PushSettings({ tr, locale = "en" }: Props) {
         const subscription = await registration?.pushManager.getSubscription();
         if (subscription) await subscription.unsubscribe().catch(() => false);
         setCurrentDeviceId(null);
+        onDeviceEnabledChange?.(false);
       }
       setDevices((current) => current.filter((item) => item.id !== device.id));
       setNotice(trKey(tr, "removedNotice"));
