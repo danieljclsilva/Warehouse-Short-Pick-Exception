@@ -20,6 +20,10 @@
     "db:check": "drizzle-kit check",
     "notifications:emit": "tsx scripts/emit-notifications.ts",
     "push:deliver": "tsx scripts/deliver-push.ts",
+    "push:worker": "tsx scripts/push-worker.ts",
+    "test-env:start": "sh scripts/railway-test-env.sh start",
+    "test-env:status": "sh scripts/railway-test-env.sh status",
+    "test-env:stop": "sh scripts/railway-test-env.sh stop",
     "seed:admin": "tsx scripts/seed-admin.ts",
     "recover:admin": "tsx scripts/recover-admin.ts"
   },

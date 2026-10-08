@@ -19,6 +19,7 @@ import type { CaseTimelineEvent, CaseTimelineMessage } from "@/components/case-t
 import { CaseDetailView, CaseSummaryCard, formatCaseElapsedTime } from "@/components/case-detail-view";
 import { SharedCaseLineCard, type SharedCaseLine } from "@/components/case-line-card";
 import { ThemePicker } from "@/components/theme-picker";
+import { useVisibilityPolling } from "@/components/use-visibility-polling";
 import {
   getMessages,
   supportedLocales,
@@ -605,33 +606,28 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
     if (!user) return [];
     return navigationFor(user);
   }, [user]);
-  useEffect(() => {
-    if (!user || view !== "workspace") return;
-    let cancelled = false;
-    const refreshBadges = async () => {
-      try {
-        const response = await fetch("/api/notifications", { credentials: "same-origin", cache: "no-store" });
-        if (response.ok) {
-          const body = (await response.json()) as { unreadCount?: number };
-          if (!cancelled && typeof body.unreadCount === "number") setUnreadCount(body.unreadCount);
-        }
-      } catch { /* badge-only; center shows errors */ }
-      if (!user.permissions.includes("APPROVE_PROFILE_PHOTO") && user.role !== "ADMIN") {
-        if (!cancelled) setPendingPhotoCount(0);
-        return;
+  const refreshBadges = useCallback(async () => {
+    if (!user) return;
+    try {
+      const response = await fetch("/api/notifications", { credentials: "same-origin", cache: "no-store" });
+      if (response.ok) {
+        const body = (await response.json()) as { unreadCount?: number };
+        if (typeof body.unreadCount === "number") setUnreadCount(body.unreadCount);
       }
-      try {
-        const response = await fetch("/api/admin/profile-photos?page=1&pageSize=1", { credentials: "same-origin", cache: "no-store" });
-        if (response.ok) {
-          const body = (await response.json()) as { photos?: unknown[]; total?: number };
-          if (!cancelled) setPendingPhotoCount(typeof body.total === "number" ? body.total : (Array.isArray(body.photos) ? body.photos.length : 0));
-        }
-      } catch { /* badge-only; queue shows errors */ }
-    };
-    void refreshBadges();
-    const timer = window.setInterval(() => { void refreshBadges(); }, 15_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [user, view, activeSection]);
+    } catch { /* badge-only; center shows errors */ }
+    if (!user.permissions.includes("APPROVE_PROFILE_PHOTO") && user.role !== "ADMIN") {
+      setPendingPhotoCount(0);
+      return;
+    }
+    try {
+      const response = await fetch("/api/admin/profile-photos?page=1&pageSize=1", { credentials: "same-origin", cache: "no-store" });
+      if (response.ok) {
+        const body = (await response.json()) as { photos?: unknown[]; total?: number };
+        setPendingPhotoCount(typeof body.total === "number" ? body.total : (Array.isArray(body.photos) ? body.photos.length : 0));
+      }
+    } catch { /* badge-only; queue shows errors */ }
+  }, [user]);
+  useVisibilityPolling(refreshBadges, 15_000, Boolean(user) && view === "workspace");
 
   const canCreateInvites = user?.role === "ADMIN" || Boolean(user?.permissions.includes("CREATE_INVITES"));
   const canUsePickerWorkflow = Boolean(user && ["PICKER", "TROUBLESHOOTER"].includes(user.role) && user.permissions.some((permission) => permission === "REPORT_SHORT_PICK" || permission === "VIEW_OWN_CASES"));

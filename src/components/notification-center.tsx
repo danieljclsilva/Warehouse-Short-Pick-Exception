@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MessageKey } from "@/i18n/messages";
 import { PaginationControls } from "@/components/pagination-controls";
 import { PushSettings } from "@/components/push-settings";
+import { useVisibilityPolling } from "@/components/use-visibility-polling";
 import styles from "./notification-center.module.css";
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
@@ -210,13 +211,14 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
 
   const pageRef = useRef(page);
   useEffect(() => { pageRef.current = page; }, [page]);
+  const pollNotifications = useCallback(() => loadNotifications(true, pageRef.current), [loadNotifications]);
+  useVisibilityPolling(pollNotifications, 10_000, true, { immediate: false });
   useEffect(() => {
     const initialTimer = window.setTimeout(() => {
       void loadNotifications(false, pageRef.current);
       if (canManagePreferences) void loadPreferences();
     }, 0);
-    const timer = window.setInterval(() => { void loadNotifications(true, pageRef.current); }, 10_000);
-    return () => { window.clearTimeout(initialTimer); window.clearInterval(timer); };
+    return () => { window.clearTimeout(initialTimer); };
   }, [canManagePreferences, loadNotifications, loadPreferences]);
 
   const markRead = async (notification: NotificationRecord) => {
