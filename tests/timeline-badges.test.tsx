@@ -154,8 +154,11 @@ describe("timeline surfaces render badges and codes", () => {
 
   it("picker detail timeline section is wired to the shared timeline", () => {
     const source = readFileSync(fileURLToPath(new URL("../src/components/picker-workflow.tsx", import.meta.url)), "utf8");
-    expect(source).toContain("case-timeline-section");
-    expect(source).toContain("<CaseTimeline");
+    const detailView = readFileSync(fileURLToPath(new URL("../src/components/case-detail-view.tsx", import.meta.url)), "utf8");
+    expect(source).toContain("CaseDetailView");
+    expect(source).toContain("SharedCaseLineCard");
+    expect(detailView).toContain("case-timeline-section");
+    expect(detailView).toContain("<CaseTimeline");
   });
 
   it("picker My Work and check views render without crashing", () => {
@@ -202,7 +205,7 @@ describe("badge and timeline CSS (390px)", () => {
     expect(badge).toMatch(/max-width:\s*100%/);
     expect(badge).toMatch(/overflow-wrap:\s*anywhere/);
     expect(badge).not.toMatch(/overflow:\s*hidden/);
-    const row = ruleBody(css, "\\.case-badges");
+    const row = ruleBody(css, "(?:^|\\n)\\.case-badges");
     expect(row).toMatch(/flex-wrap:\s*wrap/);
     const timeline = ruleBody(css, "\\.case-shared-timeline li");
     expect(timeline).toMatch(/overflow-wrap:\s*anywhere/);
@@ -276,6 +279,8 @@ describe("case-detail header sync", () => {
     const lineCss = readFileSync(fileURLToPath(new URL("../src/components/operations-dashboard.module.css", import.meta.url)), "utf8");
     expect(drawer).toContain("caseStatusBadge");
     expect(drawer).toContain("styles.phase");
+    expect(checks).toContain("CaseStatusBadge");
+    expect(checks).toContain("headingActions");
     expect(checks).toContain("case-badges");
     expect(checks).toContain("case-phase");
     expect(drawer).not.toContain("physicalStateLabel");

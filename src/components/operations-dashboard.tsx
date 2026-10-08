@@ -223,11 +223,9 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
   const [reopenResponsible, setReopenResponsible] = useState("");
   const [clockNow, setClockNow] = useState<number | null>(null);
   const closedPageRef = useRef(1);
-  const fetchDashboard = useCallback(async (nextPage = 1, nextClosedPage?: number) => {
-    if (dashboardRequestInFlight.current) return true;
-    dashboardRequestInFlight.current = true;
+  const [dashboardClosedPage, setDashboardClosedPage] = useState(1);
+  const fetchDashboardPage = useCallback(async (nextPage: number, targetClosedPage: number) => {
     try {
-      const targetClosedPage = nextClosedPage ?? closedPageRef.current;
       const response = await fetch(`/api/operations/dashboard?page=${nextPage}&pageSize=20&closedPage=${targetClosedPage}`, { cache: "no-store" });
       const body = await readBody<DashboardResponse & { total?: number; page?: number; pageSize?: number; totalPages?: number }>(response);
       if (!response.ok) throw new Error(tr("operationsLoadFailed"));
@@ -243,16 +241,25 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
       });
       setRecentClosedCases(body.recentClosedCases || []);
       setClosedPageMeta(body.closedPagination ?? { total: (body.recentClosedCases || []).length, page: targetClosedPage, pageSize: 20, totalPages: 1 });
+      setDashboardClosedPage(body.closedPagination?.page ?? targetClosedPage);
       setError("");
       return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : tr("operationsLoadFailed"));
       return false;
     } finally {
-      dashboardRequestInFlight.current = false;
       setLoading(false);
     }
   }, [tr]);
+  const fetchDashboard = useCallback(async (nextPage = 1, nextClosedPage?: number) => {
+    if (dashboardRequestInFlight.current) return true;
+    dashboardRequestInFlight.current = true;
+    try {
+      return await fetchDashboardPage(nextPage, nextClosedPage ?? closedPageRef.current);
+    } finally {
+      dashboardRequestInFlight.current = false;
+    }
+  }, [fetchDashboardPage]);
   const selectedCaseId = selected?.id;
   const pageRef = useRef(pageMeta.page);
   useEffect(() => { pageRef.current = pageMeta.page; }, [pageMeta.page]);
@@ -328,7 +335,8 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
     void loadCase(focusedCaseId).finally(() => { onFocusConsumed?.(); });
   }, [focusedCaseId, focusedNonce, focusFromNotification, loadCase, onFocusConsumed]);
   const focusOverlay = focusOverlayNonce !== 0;
-
+  const reloadDashboardCurrentPage = useCallback(async () => fetchDashboardPage(1, dashboardClosedPage), [dashboardClosedPage, fetchDashboardPage]);
+  const reloadCaseTimelinePage = useCallback(async (caseId: string) => loadCase(caseId, timelinePages[caseId] ?? 1), [loadCase, timelinePages]);
   const refreshSelected = async () => {
     await fetchDashboard();
     if (selected) await loadCase(selected.id, timelinePages[selected.id] ?? 1);
@@ -503,9 +511,9 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
           return selected.lines.map((line) => (
             <article className={styles.line} key={line.id}><SharedCaseLineCard tr={tr} caseId={selected.id} casePhase={selected.phase} line={line} projections={projections}
               actions={{ canRecordReplenishment, canRetrieve: false, canReportLocation, busyId: busy ? selected.id : "",
-                onSaved: async () => { setNotice(tr("replenishmentSaved")); await fetchDashboard(); await loadCase(selected.id, timelinePages[selected.id] ?? 1); },
+                onSaved: async () => { setNotice(tr("replenishmentSaved")); await reloadDashboardCurrentPage(); await reloadCaseTimelinePage(selected.id); },
                 onRetrieve: () => {},
-                reportForm: () => (<LocationReporter tr={tr} caseId={selected.id} lineId={line.id} onReported={async () => { setNotice(tr("reportLocationSaved")); await fetchDashboard(); await loadCase(selected.id, timelinePages[selected.id] ?? 1); }} />) }} /></article>
+                reportForm: () => (<LocationReporter tr={tr} caseId={selected.id} lineId={line.id} onReported={async () => { setNotice(tr("reportLocationSaved")); await reloadDashboardCurrentPage(); await reloadCaseTimelinePage(selected.id); }} />) }} /></article>
           ));
           })() : <p>{tr("noItemsYet")}</p>}
           events={(selected.events || []) as CaseTimelineEvent[]}

@@ -19,10 +19,11 @@ describe("Notification open routes to the native case surface", () => {
     ).toBe("openCases");
   });
 
-  it("sends pickers to Checks for check notifications and My Work otherwise", () => {
+  it("sends pickers to Assignments for check notifications and My Work otherwise", () => {
     const picker = { role: "PICKER", permissions: pickerChecks };
-    expect(liveSectionForUser(picker, "RESPONSIBILITY_CHECK_ASSIGNED")).toBe("checks");
-    expect(liveSectionForUser(picker, "check_claimed")).toBe("checks");
+    // "checks" nav key renamed to "assignments" (auth-app.tsx:62; i18n `checks: "Assignments"` label); source returns the nav key.
+    expect(liveSectionForUser(picker, "RESPONSIBILITY_CHECK_ASSIGNED")).toBe("assignments");
+    expect(liveSectionForUser(picker, "check_claimed")).toBe("assignments");
     expect(liveSectionForUser(picker, "TROUBLESHOOTER_MESSAGE")).toBe("myWork");
     expect(liveSectionForUser(picker, "RESPONSIBILITY_RETRIEVAL_ASSIGNED")).toBe("myWork");
     expect(liveSectionForUser(picker, null)).toBe("myWork");
@@ -34,10 +35,11 @@ describe("Notification open routes to the native case surface", () => {
     ).toBe("myWork");
   });
 
-  it("sends checks-only users to Checks and keeps the rest on the read-only panel", () => {
+  it("sends checks-only users to Assignments and keeps the rest on the read-only panel", () => {
+    // "checks" nav key renamed to "assignments" (auth-app.tsx:62; i18n `checks: "Assignments"` label); source returns the nav key.
     expect(
       liveSectionForUser({ role: "TROUBLESHOOTER", permissions: ["VIEW_AVAILABLE_CHECKS", "CLAIM_CHECK"] }, "NEW_SHORT_PICK"),
-    ).toBe("checks");
+    ).toBe("assignments");
     expect(liveSectionForUser({ role: "ADMIN", permissions: ["VIEW_ANALYTICS"] }, "NEW_SHORT_PICK")).toBeNull();
     expect(liveSectionForUser(null, "NEW_SHORT_PICK")).toBeNull();
   });

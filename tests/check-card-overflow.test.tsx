@@ -34,9 +34,9 @@ describe("check-card phone overflow (390px)", () => {
   });
 
   it("assign/actions rows wrap with bounded children", () => {
-    const rows = ruleBody("\\.check-assign-row,\\s*\\.check-card-actions,\\s*\\.case-retrieval-actions,\\s*\\.case-stage-actions");
+    const rows = ruleBody("\\.check-assign-row,\\s*\\.check-card-actions,\\s*\\.case-stage-actions");
     expect(rows).toMatch(/flex-wrap:\s*wrap/);
-    const children = ruleBody("\\.check-assign-row > \\*,\\s*\\.check-card-actions > \\*,\\s*\\.case-retrieval-actions > \\*,\\s*\\.case-stage-actions > \\*");
+    const children = ruleBody("\\.check-assign-row > \\*,\\s*\\.check-card-actions > \\*,\\s*\\.case-stage-actions > \\*");
     expect(children).toMatch(/min-width:\s*0/);
     expect(children).toMatch(/max-width:\s*100%/);
   });

@@ -9,6 +9,7 @@ import { PaginationControls } from "@/components/pagination-controls";
 import type { CaseTimelineEvent, CaseTimelineMessage } from "@/components/case-timeline";
 import { CaseDetailView, CaseSummaryCard, formatCaseElapsedTime } from "@/components/case-detail-view";
 import { SharedCaseLineCard, SharedInlineLocationForm } from "@/components/case-line-card";
+import { CaseStatusBadge } from "@/components/case-status-badge";
 
 type Check = {
   id: string;
@@ -326,6 +327,7 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       tr={tr}
       orderNumber={detail.orderNumber}
       phaseLabel={detail.phase === "CLOSED" ? tr("caseClosed") : detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}
+      headingActions={<span className="case-badges"><CaseStatusBadge status={detail.lines[0]?.displayStatus ?? detail.lines[0]?.state ?? detail.phase} tr={tr} /><span className="case-phase">{detail.phase === "CLOSED" ? tr("caseClosed") : detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span></span>}
       summary={<>
         {detail.physicalLocation ? <p className="case-physical-state">{detail.physicalLocation}</p> : null}
         <CaseSummaryCard tr={tr} responsibleName={detail.responsibleName} responsibleIdentifier={detail.responsibleIdentifier} source={detail.source} missingCount={detail.missingCount} elapsedTime={formatCaseElapsedTime(detail.createdAt)} />

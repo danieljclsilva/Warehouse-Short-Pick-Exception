@@ -301,6 +301,7 @@ export function DeepCaseView({ tr, locale = "en", data, lineId, canViewMessages,
           {lines.map((line) => {
             const current = lineId !== null && line.id === lineId;
             const quantity = line.missingQuantity ?? line.quantity;
+            const stepperStage = closed ? "done" : stepperStageForLine(line);
             const sharedLine: SharedCaseLine = {
               id: line.id,
               location: line.originalLocation || line.location || "—",
@@ -314,6 +315,11 @@ export function DeepCaseView({ tr, locale = "en", data, lineId, canViewMessages,
             return (
               <li key={line.id}>
                 <article className="deep-case-line" data-current={current ? "true" : "false"} aria-current={current ? "true" : undefined} ref={current ? currentLineRef : undefined}>
+                  <ol className="deep-case-stepper" aria-label={tr("stepperProgressLabel")}>
+                    <li data-stage={stepperStage === "waiting" ? "current" : "done"} aria-current={stepperStage === "waiting" ? "step" : undefined}>{tr("stepperWaiting")}</li>
+                    <li data-stage={stepperStage === "ready" ? "current" : stepperStage === "done" ? "done" : "todo"} aria-current={stepperStage === "ready" ? "step" : undefined}>{line.pickerRetrieval === true ? tr("stepperPickerRetrieval") : tr("stepperReady")}</li>
+                    <li data-stage={stepperStage === "done" ? "current" : "todo"} aria-current={stepperStage === "done" ? "step" : undefined}>{tr("stepperDone")}</li>
+                  </ol>
                   <SharedCaseLineCard
                     tr={tr}
                     caseId={data.id}
@@ -325,9 +331,10 @@ export function DeepCaseView({ tr, locale = "en", data, lineId, canViewMessages,
                     additionalDetails={<dl className="deep-case-facts">
                       {line.originalLocation || line.location ? <div><dt>{tr("lineOriginalLocation")}</dt><dd>{line.originalLocation || line.location}</dd></div> : null}
                       {!line.discoveredLocation ? <div><dt>{tr("lineKnownNewLocation")}</dt><dd>{tr("lineNoKnownNewLocation")}</dd></div> : null}
+                      {line.reporterName ? <div><dt>{tr("lineReporter")}</dt><dd>{line.reporterName}</dd></div> : null}
                       {line.checkerName ? <div><dt>{tr("lineChecker")}</dt><dd>{line.checkerName}</dd></div> : null}
                       {line.retrieverName ? <div><dt>{tr("lineRetriever")}</dt><dd>{line.retrieverName}</dd></div> : null}
-                      {line.replenishmentNote || line.replenishmentActorName ? <div><dt>{tr("lineReplenishmentState")}</dt><dd>{line.replenishmentNote}{line.replenishmentActorName ? ` · ${line.replenishmentActorName}` : ""}</dd></div> : null}
+                      {line.replenishmentState ? <div><dt>{tr("lineReplenishmentState")}</dt><dd>{tr(`replenishmentState${line.replenishmentState}` as MessageKey)}{line.replenishmentNote ? ` · ${line.replenishmentNote}` : ""}{line.replenishmentActorName ? ` · ${line.replenishmentActorName}` : ""}</dd></div> : null}
                       {line.nextActionCode ? <div><dt>{tr("lineNextStep")}</dt><dd>{tr(`nextAction${line.nextActionCode}` as MessageKey)}</dd></div> : null}
                       {line.blockingReasonCode ? <div><dt>{tr("attentionLevelLabel")}</dt><dd>{tr(`blockingReason${line.blockingReasonCode}` as MessageKey)}</dd></div> : null}
                     </dl>}

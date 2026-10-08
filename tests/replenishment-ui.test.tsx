@@ -24,8 +24,8 @@ describe("replenishment UI wiring", () => {
     expect(read("../src/components/case-line-card.tsx")).toContain("ReplenishmentForm");
     const picker = read("../src/components/picker-workflow.tsx");
     expect(picker).not.toContain("ReplenishmentForm");
-    expect(picker).not.toContain("SharedCaseLineCard");
-    expect(picker).toContain("replenishment-badge");
+    expect(picker).toContain("SharedCaseLineCard");
+    expect(picker).toContain("canRecordReplenishment: false");
   });
 
   it("posts state only: no note, no assignment, no directory fetch", () => {
