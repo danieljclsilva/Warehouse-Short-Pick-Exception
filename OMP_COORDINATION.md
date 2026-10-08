@@ -2,8 +2,12 @@
 
 The director owns scope, material product decisions, final verification, and release approval. The OMP manager owns decomposition, subagent assignments, integration, routine troubleshooting, tests, and a concise final handoff. Workers are not alone in the codebase: each gets explicit file ownership and must preserve others' changes.
 
-## Current batch (2026-10-08, cost reduction)
+## Remaining-gates batch (2026-10-08)
 
+- Baseline `855e82b`; commit `cd77849` on `codex/railway-cost-reduction`; run dir `remaining-gates/`.
+- Workers via task tool with disjoint ownership: NavRouting → `src/components/auth-app.tsx` + 3 integration tests; CssTimeline → `check-workflow.tsx` + 3 test files; DashboardLint → `operations-dashboard.tsx` only. Manager owned plan/docs/gates/commit. No shared-file conflicts.
+- All 9 failures + lint error resolved; full gates green (see DEVELOPMENT_PLAN.md entry). Handoff `remaining-gates/handoff.md`, signal `review_ready`.
+## Current batch (2026-10-08, cost reduction)
 - Baseline: `72bbc47`. Implementation branch: `codex/railway-cost-reduction`.
 - Worktree: `/Users/komorinokage/.codex/worktrees/railway-cost-reduction/ShortPickException`.
 - Run directory: `/Users/komorinokage/.codex/omp-runs/shortpick-cost-reduction-20261008`.
