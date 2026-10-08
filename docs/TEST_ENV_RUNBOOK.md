@@ -21,36 +21,51 @@ the operator stopping the environment when it is not needed.
 All commands are safe to re-run. Production is never the default and is
 refused outright (exact env-ID comparison, fail closed).
 
-```sh
-sh scripts/railway-test-env.sh status
-sh scripts/railway-test-env.sh status --env 877f4590-5eb0-4aed-b811-d7d234195169
-sh scripts/railway-test-env.sh start [--timeout 300]
-sh scripts/railway-test-env.sh stop  [--timeout 300]
-```
-
 - `status` is read-only: service name, deployment status, configured vs
-  running replicas, and regions (verified live 2026-10-08: all three
-  services `SUCCESS`, 1/1 replicas).
-- `start` scales the database to 1 replica first and waits for `SUCCESS`
-  before scaling web-test and push-delivery, then waits for each to reach
-  `SUCCESS`. Default wait: 300 s per service.
-- `stop` scales web-test and push-delivery to 0 first, then the database.
-  Volumes, variables, config, and all data are retained — only running
-  replicas are removed.
+  running replicas, crashed replicas, and regions (verified live
+  2026-10-08: all three services `SUCCESS`, 1/1 replicas).
+- `start` scales the database to 1 replica first, waits for replica
+  convergence (running>0 and running>=configured with configured>0) plus
+  an in-container `pg_isready` probe over `railway ssh` (needs a
+  registered SSH key — see `railway ssh keys`), and only then scales
+  web-test and push-delivery and waits for each to converge. Default
+  wait: 300 s per gate. A missing service, unparseable service-list
+  data, crashed replicas, a FAILED/CRASHED latest deployment, or a failed
+  DB probe aborts the run before dependents scale so the operator can
+  triage logs (`railway logs --service <id>`) instead of scaling a
+  broken service.
+- `stop` scales web-test and push-delivery to 0 first, then WAITS until
+  both read back running=0 AND configured=0 before touching the
+  database. A timeout or readback failure exits nonzero and LEAVES THE
+  DATABASE UP; only a confirmed drain proceeds to scale the DB to 0,
+  followed by a final DB 0/0 verification. Volumes, variables, config,
+  and all data are retained — only running replicas are removed.
+- Readiness is replica convergence, never deployment status: scaling
+  changes replica counts without redeploying, so a stale `SUCCESS`
+  deployment says nothing about resumed instances. `railway deployment
+  list` is never consulted by the scripts; the per-service
+  `latestDeployment.status` from `railway service list` is used only as
+  a refusal signal (FAILED/CRASHED aborts), never as readiness evidence.
 
 ## Ordering and readiness
 
-- Start order: Postgres-ltHj → (SUCCESS) → web-test + push-delivery.
-  The DB goes first because the app services consume `DATABASE_URL`-style
-  reference variables; Railway also orders batched deploys by reference
-  variables, but `start` issues independent scale calls, so the script
-  enforces the order explicitly.
-- Stop order: web-test + push-delivery → Postgres-ltHj (dependents drain
-  before the database they write to).
-- Readiness: `railway deployment list --limit 1 --json` must report
-  `SUCCESS` for the service. `FAILED`/`CRASHED` aborts the run so the
-  operator can triage logs (`railway logs --service <id>`) instead of
-  scaling a broken service.
+- Start order: Postgres-ltHj → (replica convergence + `pg_isready`) →
+  web-test + push-delivery → (convergence). The DB goes first because
+  the app services consume `DATABASE_URL`-style reference variables;
+  Railway also orders batched deploys by reference variables, but
+  `start` issues independent scale calls, so the script enforces the
+  order explicitly.
+- Stop order: web-test + push-delivery → (both verified 0/0) →
+  Postgres-ltHj → (verified 0/0). Dependents drain before the database
+  they write to, and the DB is never touched while a dependent drain is
+  unconfirmed.
+- What the DB probe checks: `railway ssh -s <db-service> -- pg_isready`
+  must report the container accepting connections. Replica counts alone
+  cannot prove this — a container can be scheduled while Postgres is
+  still starting. The Postgres host is a `*.railway.internal` name,
+  unreachable from the operator shell, so the probe runs inside the DB
+  container; it needs `railway ssh` to work (registered key). If the
+  probe fails, `start` aborts before scaling dependents.
 
 ## What stop/start maps to (verified)
 
@@ -72,12 +87,15 @@ confirms there is no pause feature). The scripts use replica scaling:
 
 ## Autodeploy and rebuild notes
 
-- A **stopped (zero-scaled) service stays at 0 replicas across GitHub-push
-  autodeploys of the connected repo**: an autodeploy builds a new image but
-  the replica count is configuration, not deployment state, so the new
-  deployment also runs 0 replicas. Verify this the first time: stop, push a
-  trivial commit to the connected branch, then `status` should still show
-  0/0 replicas.
+- A stopped (zero-scaled) service is EXPECTED to stay at 0 replicas
+  across GitHub-push autodeploys of the connected repo (replica count
+  is configuration, not deployment state), but this was never witnessed
+  and is NOT claimed: a platform change could resume replicas, which
+  would silently re-incur cost. Verify on first real use: stop, push a
+  trivial commit to the connected branch, then `status` must still show
+  0/0 replicas before trusting this. Until verified, treat a parked
+  environment as "probably at 0, confirm with `status`" — and `status`
+  is cheap and read-only, so run it whenever cost matters.
 - If a web-test deployment instead comes back running after an autodeploy,
   disable autodeploy for the web-test service (dashboard: Service Settings →
   GitHub trigger → Disable) while the test env is parked, and re-enable it
@@ -104,7 +122,8 @@ operator-verified on first real use:
    (the exact JSON output shape on scale, and that 1 replica restores the
    previous image without a rebuild).
 2. That a zero-scaled service stays at 0 across an actual GitHub-push
-   autodeploy (mechanism says yes — replicas are config — but unwitnessed).
+   autodeploy (mechanism says yes — replicas are config — but
+   unwitnessed; see above: no persistence claimed until verified).
 3. `railway service redeploy --from-source` as a recovery path if `start`
    ever finds a service with no deployable deployment.
 4. Postgres data persistence across the stop/start cycle (volumes are
@@ -112,11 +131,20 @@ operator-verified on first real use:
    currently holds ~187 MB).
 5. `railway service source disconnect` semantics — listed in help, behavior
    unverified, intentionally not used by the scripts.
+6. The `pg_isready`-over-`railway ssh` DB probe path from an operator
+   shell without a registered SSH key (the probe mechanism itself was
+   verified live from this workstation, which has one; a keyless
+   operator will see `start` abort after DB convergence with an SSH
+   error — the DB is left running and the message says what to fix).
+7. A real stop-while-busy drain: the stop gate waits for dependents to
+   read back 0/0 and keeps the DB up otherwise, but the wait only
+   observes counts — it cannot prove in-flight push batches finished,
+   only that no replicas remain configured or running.
 
 First-use checklist: run `status`, then `stop`, then `status` again
 (expect 0/0 replicas, services still listed, volume intact), then `start`
-(expect SUCCESS on all three). If step 2 in the list above misbehaves,
-apply the autodeploy-toggle mitigation.
+(expect convergence on all three plus the DB probe). If step 2 in the
+list above misbehaves, apply the autodeploy-toggle mitigation.
 
 ## Files
 
@@ -126,3 +154,7 @@ apply the autodeploy-toggle mitigation.
   shell script (`--assert-env`) and unit-tested.
 - `tests/railway-test-env-guard.test.ts` — guard unit tests (default→test,
   exact test-ID pass, production refusal, fail-closed unknowns, ID pins).
+- `tests/railway-test-env-script.test.sh` — stub-CLI tests that execute
+  the real script (`npm run test:railway-script`): stale-SUCCESS repro,
+  happy-path start, stop ordering, stuck-drain DB protection, and
+  CLI/readback error cases. No Railway access needed.

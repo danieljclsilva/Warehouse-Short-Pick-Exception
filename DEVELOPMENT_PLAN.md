@@ -271,7 +271,20 @@ Wave 0 (2026-09-28) delivered docs-only contracts: PRD amendments plus the bindi
 - Deployed: PROD web `0e05c13a` SUCCESS (`/api/health` 200 `{status:ok,database:ok}`, `/` 200 login surface, pre-deploy `npm run db:migrate` applied cleanly). Production smoke: unauthenticated paginated endpoints (`notifications`, `operations/dashboard`, `admin/invites`, `admin/configuration`, `admin/users`, `retrievals`, `checks`, `users/directory` with `page`/`pageSize`) all return 401 `{"error":"Unauthenticated"}` (auth boundary intact, pagination params accepted); `/api/health` 200 database ok.
 ## Railway cost reduction (2026-10-08, branch `codex/railway-cost-reduction`, commits `4ffd620` + `07821a3`, unmerged)
 
-- On-demand test-environment controls: `scripts/railway-test-env.sh` (`status`|`start`|`stop`) + `scripts/railway-test-env-guard.mjs` (pinned IDs, fail-closed production guard) + `docs/TEST_ENV_RUNBOOK.md`. Stop/start = replica scale-to-zero/one per configured region (no `service stop` verb exists in CLI 5.62.1); DB-first start with SUCCESS gate, dependents-first stop; volumes/data/config retained, no delete commands. Wired as `test-env:start|status|stop` npm scripts. Code complete only — the scale 0/1 round-trip was never executed (mutation) and zero-scale persistence across autodeploys is unwitnessed; runbook carries the first-use checklist and autodeploy-toggle mitigation.
+- Review repair (2026-10-08, unmerged): `railway-test-env.sh` now waits
+  on replica convergence instead of deployment SUCCESS — start requires
+  DB running>=configured plus an in-container `pg_isready` probe over
+  `railway ssh` before dependents scale, then verifies web + push
+  convergence; stop verifies both dependents at 0/0 before touching the
+  DB, then verifies DB 0/0, and any unconfirmed drain exits nonzero
+  with the DB left up. Missing service, invalid readback, crashed
+  replicas, FAILED/CRASHED deployments, and failed probes all abort.
+  New stub-CLI suite `tests/railway-test-env-script.test.sh`
+  (`npm run test:railway-script`, 29 checks) executes the real script:
+  stale-SUCCESS repro fails on the pre-fix script and passes on the
+  fixed one. Runbook documents the new semantics and no longer claims
+  zero-scale persistence across autodeploys (unwitnessed). Live scale
+  round-trip still never executed (mutation).
 - Foreground-unchanged polling efficiency: new `useVisibilityPolling`/`createVisibilityPoller` (`src/components/use-visibility-polling.ts`) pauses badge (15s) and notification-list (10s) polling while `document.hidden`/offline, refetches promptly on visibility/online, skips overlapping ticks, cleans up on unmount. Session-expiry read untouched; no new UI strings. No wall-clock cost change while actively used; savings accrue from background tabs only.
 - Push-delivery reconciled as a continuous worker: `scripts/push-worker.ts` + `src/server/push-worker-loop.ts` (5s serial poll, `deliverPushBatch(25)`, abort-only-idle-wait, error propagation for supervisor restart) + IaC `push-delivery` stanza switched from 5-min cron `push:deliver` to continuous `push:worker` (`ON_FAILURE`) + `push:worker` npm script (the old `push:deliver` one-shot is kept). Live read-only logs prove production already runs worker-shaped code today, so this aligns IaC with reality and preserves near-immediate delivery. IaC carries a comment warning: whole-project apply deletes undeclared test-env resources until `railway config pull` imports them — NEVER apply as-is.
 - Gates: 13/13 new focused tests pass; `tsc` clean; `eslint` clean on changed files; `drizzle-kit check` clean; production `build` clean. Full suite: 145 pass / 9 fail — the identical 9 failures reproduce with all batch changes stashed (pre-existing source-vs-test drift in check-card/replenishment/timeline/navassign suites, unrelated to this batch). No schema change, no migration needed. No production serverless/sleep change (future option, needs cold-boot testing). No live Railway mutations, deployments, or production DB access in this batch.

@@ -20,6 +20,7 @@ import { CaseDetailView, CaseSummaryCard, formatCaseElapsedTime } from "@/compon
 import { SharedCaseLineCard, type SharedCaseLine } from "@/components/case-line-card";
 import { ThemePicker } from "@/components/theme-picker";
 import { useVisibilityPolling } from "@/components/use-visibility-polling";
+import { refreshBadgeCounts } from "@/components/badge-polling";
 import {
   getMessages,
   supportedLocales,
@@ -606,28 +607,51 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
     if (!user) return [];
     return navigationFor(user);
   }, [user]);
+  // Generation that invalidates in-flight badge polls. Bumped whenever the
+  // user identity changes (login/logout/replacement, including role or
+  // permission loss), the workspace view is left, or this subtree unmounts,
+  // so a stale run can neither fire the second request with a stale closure
+  // nor write badge state afterwards. Refs carry the live values so the
+  // still-current check stays stable across renders.
+  const badgeGenerationRef = useRef(0);
+  const badgeMountedRef = useRef(true);
+  const badgeEnabled = Boolean(user) && view === "workspace";
+  const badgeIdentity = user ? `${user.id}:${user.role}:${[...user.permissions].sort().join(",")}` : "";
+  const badgeEnabledRef = useRef(badgeEnabled);
+  const badgeIdentityRef = useRef(badgeIdentity);
+  useEffect(() => {
+    badgeEnabledRef.current = badgeEnabled;
+    badgeIdentityRef.current = badgeIdentity;
+    badgeGenerationRef.current += 1;
+    badgeMountedRef.current = true;
+    return () => {
+      badgeGenerationRef.current += 1;
+      badgeMountedRef.current = false;
+    };
+  }, [user, badgeEnabled, badgeIdentity]);
   const refreshBadges = useCallback(async () => {
-    if (!user) return;
-    try {
-      const response = await fetch("/api/notifications", { credentials: "same-origin", cache: "no-store" });
-      if (response.ok) {
-        const body = (await response.json()) as { unreadCount?: number };
-        if (typeof body.unreadCount === "number") setUnreadCount(body.unreadCount);
-      }
-    } catch { /* badge-only; center shows errors */ }
-    if (!user.permissions.includes("APPROVE_PROFILE_PHOTO") && user.role !== "ADMIN") {
-      setPendingPhotoCount(0);
-      return;
-    }
-    try {
-      const response = await fetch("/api/admin/profile-photos?page=1&pageSize=1", { credentials: "same-origin", cache: "no-store" });
-      if (response.ok) {
-        const body = (await response.json()) as { photos?: unknown[]; total?: number };
-        setPendingPhotoCount(typeof body.total === "number" ? body.total : (Array.isArray(body.photos) ? body.photos.length : 0));
-      }
-    } catch { /* badge-only; queue shows errors */ }
-  }, [user]);
-  useVisibilityPolling(refreshBadges, 15_000, Boolean(user) && view === "workspace");
+    const captured = userRef.current;
+    const generation = badgeGenerationRef.current;
+    const identity = badgeIdentityRef.current;
+    const userId = captured?.id ?? null;
+    const enabled = badgeEnabledRef.current;
+    const isCurrent = () =>
+      badgeMountedRef.current
+      && badgeEnabled
+      && enabled
+      && badgeGenerationRef.current === generation
+      && badgeIdentityRef.current === identity
+      && userId !== null
+      && userRef.current?.id === userId;
+    await refreshBadgeCounts({
+      user: captured,
+      isCurrent,
+      fetchJson: (url) => fetch(url, { credentials: "same-origin", cache: "no-store" }),
+      setUnreadCount,
+      setPendingPhotoCount,
+    });
+  }, [badgeEnabled]);
+  useVisibilityPolling(refreshBadges, 15_000, badgeEnabled);
 
   const canCreateInvites = user?.role === "ADMIN" || Boolean(user?.permissions.includes("CREATE_INVITES"));
   const canUsePickerWorkflow = Boolean(user && ["PICKER", "TROUBLESHOOTER"].includes(user.role) && user.permissions.some((permission) => permission === "REPORT_SHORT_PICK" || permission === "VIEW_OWN_CASES"));

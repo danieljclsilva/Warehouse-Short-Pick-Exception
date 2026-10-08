@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "sh scripts/with-test-env.sh vitest run",
     "db:migrate:test": "sh scripts/with-test-env.sh drizzle-kit migrate",
+    "test:railway-script": "sh tests/railway-test-env-script.test.sh",
     "test:backup": "sh tests/backup-runner.test.sh",
     "test:e2e": "npm run build && npm run test:e2e:critical && npm run test:e2e:security",
     "test:e2e:critical": "tsx tests/e2e/critical-workflows.ts",
