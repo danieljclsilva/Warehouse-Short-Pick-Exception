@@ -2,16 +2,16 @@
 
 The director owns scope, material product decisions, final verification, and release approval. The OMP manager owns decomposition, subagent assignments, integration, routine troubleshooting, tests, and a concise final handoff. Workers are not alone in the codebase: each gets explicit file ownership and must preserve others' changes.
 
-## Current batch
+## Current batch (2026-10-08, cost reduction)
 
-- Baseline: `b9c54ae` (verification report committed).
-- Implementation branch: `codex/verification-fixes`.
-- Worktree: `/Users/komorinokage/.codex/worktrees/verification-fixes/ShortPickException`.
-- Run directory: `/Users/komorinokage/.codex/omp-runs/shortpick-verification-20261003`.
-- Manager and substantive workers: `opencode-go/muse-spark-1.3-contributor`; mechanical workers may use `opencode-go/longcat-2.5-preview-free`. These are locally available model IDs; pricing is not independently established here.
-- Scope: the six findings in `VERIFICATION_REPORT_2026-10-03.md`, with focused regression coverage and a usable recovery UI. Preserve state-only replenishment inputs in this batch; flag the conflicting PRD requirement for a product decision. Do not invent a broader workflow change.
-- Soft checkpoint: one hour after launch; hard process limit: 90 minutes. These are operational checkpoints, not a promise of completion. At the soft checkpoint, reduce scope to a coherent reviewed handoff if needed; never label unfinished work complete.
-- Manager may commit reviewed slices on its branch. No push, merge into main, deployment, production database access, or changes to credentials/permissions outside the application task.
+- Baseline: `72bbc47`. Implementation branch: `codex/railway-cost-reduction`.
+- Worktree: `/Users/komorinokage/.codex/worktrees/railway-cost-reduction/ShortPickException`.
+- Run directory: `/Users/komorinokage/.codex/omp-runs/shortpick-cost-reduction-20261008`.
+- Manager and substantive workers: `opencode-go/muse-spark-1.3-contributor` via the task tool. File ownership: infra → `scripts/railway-test-env.*` + `docs/TEST_ENV_RUNBOOK.md` + guard test; frontend → `auth-app.tsx`, `notification-center.tsx`, `use-visibility-polling.ts` + test; config → `.railway/railway.ts` push-delivery stanza + `scripts/push-worker.ts` + `src/server/push-worker-loop.ts` + test; manager → `package.json` shared edits, `DEVELOPMENT_PLAN.md`, coordination, gates.
+- Scope: on-demand test-env start/stop/status scripts + runbook; visibility/offline-gated badge+notification polling; push-delivery reconciled as continuous `push:worker`. No production serverless/sleep changes; no merges, pushes, deployments, or live mutations. Older batch details below are superseded, retained as history.
+- Result: commits `4ffd620` + `07821a3` + `5135e31`; handoff `handoff.md`, signal `review_ready`. Prior verification-batch notes below are historical, not current.
+
+## Previous batch (superseded history)
 
 ## Communication without routine director intervention
 
