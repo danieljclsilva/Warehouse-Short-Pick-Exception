@@ -7,16 +7,20 @@ The director owns scope, material product decisions, final verification, and rel
 - Baseline `855e82b`; commit `cd77849` on `codex/railway-cost-reduction`; run dir `remaining-gates/`.
 - Workers via task tool with disjoint ownership: NavRouting → `src/components/auth-app.tsx` + 3 integration tests; CssTimeline → `check-workflow.tsx` + 3 test files; DashboardLint → `operations-dashboard.tsx` only. Manager owned plan/docs/gates/commit. No shared-file conflicts.
 - All 9 failures + lint error resolved; full gates green (see DEVELOPMENT_PLAN.md entry). Handoff `remaining-gates/handoff.md`, signal `review_ready`.
-## Current batch (2026-10-08, cost reduction)
+## Current batch (2026-10-09, native lifecycle correction/recovery)
+- Baseline `b438606`; branch `codex/railway-cost-reduction`; recovery run dir `native-lifecycle-recovery-20261009-0238` (prior `native-lifecycle-fix-20261009` exited at max-time with 7 dirty files, no handoff — preserved and finished here).
+- Manager owned all script/helper/test edits (no live workers); one read-only reviewer (`HorribleCondor`, 6 findings, no mutations). Commits `22d2070` (native stop/start correction + docs) + `581b51c` (stale-crash tolerance + async-build stub model).
+- Result: 117/117 shell checks, 17/17 state+guard unit tests, full `npm test` 276/276 (disposable local DB), backup/typecheck/lint/build clean; live TEST start→status→stop→status round-trip witnessed via the scripts, TEST parked with autodeploy off, production verified unchanged. Handoff `native-lifecycle-recovery-20261009-0238/handoff.md`, signal `review_ready`. No main push/merge, no production changes (reserved for heartbeat independent review).
+
+## Previous batch (superseded history)
+
+## Cost-reduction batch (2026-10-08, superseded by native lifecycle correction)
 - Baseline: `72bbc47`. Implementation branch: `codex/railway-cost-reduction`.
 - Worktree: `/Users/komorinokage/.codex/worktrees/railway-cost-reduction/ShortPickException`.
 - Run directory: `/Users/komorinokage/.codex/omp-runs/shortpick-cost-reduction-20261008`.
 - Manager and substantive workers: `opencode-go/muse-spark-1.3-contributor` via the task tool. File ownership: infra → `scripts/railway-test-env.*` + `docs/TEST_ENV_RUNBOOK.md` + guard test; frontend → `auth-app.tsx`, `notification-center.tsx`, `use-visibility-polling.ts` + test; config → `.railway/railway.ts` push-delivery stanza + `scripts/push-worker.ts` + `src/server/push-worker-loop.ts` + test; manager → `package.json` shared edits, `DEVELOPMENT_PLAN.md`, coordination, gates.
 - Scope: on-demand test-env start/stop/status scripts + runbook; visibility/offline-gated badge+notification polling; push-delivery reconciled as continuous `push:worker`. No production serverless/sleep changes; no merges, pushes, deployments, or live mutations. Older batch details below are superseded, retained as history.
 - Result: commits `4ffd620` + `07821a3` + `5135e31`; handoff `handoff.md`, signal `review_ready`. Prior verification-batch notes below are historical, not current.
-
-## Previous batch (superseded history)
-
 ## Communication without routine director intervention
 
 The durable mailbox avoids starting another Codex CLI agent. It is asynchronous, with up to ten minutes between scheduled director inspections; it is not an immediate push callback.

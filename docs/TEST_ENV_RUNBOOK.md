@@ -160,15 +160,32 @@ Native per-service snapshot shape (informative; worker A/B schema):
   source `null`; start command `npm run push:worker` retained. History
   shows `REMOVED` `e88842ae` / `de074c88`.
 
-## Pending live validation (placeholders — manager fills in)
+## Live round-trip evidence (2026-10-09, manager-executed via the scripts)
 
-The following identifiers are intentionally left open until the manager
-completes live validation. Do not invent them.
-
-- Start round-trip redeploy IDs: `<!-- MANAGER: TEST start redeploy IDs (db, web, push) + timestamps -->`
-- Post-start status snapshot IDs: `<!-- MANAGER: post-start latest/active deployment IDs + pg_isready result -->`
-- Stop round-trip stop/remove IDs: `<!-- MANAGER: TEST stop deploymentStop/deploymentRemove IDs + timestamps -->`
-- Post-stop status snapshot IDs: `<!-- MANAGER: post-stop parked snapshot IDs confirming parked := running0 + no active non-stopped + no pending -->`
+- Start (`sh scripts/railway-test-env.sh start`, rc 0, ~148 s):
+  DB redeploy `b3c7ad06` → running=1 + `pg_isready` accepting connections;
+  web `deploymentRedeploy` → `674e32c2` SUCCESS running=1 (a first attempt
+  earlier refused on a stale crashed=1 count while fresh redeploy `231c4603`
+  was still BUILDING — the script now waits while a deployment is in
+  flight and refuses on crashed only with nothing left running);
+  push `railway up` from the committed clean checkout → `4d807426`
+  SUCCESS running=1 with `npm run push:worker` preserved.
+  Final: all three running=1, crashed=0, autodeploy still `enabled=false`.
+- Stop (`sh scripts/railway-test-env.sh stop`, rc 0, ~200 s):
+  web+push `deploymentStop` → parked, then DB `deploymentStop b3c7ad06`
+  → parked. One transient `Operation timed out (os error 60)` snapshot
+  read retried successfully mid-drain. No `deploymentRemove` needed.
+  Final: web `674e32c2` CRASHED+stopped, DB `b3c7ad06` SUCCESS+stopped,
+  push `4d807426` CRASHED+stopped, all running=0, no pending, autodeploy
+  `enabled=false`, volume `postgres-volume-yEF7` READY ~188 MB retained.
+  (Stopped deployments presenting as CRASHED with running=0 is normal
+  platform behavior — parked is defined by running/active/pending, never
+  by the terminal status label. Superseded stopped deployments later read
+  back REMOVED; that is platform history, not a script deletion.)
+- Production untouched throughout: web/push/Postgres 1/1 running before
+  and after, `https://shortpickexception.nl/api/health` 200
+  `{"status":"ok","database":"ok"}` before and after. No production DB
+  access, no main push, no IaC apply.
 
 ## Autodeploy notes
 
