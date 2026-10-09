@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   FALLBACK_REGIONS,
+  PENDING_STATUSES,
   PRODUCTION_ENV_ID,
   PROJECT_ID,
+  REMOVABLE_STATUSES,
   SERVICE_IDS,
+  STOPPABLE_STATUSES,
   TEST_ENV_ID,
   assertTestEnv,
+  classifyDeployment,
+  computeStopSet,
+  isParked,
   resolveTargetEnv,
 } from "../scripts/railway-test-env-guard.mjs";
 
@@ -48,5 +54,68 @@ describe("railway test-env guard", () => {
       db: "sfo",
       push: "europe-west4-drams3a",
     });
+  });
+
+  it("classifies deployment statuses into pending/stoppable/unknown lifecycles", () => {
+    for (const status of PENDING_STATUSES) {
+      expect(classifyDeployment(status), status).toBe("pending");
+      expect(classifyDeployment(status.toLowerCase()), status).toBe("pending");
+    }
+    for (const status of STOPPABLE_STATUSES) {
+      expect(classifyDeployment(status), status).toBe("stoppable");
+    }
+    expect(PENDING_STATUSES).toEqual(
+      expect.arrayContaining(["QUEUED", "BUILDING", "DEPLOYING", "NEEDS_APPROVAL"]),
+    );
+    expect(STOPPABLE_STATUSES).toEqual(
+      expect.arrayContaining(["SUCCESS", "FAILED", "CRASHED", "SLEEPING", "SKIPPED"]),
+    );
+    expect(classifyDeployment("FROBNICATED")).toBe("unknown");
+    expect(classifyDeployment("")).toBe("unknown");
+    expect(REMOVABLE_STATUSES).toEqual(["QUEUED", "INITIALIZING", "WAITING"]);
+  });
+
+  it("parks only on running=0 with no live deployments (configured ignored)", () => {
+    const parked = {
+      running: 0,
+      configured: 1,
+      active: [{ id: "a", status: "CRASHED", deploymentStopped: true }],
+      pending: [],
+      latest: { id: "a", status: "CRASHED", deploymentStopped: true },
+    };
+    expect(isParked(parked)).toBe(true);
+    expect(isParked({ ...parked, running: 1 })).toBe(false);
+    expect(
+      isParked({
+        ...parked,
+        active: [{ id: "a", status: "SUCCESS", deploymentStopped: false }],
+      }),
+    ).toBe(false);
+    expect(
+      isParked({ ...parked, pending: [{ id: "b", status: "BUILDING" }] }),
+    ).toBe(false);
+    // Push-shaped: null latest + empty scoped lists + null-derived running 0.
+    expect(
+      isParked({ running: 0, configured: 0, active: [], pending: [], latest: null }),
+    ).toBe(true);
+  });
+
+  it("computes stop sets with stop[]/unknown[] (already-stopped excluded)", () => {
+    const snapshot = {
+      active: [
+        { id: "live-success", status: "SUCCESS", deploymentStopped: false },
+        { id: "live-queued", status: "QUEUED", deploymentStopped: false },
+        { id: "old-stopped", status: "CRASHED", deploymentStopped: true },
+      ],
+    };
+    const plan = computeStopSet(snapshot);
+    expect(plan.stop).toEqual(expect.arrayContaining(["live-success", "live-queued"]));
+    expect(plan.stop).not.toContain("old-stopped");
+    expect(plan.unknown).toEqual([]);
+    const refused = computeStopSet({
+      active: [{ id: "weird", status: "FROBNICATED", deploymentStopped: false }],
+    });
+    expect(refused.stop).toEqual([]);
+    expect(refused.unknown).toContain("FROBNICATED");
   });
 });

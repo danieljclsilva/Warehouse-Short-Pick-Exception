@@ -16,14 +16,91 @@ export const SERVICE_IDS = {
   push: "d528d77e-fd99-4cd2-8c58-e9c4680e7587",
 };
 
-// Region names observed live via `railway service list --json` on 2026-10-08.
-// Used only as a fallback when the live region list is empty (e.g. everything
-// already scaled to zero); the scripts prefer live data.
+// Region names observed live via service listing on 2026-10-08.
+// Retained only for `--print region:*` compatibility (tests pin them); the
+// scripts no longer adjust replicas by region and prefer live API data.
 export const FALLBACK_REGIONS = {
   web: "sfo",
   db: "sfo",
   push: "europe-west4-drams3a",
 };
+
+// Native deployment-stop lifecycle (2026-10-09): replica-count commands are
+// deleted after the witnessed zero-replica failure. Stop/start work on
+// deployments: active non-stopped terminal-ish deployments are stopped,
+// pending ones are stopped (removal only for stubborn
+// QUEUED/INITIALIZING/WAITING singles).
+export const PENDING_STATUSES = Object.freeze([
+  "QUEUED",
+  "INITIALIZING",
+  "WAITING",
+  "BUILDING",
+  "DEPLOYING",
+  "NEEDS_APPROVAL",
+]);
+
+// Active, non-stopped, non-pending statuses that deploymentStop can park.
+export const STOPPABLE_STATUSES = Object.freeze([
+  "SUCCESS",
+  "FAILED",
+  "CRASHED",
+  "SLEEPING",
+  "SKIPPED",
+]);
+
+// Deployments so early they never started work; the only statuses eligible
+// for deploymentRemove, and only after deploymentStop was attempted first.
+export const REMOVABLE_STATUSES = Object.freeze([
+  "QUEUED",
+  "INITIALIZING",
+  "WAITING",
+]);
+
+// Classify a deployment status for the stop planner. Returns
+// "pending" | "stoppable" | "unknown". Unknown statuses are refused
+// (fail closed) — the scripts never act on a status they do not know.
+export function classifyDeployment(status) {
+  const value = String(status ?? "").trim().toUpperCase();
+  if (PENDING_STATUSES.includes(value)) return "pending";
+  if (STOPPABLE_STATUSES.includes(value)) return "stoppable";
+  return "unknown";
+}
+
+// Parked per the native state schema: running==0 AND no active non-stopped
+// AND no pending. Configured replica counts are ignored (replica-command
+// residue). A null latest counts as parked only when the scoped lists also
+// confirm empty (active empty + pending empty + running 0).
+export function isParked(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return false;
+  if (!Number.isInteger(snapshot.running) || snapshot.running !== 0)
+    return false;
+  const active = Array.isArray(snapshot.active) ? snapshot.active : null;
+  const pending = Array.isArray(snapshot.pending) ? snapshot.pending : null;
+  if (active === null || pending === null) return false;
+  if (active.some((d) => d && d.deploymentStopped !== true)) return false;
+  if (pending.length > 0) return false;
+  return true;
+}
+
+// Compute the stop set for one service snapshot: every active non-stopped
+// deployment whose status classifies as pending or stoppable. Returns
+// { stop: [ids], unknown: [statuses] }. Removal candidates are a subset of
+// stop (REMOVABLE_STATUSES) and are only removed after a stop round leaves
+// them still active — the caller enforces that ordering, not this helper.
+export function computeStopSet(snapshot) {
+  const stop = [];
+  const unknown = [];
+  const active = (snapshot && Array.isArray(snapshot.active)
+    ? snapshot.active
+    : []
+  ).filter((d) => d && d.deploymentStopped !== true && d.id);
+  for (const dep of active) {
+    const kind = classifyDeployment(dep.status);
+    if (kind === "pending" || kind === "stoppable") stop.push(dep.id);
+    else if (!unknown.includes(String(dep.status))) unknown.push(String(dep.status));
+  }
+  return { stop, unknown };
+}
 
 // Resolve the requested environment to an effective target. Empty input
 // means "default", which is always the test environment — production is never

@@ -1,42 +1,103 @@
 #!/bin/sh
 # railway-test-env-script.test.sh — stub-CLI tests for
-# scripts/railway-test-env.sh. Executes the real script against a stub
-# `railway` binary on PATH, so readiness and drain-ordering behavior is
-# exercised end to end without touching Railway.
+# scripts/railway-test-env.sh + scripts/railway-test-env-state.mjs. Executes
+# the real script against a stub `railway` binary on a scrubbed PATH, so
+# native deployment-stop/start behavior is exercised end to end without
+# touching Railway (no live access of any kind).
 #
-# The stub answers `service list --json` from $STUB_STATE_DIR/state.json
-# (an array shaped like the real CLI: id, status, latestDeployment.status,
-# replicas{configured,running,crashed}, regions[{name}]), appends every
-# `scale` and `ssh` invocation to $STUB_STATE_DIR/calls.log, and honors
-# failure-injection files:
-#   fail-service-list-once  -> first `service list` exits 1, then succeeds
-#   fail-service-list-always-> every `service list` exits 1
-#   invalid-service-list    -> `service list` prints non-JSON
-#   fail-ssh                -> `ssh ... pg_isready` exits 1 (DB never ready)
-#   missing-service:<id>    -> that service is dropped from the list output
+# Native lifecycle (post zero-scale failure): there is NO `railway scale`
+# path. Stop disables TEST web autodeploy first (nested `input` variables,
+# verified false), then parks web+push via deploymentStop over the FULL
+# scoped snapshot (serviceInstance activeDeployments + deployments list),
+# verifies parked (running==0, no active non-stopped, no pending; configured
+# ignored), and only then stops the DB. deploymentRemove is ONLY for
+# QUEUED/INITIALIZING/WAITING singles that survive a stop round. Start
+# redeploys DB first (running>0 + pg_isready before dependents), web via
+# deploymentRedeploy (or redeploy --from-source), push via deploymentRedeploy
+# (or `railway up` from a validated clean checkout). Autodeploy stays off.
 #
-# Scale calls mutate state.json (region=N sets configured=N; scaling to 0
-# also drops running to 0, modelling drain; scaling to 1 leaves running
-# untouched so the fixture controls when convergence happens — unless
-# the fixture sets auto_converge, which flips running=N immediately).
+# The stub answers from $STUB_STATE_DIR fixtures:
+#   instances.json    — serviceId -> serviceInstance payload (scalar
+#                       numReplicas, source, startCommand, latestDeployment
+#                       {id,status,deploymentStopped}|null, activeDeployments[])
+#   deployments.json  — serviceId -> newest-first scoped deployment nodes
+#                       [{id,status,deploymentStopped,serviceId,environmentId}]
+#   servicelist.json  — array for `railway service list --json`
+#                       [{id, replicas:{configured,running,crashed}}]; a
+#                       missing replicas object mirrors live null replicas
+#   autodeploy.json   — {enabled, canEnable} for the web autodeploy probe
+# and appends every `railway`/`git` invocation to calls.log. Mutations mutate
+# the fixtures (deploymentStop marks stopped + recomputes running,
+# deploymentRemove deletes early-stage singles, redeploy/up resume running).
+# Failure injection files:
+#   fail-api-always / fail-api-once / invalid-api  -> scoped read queries fail
+#   fail-service-list-always / fail-service-list-once / invalid-service-list
+#   missing-service:<id>  -> that service reads back null/empty (terminal)
+#   fail-ssh              -> `ssh ... pg_isready` exits 1 (DB never ready)
+#   fail-autodeploy       -> autodeploy update mutation leaves enabled=true
+#   fail-mutation-once    -> first StopDeployment exits 1 (mid-drain error)
+#   fail-redeploy         -> RedeployDeployment exits 1
+#   never-converge        -> redeploy/up mutations are no-ops (running stays 0)
+#   stubborn-stop         -> StopDeployment succeeds without mutating (no park)
+#   resist-stop-<dep-id>  -> that deployment survives StopDeployment (removal path)
+#   pin-running-<svc-id>  -> that service's running stays 1 (stuck drain)
+#   race-swap-web         -> a new BUILDING web deployment appears on the 3rd
+#                            scoped web-deployments read (mid-drain race)
+#   git-dirty             -> `git status --porcelain` prints this file (dirty)
+#   git-ignore-all        -> `git check-ignore` treats every path as ignored
 #
-# Five cases: (a) stale SUCCESS + 0/0 replicas must NOT report started
-# (finding 1 repro); (b) happy-path start converges; (c) stop drains
-# dependents before touching the DB and verifies DB 0/0; (d) dependents
-# that never drain keep the DB up + nonzero exit; (e) CLI/readback errors
-# exit nonzero (missing service, invalid JSON, persistent CLI failure,
-# failed DB probe). Each case asserts on exit codes AND the ordered
-# calls.log. Fast: RAILWAY_TEST_ENV_POLL_INTERVAL=1 with short --timeout.
+# Stub matching: `railway api` branches match on GraphQL operation names
+# (AutoDeployStatus, AutoDeployUpdate, serviceInstanceRedeploy,
+# RedeployDeployment, StopDeployment, RemoveDeployment) — NEVER on bare
+# field substrings such as deploymentStop, which also occur inside
+# deploymentStopped selections of read queries. Every inline `node -e`
+# script closes with a trailing quote plus an explicit argument
+# (' "$VARS", ' "$DEP_ID", ' "$VARS" "$STUB_SVC_WEB").
+#
+# Assertion helpers (id-scoped, fail-closed):
+#   stop_logged/remove_logged/redeploy_logged <dep-id> — that deployment id
+#     appears in calls.log variables alongside the matching operation name.
+#   mut_logged <dep-id> — any mutation variables reference that id (scoped
+#     reads only ever log service ids, so a deployment id in calls.log
+#     proves a mutation targeted it).
+#   mut_order <first-id> <second-id> — first mutation precedes the second.
+#   log_order <first-op> <second-op> — first operation string precedes it.
+# Mutation greps always use operation names (StopDeployment etc.), never
+# bare field names that also match read selections.
+#
+# Live-shape mirrors (pinned IDs; web a9de8c69 CRASHED+stopped running0/
+# configured1; DB 44f2bae4 SUCCESS+stopped 0/1; push latest null, active[],
+# null replicas, startCommand retained; REMOVED history ids e88842ae/
+# de074c88 never resurface). Fast: RAILWAY_TEST_ENV_POLL_INTERVAL=1 with
+# short --timeout values.
 set -eu
 
-ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+# Resolve the repo root even when a runner invokes this file with $0 set to
+# an empty or relative path (dirname would yield an empty path otherwise).
+ROOT="$(CDPATH= cd -- "$(dirname -- "${0:-.}")/.." 2>/dev/null && pwd)" || ROOT="$PWD"
+if [ ! -f "$ROOT/scripts/railway-test-env.sh" ]; then
+  ROOT="$PWD"
+fi
 SCRIPT="$ROOT/scripts/railway-test-env.sh"
+STATE_HELPER="$ROOT/scripts/railway-test-env-state.mjs"
 
 PROJECT="10168080-e6e5-4e65-a8ec-b92f6cf514e5"
 TEST_ENV="877f4590-5eb0-4aed-b811-d7d234195169"
+PROD_ENV="eb369535-cde7-445d-90f3-baeab196e88c"
 SVC_WEB="fd533f19-cbed-4023-96e6-463dd299815e"
 SVC_DB="c44519a3-f013-4d49-a62b-7ca3bd61c4ff"
 SVC_PUSH="d528d77e-fd99-4cd2-8c58-e9c4680e7587"
+DEP_WEB="a9de8c69-b7c4-4a0d-b53d-d4a94e89a5da"
+DEP_DB="44f2bae4-c49b-4c8e-b4ce-992d836c63ca"
+DEP_PUSH_HIST="c01d1111-2222-4333-8444-555555555555"
+REMOVED_A="e88842ae-10ff-43ea-bdf7-633ee9028434"
+REMOVED_B_PREFIX="de074c88"
+
+# Toolchain dirs captured BEFORE PATH is scrubbed (the scrubbed PATH must
+# still resolve node/git + POSIX tools, but must shadow `railway`).
+REAL_PATH="$PATH"
+NODE_DIR="$(CDPATH= cd -- "$(dirname "$(command -v node)")" && pwd)"
+GITREAL_DIR="$(CDPATH= cd -- "$(dirname "$(command -v git)")" && pwd)"
 
 PASS=0
 FAIL=0
@@ -46,70 +107,417 @@ new_case() {
   STUB_BIN="$CASE_DIR/bin"
   export STUB_STATE_DIR="$CASE_DIR/state"
   mkdir -p "$STUB_BIN" "$STUB_STATE_DIR"
+  export STUB_TEST_ENV="$TEST_ENV" STUB_PROJECT="$PROJECT"
+  export STUB_SVC_WEB="$SVC_WEB" STUB_SVC_DB="$SVC_DB" STUB_SVC_PUSH="$SVC_PUSH"
+  export TEST_REPO_ROOT="$ROOT"
+  export GIT_TOPLEVEL="$ROOT"
+  export STUB_RACE_ID="9ace0000-1111-4222-8333-444444444444"
+  unset GIT_TOPLEVEL_OVERRIDE || true
   cat >"$STUB_BIN/railway" <<'STUB_EOF'
 #!/bin/sh
-# Stub railway: see header comment in railway-test-env-script.test.sh.
-LOG="$STUB_STATE_DIR/calls.log"
+# Stub railway: emulates the NEW native deployment lifecycle. See header in
+# tests/railway-test-env-script.test.sh for the contract.
+LOG="${STUB_STATE_DIR:?STUB_STATE_DIR unset; refusing (no live fallback)}/calls.log"
 echo "railway $*" >>"$LOG"
-# A stale SUCCESS deployment is always reported: the pre-fix script treated
-# this as readiness (finding 1); the fixed script must never consult it.
-if [ "$1" = "deployment" ] && [ "${2:-}" = "list" ]; then
-  echo '[{"id":"stale-deployment-id","status":"SUCCESS"}]'
-  exit 0
+TEST_ENV="${STUB_TEST_ENV:?STUB_TEST_ENV unset; refusing (no live fallback)}"
+PROJECT="${STUB_PROJECT:?STUB_PROJECT unset; refusing (no live fallback)}"
+SVC_WEB_ID="${STUB_SVC_WEB:?STUB_SVC_WEB unset; refusing (no live fallback)}"
+PROD_ENV="eb369535-cde7-445d-90f3-baeab196e88c"
+case " $* " in
+  *" $PROD_ENV "*) echo "stub: refusing PROD-scoped call: $*" >&2; exit 1 ;;
+esac
+if [ "$1" = "scale" ]; then
+  echo "stub: railway scale is deleted after the zero-scale failure; refusing ($*)" >&2
+  exit 99
 fi
 if [ "$1" = "service" ] && [ "${2:-}" = "list" ]; then
+  env_ok=0; proj_ok=0; prev=""
+  for a in "$@"; do
+    if [ "$prev" = "-e" ] && [ "$a" = "$TEST_ENV" ]; then env_ok=1; fi
+    if [ "$prev" = "-p" ] && [ "$a" = "$PROJECT" ]; then proj_ok=1; fi
+    prev="$a"
+  done
+  if [ "$env_ok" -ne 1 ] || [ "$proj_ok" -ne 1 ]; then echo "stub: service list missing TEST scope (needs -p project -e env)" >&2; exit 1; fi
   if [ -f "$STUB_STATE_DIR/fail-service-list-always" ]; then
-    echo "stub: persistent service-list failure" >&2
-    exit 1
+    echo "stub: persistent service-list failure" >&2; exit 1
   fi
   if [ -f "$STUB_STATE_DIR/fail-service-list-once" ]; then
     rm -f "$STUB_STATE_DIR/fail-service-list-once"
-    echo "stub: transient service-list failure" >&2
-    exit 1
+    echo "stub: transient service-list failure" >&2; exit 1
   fi
   if [ -f "$STUB_STATE_DIR/invalid-service-list" ]; then
-    echo "this is not json{{{"
-    exit 0
+    echo "this is not json{{{["; exit 0
   fi
   node -e '
 const fs = require("fs");
 const dir = process.env.STUB_STATE_DIR;
-let services = JSON.parse(fs.readFileSync(dir + "/state.json", "utf8"));
+const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
 const missing = fs.readdirSync(dir)
   .filter((f) => f.startsWith("missing-service:"))
   .map((f) => f.slice("missing-service:".length));
-services = services.filter((s) => !missing.includes(s.id));
-process.stdout.write(JSON.stringify(services));'
+process.stdout.write(JSON.stringify(list.filter((s) => s && s.id && !missing.includes(s.id))));'
   exit $?
 fi
-if [ "$1" = "scale" ]; then
+if [ "$1" = "api" ]; then
+  QUERY="${2:-}"
+  VARS=""; prev=""
+  for a in "$@"; do
+    if [ "$prev" = "--variables" ]; then VARS="$a"; fi
+    prev="$a"
+  done
+  case "$QUERY" in
+    *serviceInstanceAutoDeployStatus*)
+      node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const vars = JSON.parse(process.argv[1]);
+if (vars.environmentId && vars.environmentId !== process.env.STUB_TEST_ENV) {
+  console.error("stub: autodeploy status wrong env scope");
+  process.exit(1);
+}
+const st = JSON.parse(fs.readFileSync(dir + "/autodeploy.json", "utf8"));
+process.stdout.write(JSON.stringify({ data: { serviceInstanceAutoDeployStatus: st } }));' "$VARS"
+      exit $? ;;
+    *serviceInstanceAutoDeployUpdate*)
+      if ! printf "%s" "$VARS" | grep -q '"input"'; then echo "stub: autodeploy update requires nested input variables" >&2; exit 1; fi
+      if ! printf "%s" "$VARS" | grep -q "$TEST_ENV"; then echo "stub: autodeploy update wrong env scope" >&2; exit 1; fi
+      if [ ! -f "$STUB_STATE_DIR/fail-autodeploy" ]; then
+        node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const st = JSON.parse(fs.readFileSync(dir + "/autodeploy.json", "utf8"));
+st.enabled = false;
+fs.writeFileSync(dir + "/autodeploy.json", JSON.stringify(st));'
+      fi
+      node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const st = JSON.parse(fs.readFileSync(dir + "/autodeploy.json", "utf8"));
+process.stdout.write(JSON.stringify({ data: { serviceInstanceAutoDeployUpdate: st } }));'
+      exit $? ;;
+    *serviceInstanceRedeploy*)
+      node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const vars = JSON.parse(process.argv[1]);
+const svc = vars.serviceId;
+const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
+const e = list.find((s) => s.id === svc);
+if (!e) { console.error("stub: unknown service for redeploy"); process.exit(1); }
+if (!fs.existsSync(dir + "/never-converge")) {
+  e.replicas = e.replicas || {};
+  e.replicas.running = 1;
+  e.replicas.configured = Math.max(e.replicas.configured || 0, 1);
+  fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));
+}
+process.stdout.write(JSON.stringify({ data: { serviceInstanceRedeploy: true } }));' "$VARS"
+      exit $? ;;
+    *RedeployDeployment*)
+      DEP_ID="$(printf '%s' "$VARS" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+      if [ -f "$STUB_STATE_DIR/fail-redeploy" ]; then
+        echo "stub: deploymentRedeploy failure for $DEP_ID" >&2; exit 1
+      fi
+      node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const id = process.argv[1];
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
+let owner = null;
+for (const svc of Object.keys(deps)) {
+  if ((deps[svc] || []).some((n) => n && n.id === id)) owner = svc;
+}
+if (!owner) { console.error("stub: unknown deployment for redeploy " + id); process.exit(1); }
+for (const n of deps[owner]) { if (n.id === id) n.deploymentStopped = false; }
+const p = inst[owner];
+if (p) {
+  p.activeDeployments = p.activeDeployments || [];
+  if (!p.activeDeployments.some((d) => d.id === id)) {
+    p.activeDeployments.push({ id, status: "SUCCESS", deploymentStopped: false });
+  } else {
+    p.activeDeployments.forEach((d) => { if (d.id === id) d.deploymentStopped = false; });
+  }
+}
+if (!fs.existsSync(dir + "/never-converge")) {
+  const e = list.find((s) => s.id === owner);
+  if (e) {
+    e.replicas = e.replicas || {};
+    e.replicas.running = 1;
+    e.replicas.configured = Math.max(e.replicas.configured || 0, 1);
+  }
+}
+fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));
+fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));' "$DEP_ID"
+      rc=$?
+      if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+      echo "{\"data\":{\"deploymentRedeploy\":{\"id\":\"$DEP_ID\",\"status\":\"SUCCESS\"}}}"
+      exit 0 ;;
+    *StopDeployment*)
+      DEP_ID="$(printf '%s' "$VARS" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+      if [ -f "$STUB_STATE_DIR/fail-mutation-once" ]; then
+        rm -f "$STUB_STATE_DIR/fail-mutation-once"
+        echo "stub: transient deploymentStop failure for $DEP_ID" >&2; exit 1
+      fi
+      if [ -f "$STUB_STATE_DIR/stubborn-stop" ] || [ -f "$STUB_STATE_DIR/resist-stop-$DEP_ID" ]; then
+        echo '{"data":{"deploymentStop":true}}'; exit 0
+      fi
+      node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const id = process.argv[1];
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
+let owner = null;
+for (const svc of Object.keys(deps)) {
+  for (const n of deps[svc] || []) {
+    if (n && n.id === id) { n.deploymentStopped = true; owner = svc; }
+  }
+}
+for (const svc of Object.keys(inst)) {
+  const p = inst[svc];
+  if (p && p.latestDeployment && p.latestDeployment.id === id) p.latestDeployment.deploymentStopped = true;
+  for (const d of (p && p.activeDeployments) || []) {
+    if (d.id === id) { d.deploymentStopped = true; owner = owner || svc; }
+  }
+}
+if (!owner) { console.error("stub: unknown deployment for stop " + id); process.exit(1); }
+const live = (deps[owner] || []).some((n) => n && n.deploymentStopped !== true);
+const e = list.find((s) => s.id === owner);
+if (e) {
+  e.replicas = e.replicas || {};
+  if (fs.existsSync(dir + "/pin-running-" + owner)) e.replicas.running = 1;
+  else e.replicas.running = live ? Math.max(e.replicas.running || 0, 1) : 0;
+}
+fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));
+fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));' "$DEP_ID"
+      rc=$?
+      if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+      echo '{"data":{"deploymentStop":true}}'
+      exit 0 ;;
+    *RemoveDeployment*)
+      DEP_ID="$(printf '%s' "$VARS" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+      node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const id = process.argv[1];
+const early = ["QUEUED", "INITIALIZING", "WAITING"];
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
+let owner = null;
+let status = null;
+for (const svc of Object.keys(deps)) {
+  const hit = (deps[svc] || []).find((n) => n && n.id === id);
+  if (hit) { owner = svc; status = String(hit.status || "").toUpperCase(); }
+}
+if (!owner) { console.error("stub: unknown deployment for remove " + id); process.exit(1); }
+if (!early.includes(status)) {
+  console.error("stub: deploymentRemove only for early-stage singles, got " + status);
+  process.exit(2);
+}
+deps[owner] = (deps[owner] || []).filter((n) => !n || n.id !== id);
+const p = inst[owner];
+if (p && p.activeDeployments) p.activeDeployments = p.activeDeployments.filter((d) => d.id !== id);
+const live = (deps[owner] || []).some((n) => n && n.deploymentStopped !== true);
+const e = list.find((s) => s.id === owner);
+if (e) {
+  e.replicas = e.replicas || {};
+  e.replicas.running = live ? Math.max(e.replicas.running || 0, 1) : 0;
+}
+fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));
+fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));' "$DEP_ID"
+      rc=$?
+      if [ "$rc" -eq 2 ]; then exit 1; fi
+      if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+      echo '{"data":{"deploymentRemove":true}}'
+      exit 0 ;;
+    *serviceInstance*)
+      if [ -f "$STUB_STATE_DIR/fail-api-always" ]; then
+        echo "stub: persistent api failure" >&2; exit 1
+      fi
+      if [ -f "$STUB_STATE_DIR/fail-api-once" ]; then
+        rm -f "$STUB_STATE_DIR/fail-api-once"
+        echo "stub: transient api failure" >&2; exit 1
+      fi
+      if [ -f "$STUB_STATE_DIR/invalid-api" ]; then
+        echo "this is not json{{{["; exit 0
+      fi
+      node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const vars = JSON.parse(process.argv[1]);
+if (vars.environmentId && vars.environmentId !== process.env.STUB_TEST_ENV) {
+  console.error("stub: serviceInstance wrong env scope");
+  process.exit(1);
+}
+const instances = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+const missing = fs.readdirSync(dir)
+  .filter((f) => f.startsWith("missing-service:"))
+  .map((f) => f.slice("missing-service:".length));
+const id = vars.serviceId;
+if (!id || missing.includes(id) || !instances[id]) {
+  process.stdout.write(JSON.stringify({ data: { serviceInstance: null } }));
+} else {
+process.stdout.write(JSON.stringify({ data: { serviceInstance: instances[id] } }));}' "$VARS"
+      exit $? ;;
+    *deployments*)
+      if [ -f "$STUB_STATE_DIR/fail-api-always" ]; then
+        echo "stub: persistent api failure" >&2; exit 1
+      fi
+      if [ -f "$STUB_STATE_DIR/fail-api-once" ]; then
+        rm -f "$STUB_STATE_DIR/fail-api-once"
+        echo "stub: transient api failure" >&2; exit 1
+      fi
+      if [ -f "$STUB_STATE_DIR/invalid-api" ]; then
+        echo "this is not json{{{["; exit 0
+      fi
+      node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const vars = JSON.parse(process.argv[1]);
+if (vars.environmentId && vars.environmentId !== process.env.STUB_TEST_ENV) {
+  console.error("stub: deployments wrong env scope");
+  process.exit(1);
+}
+const webId = process.argv[2];
+if (vars.serviceId === webId && fs.existsSync(dir + "/race-swap-web")) {
+  const countFile = dir + "/race-web-deploy-count";
+  let count = 0;
+  try { count = Number(fs.readFileSync(countFile, "utf8")) || 0; } catch {}
+  count += 1;
+  fs.writeFileSync(countFile, String(count));
+  if (count === 3 && !fs.existsSync(dir + "/race-injected")) {
+    fs.writeFileSync(dir + "/race-injected", "raced");
+    const raceId = process.env.STUB_RACE_ID;
+    const node = { id: raceId, status: "BUILDING", deploymentStopped: false, serviceId: webId, environmentId: vars.environmentId };
+    const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+    deps[webId] = deps[webId] || [];
+    deps[webId].unshift(node);
+    fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+    const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+    if (inst[webId]) {
+      inst[webId].activeDeployments = inst[webId].activeDeployments || [];
+      inst[webId].activeDeployments.push({ id: raceId, status: "BUILDING", deploymentStopped: false });
+      fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));
+    }
+  }
+}
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const missing = fs.readdirSync(dir)
+  .filter((f) => f.startsWith("missing-service:"))
+  .map((f) => f.slice("missing-service:".length));
+const arr = (!vars.serviceId || missing.includes(vars.serviceId)) ? [] : (deps[vars.serviceId] || []);
+process.stdout.write(JSON.stringify({ data: { deployments: { edges: arr.map((n) => ({ node: n })) } } }));' "$VARS" "$SVC_WEB_ID"
+      exit $? ;;
+    *) echo "stub: unexpected api query: $QUERY" >&2; exit 99 ;;
+  esac
+fi
+if [ "$1" = "redeploy" ]; then
+  SVC=""; ENV=""; YES=0; FROMSRC=0; prev=""
+  for a in "$@"; do
+    case "$prev" in
+      -s) SVC="$a" ;; -e) ENV="$a" ;; -p) PROJ="$a" ;;
+    esac
+    case "$a" in --yes) YES=1 ;; --from-source) FROMSRC=1 ;; esac
+    prev="$a"
+  done
+  if [ "$YES" -ne 1 ]; then echo "stub: redeploy requires --yes (non-interactive)" >&2; exit 1; fi
+  if [ "$ENV" != "$TEST_ENV" ]; then echo "stub: redeploy wrong env scope" >&2; exit 1; fi
+  if [ -z "$SVC" ]; then echo "stub: redeploy missing -s service id" >&2; exit 1; fi
   node -e '
 const fs = require("fs");
 const dir = process.env.STUB_STATE_DIR;
-const state = JSON.parse(fs.readFileSync(dir + "/state.json", "utf8"));
-const args = process.argv.slice(1);
-let serviceId = null;
-const assignments = [];
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--service") serviceId = args[++i];
-  else if (/^[^ =]+=(\d+)$/.test(args[i])) assignments.push(args[i]);
-}
-const svc = state.find((s) => s.id === serviceId);
-if (!svc) { console.error("stub: unknown service " + serviceId); process.exit(1); }
-for (const a of assignments) {
-  const n = Number(a.split("=")[1]);
-  const auto = fs.existsSync(dir + "/auto_converge");
-  svc.replicas.configured = n;
-  if (n === 0) svc.replicas.running = 0;
-  else if (auto) svc.replicas.running = n;
-}
-fs.writeFileSync(dir + "/state.json", JSON.stringify(state));' "$@"
-  exit $?
+const svc = process.argv[1];
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
+if (!deps[svc] && !inst[svc]) { console.error("stub: unknown service for redeploy"); process.exit(1); }
+if (!fs.existsSync(dir + "/never-converge")) {
+  let n = 0;
+  try { n = Number(fs.readFileSync(dir + "/redeploy-count", "utf8")) || 0; } catch {}
+  n += 1;
+  fs.writeFileSync(dir + "/redeploy-count", String(n));
+  const id = "rd-" + svc.slice(0, 8) + "-" + n;
+  const node = { id, status: "SUCCESS", deploymentStopped: false, serviceId: svc, environmentId: process.env.STUB_TEST_ENV };
+  deps[svc] = deps[svc] || [];
+  deps[svc].unshift(node);
+  if (inst[svc]) {
+    inst[svc].activeDeployments = inst[svc].activeDeployments || [];
+    inst[svc].activeDeployments.push({ id, status: "SUCCESS", deploymentStopped: false });
+  }
+  const e = list.find((s) => s.id === svc);
+  if (e) {
+    e.replicas = e.replicas || {};
+    e.replicas.running = 1;
+    e.replicas.configured = Math.max(e.replicas.configured || 0, 1);
+  }
+  fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+  fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));
+  fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));
+}' "$SVC"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+  echo "Redeploy started for $SVC (from-source=$FROMSRC)"
+  exit 0
+fi
+if [ "$1" = "up" ]; then
+  SVC=""; ENV=""; PROJ=""; DETACH=0; YES=0; prev=""
+  for a in "$@"; do
+    case "$prev" in
+      --service) SVC="$a" ;; --environment) ENV="$a" ;; --project) PROJ="$a" ;;
+    esac
+    case "$a" in --detach) DETACH=1 ;; --yes) YES=1 ;; esac
+    prev="$a"
+  done
+  if [ "$DETACH" -ne 1 ] || [ "$YES" -ne 1 ]; then
+    echo "stub: up requires --detach --yes" >&2; exit 1
+  fi
+  if [ "$ENV" != "$TEST_ENV" ]; then echo "stub: up wrong env scope" >&2; exit 1; fi
+  if [ -z "$SVC" ] || [ -z "$PROJ" ]; then echo "stub: up missing ids" >&2; exit 1; fi
+  node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const svc = process.argv[1];
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
+if (!inst[svc]) { console.error("stub: unknown service for up"); process.exit(1); }
+if (!fs.existsSync(dir + "/never-converge")) {
+  const id = "up-" + svc.slice(0, 8) + "-1";
+  const node = { id, status: "SUCCESS", deploymentStopped: false, serviceId: svc, environmentId: process.env.STUB_TEST_ENV };
+  deps[svc] = deps[svc] || [];
+  deps[svc].unshift(node);
+  inst[svc].latestDeployment = { id, status: "SUCCESS", deploymentStopped: false, canRedeploy: true };
+  inst[svc].activeDeployments = [{ id, status: "SUCCESS", deploymentStopped: false }];
+  const e = list.find((s) => s.id === svc);
+  if (e) {
+    e.replicas = e.replicas || {};
+    e.replicas.running = 1;
+    e.replicas.configured = Math.max(e.replicas.configured || 0, 1);
+  }
+  fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+  fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));
+  fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));
+}' "$SVC"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+  echo "Deploy started for $SVC"
+  exit 0
 fi
 if [ "$1" = "ssh" ]; then
+  ENV=""; prev=""
+  for a in "$@"; do
+    if [ "$prev" = "-e" ]; then ENV="$a"; fi
+    prev="$a"
+  done
+  if [ "$ENV" != "$TEST_ENV" ]; then echo "stub: ssh wrong env scope" >&2; exit 1; fi
   if [ -f "$STUB_STATE_DIR/fail-ssh" ]; then
-    echo "stub: pg_isready: no response" >&2
-    exit 1
+    echo "stub: pg_isready: no response" >&2; exit 1
   fi
   echo "postgres-lthj.railway.internal:5432 - accepting connections"
   exit 0
@@ -118,23 +526,154 @@ echo "stub: unexpected railway invocation: $*" >&2
 exit 99
 STUB_EOF
   chmod +x "$STUB_BIN/railway"
+  cat >"$STUB_BIN/git" <<'GIT_EOF'
+#!/bin/sh
+# Stub git: only the exact operations validate_clean_checkout uses.
+echo "git $*" >>"${STUB_STATE_DIR:?}/calls.log"
+if [ "$1" = "rev-parse" ] && [ "${2:-}" = "--show-toplevel" ]; then
+  printf '%s\n' "${GIT_TOPLEVEL:-/nonexistent}"
+  exit 0
+fi
+if [ "$1" = "rev-parse" ] && [ "${2:-}" = "--is-inside-work-tree" ]; then
+  echo "true"; exit 0
+fi
+if [ "$1" = "status" ]; then
+  if [ -f "$STUB_STATE_DIR/git-dirty" ]; then cat "$STUB_STATE_DIR/git-dirty"; fi
+  exit 0
+fi
+if [ "$1" = "check-ignore" ]; then
+  shift
+  for p in "$@"; do
+    case "$p" in -q) continue ;; esac
+    if [ -f "$STUB_STATE_DIR/git-ignore-all" ]; then exit 0; fi
+    base="$(basename "$p")"
+    if [ -f "$STUB_STATE_DIR/git-ignored" ] && grep -qx "$base" "$STUB_STATE_DIR/git-ignored" 2>/dev/null; then
+      exit 0
+    fi
+  done
+  exit 1
+fi
+echo "stub-git: unexpected git invocation: $*" >&2
+exit 1
+GIT_EOF
+  chmod +x "$STUB_BIN/git"
   : >"$STUB_STATE_DIR/calls.log"
-  export PATH="$STUB_BIN:$PATH"
+  # Scrubbed PATH: stub first, then only the toolchain dirs + POSIX tools.
+  # The real `railway` MUST resolve to the stub (asserted below in checks).
+  export PATH="$STUB_BIN:$NODE_DIR:$GITREAL_DIR:/usr/bin:/bin"
 }
 
 end_case() {
+  export PATH="$REAL_PATH"
   rm -rf "$CASE_DIR"
 }
 
-write_state() {
-  # $1 = JSON array of services; covers all three services via heredoc body.
-  cat >"$STUB_STATE_DIR/state.json"
+# Parked live-mirror baseline: web CRASHED+stopped 0/1 (region moved to
+# us-west2 by the zero-scale attempt), DB SUCCESS+stopped 0/1, push latest
+# null + empty active + null replicas + retained startCommand, autodeploy on.
+fixtures_parked() {
+  cat >"$STUB_STATE_DIR/instances.json" <<JSON
+{"$SVC_WEB":{"serviceName":"web-test","region":"us-west2","numReplicas":null,"source":{"image":null,"repo":"example/web-repo"},"startCommand":"npm start","latestDeployment":{"id":"$DEP_WEB","status":"CRASHED","deploymentStopped":true,"canRedeploy":true},"activeDeployments":[{"id":"$DEP_WEB","status":"CRASHED","deploymentStopped":true}]},"$SVC_DB":{"serviceName":"Postgres-ltHj","region":"sfo","numReplicas":1,"source":{"image":"ghcr.io/railwayapp-templates/postgres-ssl:18","repo":null},"startCommand":null,"latestDeployment":{"id":"$DEP_DB","status":"SUCCESS","deploymentStopped":true,"canRedeploy":true},"activeDeployments":[{"id":"$DEP_DB","status":"SUCCESS","deploymentStopped":true}]},"$SVC_PUSH":{"serviceName":"push-delivery","region":"europe-west4-drams3a","numReplicas":null,"source":null,"startCommand":"npm run push:worker","latestDeployment":null,"activeDeployments":[]}}
+JSON
+  cat >"$STUB_STATE_DIR/deployments.json" <<JSON
+{"$SVC_WEB":[{"id":"$DEP_WEB","status":"CRASHED","deploymentStopped":true,"serviceId":"$SVC_WEB","environmentId":"$TEST_ENV"}],"$SVC_DB":[{"id":"$DEP_DB","status":"SUCCESS","deploymentStopped":true,"serviceId":"$SVC_DB","environmentId":"$TEST_ENV"}],"$SVC_PUSH":[]}
+JSON
+  cat >"$STUB_STATE_DIR/servicelist.json" <<JSON
+[{"id":"$SVC_WEB","replicas":{"configured":1,"running":0,"crashed":0}},{"id":"$SVC_DB","replicas":{"configured":1,"running":0,"crashed":0}},{"id":"$SVC_PUSH"}]
+JSON
+  printf '{"enabled":true,"canEnable":true}' >"$STUB_STATE_DIR/autodeploy.json"
 }
 
-svc() {
-  # $1=id, $2=status, $3=configured, $4=running, $5=crashed, $6=region
-  printf '{"id":"%s","name":"%s","status":"%s","latestDeployment":{"id":"dep-%s","status":"%s"},"replicas":{"configured":%s,"running":%s,"crashed":%s},"regions":[{"name":"%s"}]}' \
-    "$1" "$1" "$2" "$1" "$2" "$3" "$4" "$5" "$6"
+# Mark one service resumed: latest+active+nodes non-stopped, running=1.
+unpark_svc() {
+  node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const id = process.argv[1];
+const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
+const p = inst[id];
+if (p.latestDeployment) p.latestDeployment.deploymentStopped = false;
+(p.activeDeployments || []).forEach((d) => { d.deploymentStopped = false; });
+(deps[id] || []).forEach((d) => { d.deploymentStopped = false; });
+const e = list.find((s) => s.id === id);
+if (e) {
+  e.replicas = e.replicas || {};
+  e.replicas.running = 1;
+  e.replicas.configured = Math.max(e.replicas.configured || 0, 1);
+}
+fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));
+fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));' "$1"
+}
+
+# Set the single live deployment status for one service (active+nodes+latest).
+set_live_status() {
+  node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const id = process.argv[1];
+const status = process.argv[2];
+const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const p = inst[id];
+if (p.latestDeployment) { p.latestDeployment.status = status; p.latestDeployment.deploymentStopped = false; }
+(p.activeDeployments || []).forEach((d) => { d.status = status; d.deploymentStopped = false; });
+(deps[id] || []).forEach((d) => { d.status = status; d.deploymentStopped = false; });
+fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));
+fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));' "$1" "$2"
+}
+
+# Append an extra active non-stopped deployment to one service.
+add_active() {
+  node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const svc = process.argv[1];
+const id = process.argv[2];
+const status = process.argv[3];
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+deps[svc] = deps[svc] || [];
+deps[svc].push({ id, status, deploymentStopped: false, serviceId: svc, environmentId: process.env.STUB_TEST_ENV });
+if (inst[svc]) {
+  inst[svc].activeDeployments = inst[svc].activeDeployments || [];
+  inst[svc].activeDeployments.push({ id, status, deploymentStopped: false });
+}
+fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));' "$1" "$2" "$3"
+}
+
+# Give push a redeployable historical (stopped) deployment.
+set_push_history() {
+  node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const svc = process.argv[1];
+const id = process.argv[2];
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+deps[svc] = [{ id, status: "SUCCESS", deploymentStopped: true, serviceId: svc, environmentId: process.env.STUB_TEST_ENV }];
+inst[svc].latestDeployment = { id, status: "SUCCESS", deploymentStopped: true, canRedeploy: true };
+inst[svc].activeDeployments = [{ id, status: "SUCCESS", deploymentStopped: true }];
+fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));' "$SVC_PUSH" "$DEP_PUSH_HIST"
+}
+
+# Web with no deployable deployment at all (forces --from-source path).
+set_web_sourceless() {
+  node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const svc = process.argv[1];
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+deps[svc] = [];
+inst[svc].latestDeployment = null;
+inst[svc].activeDeployments = [];
+fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));' "$SVC_WEB"
 }
 
 run_script() {
@@ -156,161 +695,462 @@ check() {
   fi
 }
 
-log_has_nth_scale() {
-  # $1 = 1-based scale-call index, $2 = expected service id, $3 = expected count
-  line="$(grep "^railway scale " "$STUB_STATE_DIR/calls.log" | sed -n "${1}p")"
-  case "$line" in
-    *"--service $2 "*|*"--service $2") : ;;
-    *) return 1 ;;
-  esac
-  case "$line" in
-    *"$3") return 0 ;;
-    *) return 1 ;;
-  esac
+log_order() {
+  # $1 = first pattern, $2 = second pattern: first match of $1 precedes it.
+  # Operation names only (never bare field names that match read selections).
+  a="$(grep -n -m1 "$1" "$STUB_STATE_DIR/calls.log" | cut -d: -f1)"
+  b="$(grep -n -m1 "$2" "$STUB_STATE_DIR/calls.log" | cut -d: -f1)"
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]
 }
 
-db_scaled() {
-  grep -q "railway scale .*--service $SVC_DB" "$STUB_STATE_DIR/calls.log"
+mut_logged() {
+  # $1 = deployment id: its id appears in mutation variables in calls.log.
+  # Scoped reads only log service ids, so a deployment id proves a mutation.
+  grep -Fq "\"id\":\"$1\"" "$STUB_STATE_DIR/calls.log"
 }
 
-# --- (a) stale SUCCESS + 0/0 replicas must NOT report started --------------
+stop_logged() {
+  # $1 = deployment id stopped via the StopDeployment operation.
+  grep -F 'StopDeployment' "$STUB_STATE_DIR/calls.log" | grep -Fq "\"id\":\"$1\""
+}
+
+remove_logged() {
+  # $1 = deployment id removed via the RemoveDeployment operation.
+  grep -F 'RemoveDeployment' "$STUB_STATE_DIR/calls.log" | grep -Fq "\"id\":\"$1\""
+}
+
+redeploy_logged() {
+  # $1 = deployment id redeployed via the RedeployDeployment operation.
+  grep -F 'RedeployDeployment' "$STUB_STATE_DIR/calls.log" | grep -Fq "\"id\":\"$1\""
+}
+
+mut_order() {
+  # $1 = first deployment id, $2 = second: first mutation precedes second.
+  a="$(grep -n -F "\"id\":\"$1\"" "$STUB_STATE_DIR/calls.log" | cut -d: -f1 | head -1)"
+  b="$(grep -n -F "\"id\":\"$2\"" "$STUB_STATE_DIR/calls.log" | cut -d: -f1 | head -1)"
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]
+}
+
+no_scale_calls() {
+  ! grep -q "^railway scale " "$STUB_STATE_DIR/calls.log"
+}
+
+no_mutations() {
+  # No mutation operation or CLI write path issued (reads only).
+  ! grep -Eq 'StopDeployment|RemoveDeployment|RedeployDeployment|AutoDeployUpdate|serviceInstanceRedeploy' "$STUB_STATE_DIR/calls.log" \
+    && ! grep -Eq '^railway (redeploy|up) ' "$STUB_STATE_DIR/calls.log"
+}
+
+# --- PATH / stub-integrity guards (every case benefits; asserted explicitly)
 new_case
-write_state <<JSON
-[$(svc "$SVC_DB" SUCCESS 0 0 0 sfo),$(svc "$SVC_WEB" SUCCESS 0 0 0 sfo),$(svc "$SVC_PUSH" SUCCESS 0 0 0 europe-west4-drams3a)]
-JSON
-run_script start --timeout 3
-check "a: stale SUCCESS + 0/0 replicas exits nonzero" "[ $RC -ne 0 ]"
-check "a: does not claim started" "! grep -q 'test environment started' '$CASE_DIR/out.txt'"
-check "a: DB scale comes before any dependent scale" "log_has_nth_scale 1 '$SVC_DB' '=1'"
-check "a: deployment SUCCESS is not treated as readiness" "! grep -q ' is SUCCESS' '$CASE_DIR/out.txt'"
+fixtures_parked
+check "stub shadows PATH (no live railway reachable)" "[ '$(command -v railway)' = '$STUB_BIN/railway' ]"
+check "PATH is scrubbed (stub bin leads)" "case '$PATH' in '$STUB_BIN:'*) true ;; *) false ;; esac"
+check "scale fails loudly on the stub (zero-scale regression guard)" "railway scale --service $SVC_WEB -e $TEST_ENV us-west2=0 >/dev/null 2>&1; [ \$? -eq 99 ]"
+check "stub refuses unset STUB_STATE_DIR (no live fallback)" "env -u STUB_STATE_DIR railway api 'x' >/dev/null 2>&1; [ \$? -ne 0 ]"
+check "script has zero scale references" "! grep -qw 'scale' '$SCRIPT'"
 end_case
 
-# --- (b) happy-path start converges -----------------------------------------
+# --- status: parked baseline is read-only ------------------------------------
 new_case
-touch "$STUB_STATE_DIR/auto_converge"
-write_state <<JSON
-[$(svc "$SVC_DB" SUCCESS 0 0 0 sfo),$(svc "$SVC_WEB" SUCCESS 0 0 0 sfo),$(svc "$SVC_PUSH" SUCCESS 0 0 0 europe-west4-drams3a)]
-JSON
-run_script start --timeout 20
-check "b: happy-path start exits 0" "[ $RC -eq 0 ]"
-check "b: reports started with convergence evidence" "grep -q 'test environment started' '$CASE_DIR/out.txt'"
-check "b: DB converges before dependents scale" "log_has_nth_scale 1 '$SVC_DB' '=1'"
-check "b: DB readiness probe ran (pg_isready over ssh)" "grep -q 'railway ssh .*pg_isready' '$STUB_STATE_DIR/calls.log' && grep -q 'accepts connections' '$CASE_DIR/out.txt'"
-web_scale_line="$(grep -n "railway scale .*--service $SVC_WEB" "$STUB_STATE_DIR/calls.log" | head -1 | cut -d: -f1)"
-probe_line="$(grep -n "railway ssh " "$STUB_STATE_DIR/calls.log" | head -1 | cut -d: -f1)"
-check "b: dependents scale only after DB probe" "[ -n '$web_scale_line' ] && [ -n '$probe_line' ] && [ '$probe_line' -lt '$web_scale_line' ]"
-check "b: both dependents converge" "grep -q 'web-test.*converged' '$CASE_DIR/out.txt' && grep -q 'push-delivery.*converged' '$CASE_DIR/out.txt'"
+fixtures_parked
+run_script status
+check "status: parked baseline exits 0" "[ $RC -eq 0 ]"
+check "status: all three services report parked=true" "grep -q 'parked=true' '$CASE_DIR/out.txt'"
+check "status: web shows stopped CRASHED latest" "grep -q '$DEP_WEB CRASHED' '$CASE_DIR/out.txt'"
+check "status: autodeploy probe reported" "grep -q 'web-test autodeploy:' '$CASE_DIR/out.txt'"
+check "status: no mutations issued" "no_mutations"
+check "status: REMOVED history ids never resurface" "! grep -q '$REMOVED_A' '$CASE_DIR/out.txt' && ! grep -q '$REMOVED_B_PREFIX' '$CASE_DIR/out.txt' && ! grep -q '$REMOVED_A' '$STUB_STATE_DIR/calls.log'"
+check "status: no scale calls" "no_scale_calls"
 end_case
 
-# --- (c) stop drains dependents before DB, verifies DB 0/0 ------------------
+# --- status: active web is reported, still read-only --------------------------
 new_case
-write_state <<JSON
-[$(svc "$SVC_DB" SUCCESS 1 1 0 sfo),$(svc "$SVC_WEB" SUCCESS 1 1 0 sfo),$(svc "$SVC_PUSH" SUCCESS 1 1 0 europe-west4-drams3a)]
-JSON
-run_script stop --timeout 20
-check "c: stop exits 0" "[ $RC -eq 0 ]"
-check "c: first scale is web, second is push, third is DB" "log_has_nth_scale 1 '$SVC_WEB' '=0' && log_has_nth_scale 2 '$SVC_PUSH' '=0' && log_has_nth_scale 3 '$SVC_DB' '=0'"
-check "c: exactly three scale calls" "[ \"\$(grep -c '^railway scale ' '$STUB_STATE_DIR/calls.log')\" -eq 3 ]"
-check "c: DB drain verified" "grep -q 'Postgres-ltHj drained' '$CASE_DIR/out.txt'"
+fixtures_parked
+unpark_svc "$SVC_WEB"
+run_script status
+check "status/active: exits 0" "[ $RC -eq 0 ]"
+check "status/active: web reports parked=false running=1" "grep -q 'parked=false' '$CASE_DIR/out.txt'"
+check "status/active: still no mutations" "no_mutations"
 end_case
 
-# --- (d) dependents never drain: DB stays up, nonzero exit ------------------
+# --- stop: idempotent on already-parked ---------------------------------------
 new_case
-write_state <<JSON
-[$(svc "$SVC_DB" SUCCESS 1 1 0 sfo),$(svc "$SVC_WEB" SUCCESS 1 1 0 sfo),$(svc "$SVC_PUSH" SUCCESS 0 0 0 europe-west4-drams3a)]
-JSON
-# Web's running count is pinned at 1 via a shim around the stub binary:
-# after every scale call, web is restored to running=1/configured=1,
-# modelling replicas that never drain. Paths are baked into the shim at
-# write time (a child process would not see shell-only variables).
-mv "$STUB_BIN/railway" "$STUB_BIN/railway.real"
-cat >"$STUB_BIN/railway" <<SHIM_EOF
-#!/bin/sh
-"$STUB_BIN/railway.real" "\$@"
-rc=\$?
-if [ "\$1" = "scale" ]; then
-  STUB_STATE_DIR="$STUB_STATE_DIR" STUCK_SVC="$SVC_WEB" node -e '
+fixtures_parked
+run_script stop --timeout 10
+check "stop-idem: exits 0" "[ $RC -eq 0 ]"
+check "stop-idem: reports already parked" "grep -q 'already parked' '$CASE_DIR/out.txt'"
+check "stop-idem: autodeploy verified off" "grep -q 'autodeploy verified enabled=false' '$CASE_DIR/out.txt'"
+check "stop-idem: no StopDeployment issued" "! grep -q 'StopDeployment' '$STUB_STATE_DIR/calls.log'"
+check "stop-idem: REMOVED ids untouched" "! grep -q '$REMOVED_A\\|$REMOVED_B_PREFIX' '$STUB_STATE_DIR/calls.log'"
+check "stop-idem: no scale calls" "no_scale_calls"
+end_case
+
+# --- stop: multi active+pending drains dependents before DB -------------------
+new_case
+fixtures_parked
+set_live_status "$SVC_WEB" SUCCESS
+unpark_svc "$SVC_WEB"
+add_active "$SVC_WEB" "b111d000-1111-4222-8333-444444444444" BUILDING
+unpark_svc "$SVC_PUSH"
+set_push_history
+node -e '
 const fs = require("fs");
 const dir = process.env.STUB_STATE_DIR;
-const state = JSON.parse(fs.readFileSync(dir + "/state.json", "utf8"));
-const web = state.find((s) => s.id === process.env.STUCK_SVC);
-if (web) { web.replicas.running = 1; web.replicas.configured = 1; }
-fs.writeFileSync(dir + "/state.json", JSON.stringify(state));'
-fi
-exit \$rc
-SHIM_EOF
-chmod +x "$STUB_BIN/railway"
-run_script stop --timeout 3
-check "d: stuck dependents exit nonzero" "[ $RC -ne 0 ]"
-check "d: DB never scaled (left up)" "! db_scaled"
-check "d: operator told the DB was left up" "grep -q 'leaving Postgres-ltHj UP' '$CASE_DIR/err.txt'"
+const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
+const svc = process.argv[1];
+const id = "d9ac7000-1111-4222-8333-444444444444";
+deps[svc] = [{ id, status: "SUCCESS", deploymentStopped: false, serviceId: svc, environmentId: process.env.STUB_TEST_ENV }];
+inst[svc].latestDeployment = { id, status: "SUCCESS", deploymentStopped: false, canRedeploy: true };
+inst[svc].activeDeployments = [{ id, status: "SUCCESS", deploymentStopped: false }];
+const e = list.find((s) => s.id === svc);
+e.replicas = { configured: 1, running: 1, crashed: 0 };
+fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));
+fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));' "$SVC_PUSH"
+unpark_svc "$SVC_DB"
+run_script stop --timeout 30
+check "stop-multi: exits 0" "[ $RC -eq 0 ]"
+check "stop-multi: autodeploy disabled+verified BEFORE any StopDeployment" "log_order 'AutoDeployUpdate' 'StopDeployment'"
+check "stop-multi: autodeploy update uses nested input scope" "grep -q 'AutoDeployUpdate' '$STUB_STATE_DIR/calls.log' && grep -q '\"input\"' '$STUB_STATE_DIR/calls.log' && grep -q '\"enabled\":false' '$STUB_STATE_DIR/calls.log'"
+check "stop-multi: both web deployments stopped (terminal + pending)" "stop_logged '$DEP_WEB' && stop_logged 'b111d000-1111-4222-8333-444444444444'"
+check "stop-multi: web stops before push stops before DB stops" "mut_order '$DEP_WEB' 'd9ac7000-1111-4222-8333-444444444444' && mut_order 'd9ac7000-1111-4222-8333-444444444444' '$DEP_DB'"
+check "stop-multi: BUILDING pending stopped, never removed" "stop_logged 'b111d000-1111-4222-8333-444444444444' && ! remove_logged 'b111d000-1111-4222-8333-444444444444'"
+check "stop-multi: reports stopped with data retained" "grep -q 'test environment stopped' '$CASE_DIR/out.txt'"
+check "stop-multi: no scale calls" "no_scale_calls"
 end_case
 
-# --- (e) CLI/readback errors exit nonzero -----------------------------------
-# e1: persistent service-list failure on start.
+# --- stop: stubborn QUEUED single is stopped first, then removed ---------------
 new_case
-write_state <<JSON
-[$(svc "$SVC_DB" SUCCESS 0 0 0 sfo),$(svc "$SVC_WEB" SUCCESS 0 0 0 sfo),$(svc "$SVC_PUSH" SUCCESS 0 0 0 europe-west4-drams3a)]
-JSON
-touch "$STUB_STATE_DIR/fail-service-list-always"
-run_script start --timeout 3
-check "e1: persistent read failure exits nonzero" "[ $RC -ne 0 ]"
-check "e1: never claims started" "! grep -q 'test environment started' '$CASE_DIR/out.txt'"
+fixtures_parked
+unpark_svc "$SVC_WEB"
+set_live_status "$SVC_WEB" QUEUED
+touch "$STUB_STATE_DIR/resist-stop-$DEP_WEB"
+run_script stop --timeout 30
+check "stop-remove: exits 0" "[ $RC -eq 0 ]"
+check "stop-remove: stop attempted before remove" "log_order 'StopDeployment' 'RemoveDeployment' && stop_logged '$DEP_WEB' && remove_logged '$DEP_WEB'"
+check "stop-remove: web parked after removal" "grep -q 'push-delivery parked\\|test environment stopped' '$CASE_DIR/out.txt'"
+check "stop-remove: no scale calls" "no_scale_calls"
 end_case
 
-# e2: missing service refused.
+# --- stop: race swap mid-drain recomputes and stops the newcomer ---------------
+# Web AND DB resumed: the DB must stop after the raced newcomer drains, so
+# the DB starts unparked here (a parked DB is never re-stopped; see the
+# stuck/unknown cases that assert the DB stays untouched).
 new_case
-touch "$STUB_STATE_DIR/auto_converge"
-write_state <<JSON
-[$(svc "$SVC_DB" SUCCESS 0 0 0 sfo),$(svc "$SVC_WEB" SUCCESS 0 0 0 sfo),$(svc "$SVC_PUSH" SUCCESS 0 0 0 europe-west4-drams3a)]
-JSON
-touch "$STUB_STATE_DIR/missing-service:$SVC_PUSH"
-run_script start --timeout 20
-check "e2: missing service exits nonzero" "[ $RC -ne 0 ]"
-check "e2: missing service named" "grep -q 'not found' '$CASE_DIR/err.txt'"
-check "e2: never claims started" "! grep -q 'test environment started' '$CASE_DIR/out.txt'"
+fixtures_parked
+set_live_status "$SVC_WEB" SUCCESS
+unpark_svc "$SVC_WEB"
+unpark_svc "$SVC_DB"
+touch "$STUB_STATE_DIR/race-swap-web"
+run_script stop --timeout 30
+check "stop-race: exits 0" "[ $RC -eq 0 ]"
+check "stop-race: original deployment stopped" "stop_logged '$DEP_WEB'"
+check "stop-race: raced BUILDING deployment also stopped" "stop_logged '$STUB_RACE_ID'"
+check "stop-race: environment reports stopped" "grep -q 'test environment stopped' '$CASE_DIR/out.txt'"
+check "stop-race: raced newcomer stopped, then DB stopped after dependents" "stop_logged '$STUB_RACE_ID' && mut_order '$STUB_RACE_ID' '$DEP_DB'"
 end_case
 
-# e3: invalid JSON refused.
+# --- stop: stuck dependents keep the DB up ------------------------------------
 new_case
-write_state <<JSON
-[$(svc "$SVC_DB" SUCCESS 0 0 0 sfo),$(svc "$SVC_WEB" SUCCESS 0 0 0 sfo),$(svc "$SVC_PUSH" SUCCESS 0 0 0 europe-west4-drams3a)]
-JSON
-touch "$STUB_STATE_DIR/invalid-service-list"
-run_script start --timeout 3
-check "e3: invalid JSON exits nonzero" "[ $RC -ne 0 ]"
+fixtures_parked
+unpark_svc "$SVC_WEB"
+touch "$STUB_STATE_DIR/pin-running-$SVC_WEB"
+run_script stop --timeout 15
+check "stop-stuck: exits nonzero" "[ $RC -ne 0 ]"
+check "stop-stuck: operator told the DB was left up" "grep -q 'leaving Postgres-ltHj UP' '$CASE_DIR/err.txt'"
+check "stop-stuck: DB deployment never stopped/removed" "! mut_logged '$DEP_DB'"
+check "stop-stuck: DB never redeployed" "! grep -q '^railway redeploy .*-s $SVC_DB' '$STUB_STATE_DIR/calls.log'"
 end_case
 
-# e4: FAILED deployment refused even with converged replicas.
+# --- stop: unknown status refuses with DB up ----------------------------------
 new_case
-write_state <<JSON
-[$(svc "$SVC_DB" FAILED 1 1 0 sfo),$(svc "$SVC_WEB" SUCCESS 0 0 0 sfo),$(svc "$SVC_PUSH" SUCCESS 0 0 0 europe-west4-drams3a)]
-JSON
-run_script start --timeout 5
-check "e4: FAILED latest deployment exits nonzero" "[ $RC -ne 0 ]"
-check "e4: dependents never scaled after FAILED DB" "! grep -q 'railway scale .*--service $SVC_WEB' '$STUB_STATE_DIR/calls.log'"
+fixtures_parked
+unpark_svc "$SVC_WEB"
+set_live_status "$SVC_WEB" FROBNICATED
+run_script stop --timeout 15
+check "stop-unknown: exits nonzero" "[ $RC -ne 0 ]"
+check "stop-unknown: refusal names unknown status" "grep -qi 'unknown' '$CASE_DIR/err.txt'"
+check "stop-unknown: DB deployment untouched" "! mut_logged '$DEP_DB'"
+check "stop-unknown: DB left up" "grep -q 'leaving Postgres-ltHj UP' '$CASE_DIR/err.txt'"
 end_case
 
-# e5: DB probe failure aborts start before dependents.
+# --- stop: persistent read errors keep the DB up -------------------------------
 new_case
-touch "$STUB_STATE_DIR/auto_converge"
-write_state <<JSON
-[$(svc "$SVC_DB" SUCCESS 0 0 0 sfo),$(svc "$SVC_WEB" SUCCESS 0 0 0 sfo),$(svc "$SVC_PUSH" SUCCESS 0 0 0 europe-west4-drams3a)]
-JSON
+fixtures_parked
+unpark_svc "$SVC_WEB"
+touch "$STUB_STATE_DIR/fail-api-always"
+run_script stop --timeout 12
+check "stop-readfail: exits nonzero" "[ $RC -ne 0 ]"
+check "stop-readfail: no StopDeployment issued blind" "! grep -q 'StopDeployment' '$STUB_STATE_DIR/calls.log'"
+check "stop-readfail: DB up message" "grep -q 'leaving Postgres-ltHj UP' '$CASE_DIR/err.txt'"
+end_case
+
+# --- stop: transient mutation failure mid-drain keeps the DB up ----------------
+new_case
+fixtures_parked
+unpark_svc "$SVC_WEB"
+touch "$STUB_STATE_DIR/fail-mutation-once"
+run_script stop --timeout 15
+check "stop-midfail: exits nonzero" "[ $RC -ne 0 ]"
+check "stop-midfail: failure surfaces deploymentStop" "grep -q 'deploymentStop failed' '$CASE_DIR/err.txt'"
+check "stop-midfail: DB left up" "grep -q 'leaving Postgres-ltHj UP' '$CASE_DIR/err.txt'"
+check "stop-midfail: DB deployment untouched" "! mut_logged '$DEP_DB'"
+end_case
+
+# --- stop: invalid API payload refuses closed ----------------------------------
+new_case
+fixtures_parked
+unpark_svc "$SVC_WEB"
+touch "$STUB_STATE_DIR/invalid-api"
+run_script stop --timeout 12
+check "stop-invalid: exits nonzero" "[ $RC -ne 0 ]"
+check "stop-invalid: no StopDeployment on garbage reads" "! grep -q 'StopDeployment' '$STUB_STATE_DIR/calls.log'"
+end_case
+
+# --- stop: missing service refuses with DB up ----------------------------------
+new_case
+fixtures_parked
+unpark_svc "$SVC_WEB"
+touch "$STUB_STATE_DIR/missing-service:$SVC_DB"
+run_script stop --timeout 15
+check "stop-missing: exits nonzero" "[ $RC -ne 0 ]"
+check "stop-missing: missing service named" "grep -qi 'not found' '$CASE_DIR/err.txt'"
+check "stop-missing: dependents drained message or DB left safe" "grep -q 'leaving Postgres-ltHj UP\\|stop unconfirmed' '$CASE_DIR/err.txt'"
+check "stop-missing: terminal refusal returns promptly (no 6-round retry grind)" '[ "$(grep -c '"'"'SnapshotDeployments'"'"' "$STUB_STATE_DIR/calls.log")" -le 12 ]'
+end_case
+
+# --- stop: autodeploy stuck on refuses before any stop -------------------------
+new_case
+fixtures_parked
+unpark_svc "$SVC_WEB"
+touch "$STUB_STATE_DIR/fail-autodeploy"
+run_script stop --timeout 10
+check "stop-autodeploy: exits nonzero" "[ $RC -ne 0 ]"
+check "stop-autodeploy: still-enabled refusal" "grep -q 'still enabled' '$CASE_DIR/err.txt'"
+check "stop-autodeploy: no StopDeployment before autodeploy off" "! grep -q 'StopDeployment' '$STUB_STATE_DIR/calls.log'"
+end_case
+
+# --- guard: PROD refused before any mutation (shared push id included) ---------
+new_case
+fixtures_parked
+run_script stop --env "$PROD_ENV" --timeout 5
+check "guard-prod: stop --env PROD exits nonzero" "[ $RC -ne 0 ]"
+check "guard-prod: refusal names PRODUCTION" "grep -q 'PRODUCTION' '$CASE_DIR/err.txt'"
+check "guard-prod: zero stub calls (no mutation attempted)" "[ ! -s '$STUB_STATE_DIR/calls.log' ]"
+run_script start --env "$PROD_ENV" --timeout 5
+check "guard-prod: start --env PROD exits nonzero" "[ $RC -ne 0 ]"
+run_script status --env "$PROD_ENV"
+check "guard-prod: status --env PROD exits nonzero" "[ $RC -ne 0 ]"
+end_case
+
+# --- guard: autodeploy scope (helper refuses wrong env; stub enforces too) -----
+new_case
+fixtures_parked
+set +e
+node "$STATE_HELPER" --env "$PROD_ENV" --autodeploy "$SVC_WEB" >"$CASE_DIR/helper-out.txt" 2>"$CASE_DIR/helper-err.txt"
+HRC=$?
+set -e
+check "guard-auto: helper --env PROD refused (exit 3)" "[ $HRC -eq 3 ]"
+check "guard-auto: helper refusal says REFUSING" "grep -q 'REFUSING' '$CASE_DIR/helper-err.txt'"
+check "guard-auto: stub rejects wrong-env autodeploy update" "railway api 'mutation X { serviceInstanceAutoDeployUpdate(input: \$i) { enabled } }' --variables '{\"input\":{\"projectId\":\"$PROJECT\",\"environmentId\":\"$PROD_ENV\",\"serviceId\":\"$SVC_WEB\",\"enabled\":false}}' >/dev/null 2>&1; [ \$? -ne 0 ]"
+check "guard-auto: flat (non-nested) autodeploy variables rejected" "railway api 'mutation X { serviceInstanceAutoDeployUpdate(input: \$i) { enabled } }' --variables '{\"projectId\":\"$PROJECT\",\"environmentId\":\"$TEST_ENV\",\"serviceId\":\"$SVC_WEB\",\"enabled\":false}' >/dev/null 2>&1; [ \$? -ne 0 ]"
+end_case
+
+# --- start: idempotent when already running+healthy -----------------------------
+new_case
+fixtures_parked
+unpark_svc "$SVC_WEB"
+unpark_svc "$SVC_DB"
+node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
+const e = list.find((s) => s.id === process.argv[1]);
+e.replicas = { configured: 1, running: 1, crashed: 0 };
+fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));' "$SVC_PUSH"
+run_script start --timeout 10
+check "start-idem: exits 0" "[ $RC -eq 0 ]"
+check "start-idem: reports already running+healthy" "grep -q 'already running+healthy' '$CASE_DIR/out.txt'"
+check "start-idem: no redeploy/up issued" "! grep -Eq '^railway (redeploy|up) ' '$STUB_STATE_DIR/calls.log' && ! grep -q 'RedeployDeployment' '$STUB_STATE_DIR/calls.log'"
+check "start-idem: autodeploy still verified off" "grep -q 'autodeploy verified enabled=false' '$CASE_DIR/out.txt'"
+end_case
+
+# --- start: stale stopped/SUCCESS is never readiness -----------------------------
+new_case
+fixtures_parked
+touch "$STUB_STATE_DIR/never-converge"
+run_script start --timeout 4
+check "start-stale: exits nonzero" "[ $RC -ne 0 ]"
+check "start-stale: never claims started" "! grep -q 'test environment started' '$CASE_DIR/out.txt'"
+check "start-stale: DB redeploy requested first" "grep -q '^railway redeploy .*-s $SVC_DB' '$STUB_STATE_DIR/calls.log'"
+check "start-stale: dependents never started on unproven DB" "! grep -q 'RedeployDeployment' '$STUB_STATE_DIR/calls.log' && ! grep -q '^railway redeploy .*-s $SVC_WEB' '$STUB_STATE_DIR/calls.log'"
+end_case
+new_case
+fixtures_parked
+set_push_history
+run_script start --timeout 30
+check "start-happy: exits 0" "[ $RC -eq 0 ]"
+check "start-happy: DB redeploy precedes web redeploy" "log_order '^railway redeploy .*-s $SVC_DB' 'RedeployDeployment'"
+check "start-happy: DB probe precedes dependent starts" "log_order 'pg_isready' 'RedeployDeployment'"
+check "start-happy: web redeployed before push redeployed" "mut_order '$DEP_WEB' '$DEP_PUSH_HIST'"
+check "start-happy: redeploy is non-interactive (--yes)" "grep -q '^railway redeploy .*--yes' '$STUB_STATE_DIR/calls.log'"
+check "start-happy: reports started with autodeploy off" "grep -q 'test environment started' '$CASE_DIR/out.txt' && grep -q 'autodeploy stays off' '$CASE_DIR/out.txt'"
+check "start-happy: push startCommand preserved, no config writes" "grep -q 'npm run push:worker' '$STUB_STATE_DIR/instances.json' && ! grep -Eq 'variable set|config patch|service update' '$STUB_STATE_DIR/calls.log'"
+check "start-happy: no scale calls" "no_scale_calls"
+end_case
+
+# --- start: web without any deployment uses --from-source ---------------------------
+new_case
+fixtures_parked
+set_web_sourceless
+set_push_history
+run_script start --timeout 30
+check "start-source: exits 0" "[ $RC -eq 0 ]"
+check "start-source: web redeploy --from-source --yes issued" "grep -q 'from-source' '$STUB_STATE_DIR/calls.log'"
+check "start-source: reports started" "grep -q 'test environment started' '$CASE_DIR/out.txt'"
+end_case
+
+# --- start: push without deployment uploads from a clean checkout --------------------
+new_case
+fixtures_parked
+set_push_history
+node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+deps[process.argv[1]] = [];
+inst[process.argv[1]].latestDeployment = null;
+inst[process.argv[1]].activeDeployments = [];
+fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));' "$SVC_PUSH"
+touch "$STUB_STATE_DIR/git-ignore-all"
+run_script start --timeout 30
+check "start-up: exits 0" "[ $RC -eq 0 ]"
+check "start-up: railway up issued with ids + --detach --yes" "grep -q '^railway up .*--service $SVC_PUSH.*--environment $TEST_ENV.*--project $PROJECT.*--detach.*--yes' '$STUB_STATE_DIR/calls.log'"
+check "start-up: reports started" "grep -q 'test environment started' '$CASE_DIR/out.txt'"
+end_case
+
+# --- start: push upload refused on dirty checkout --------------------------------------
+new_case
+fixtures_parked
+node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+deps[process.argv[1]] = [];
+inst[process.argv[1]].latestDeployment = null;
+inst[process.argv[1]].activeDeployments = [];
+fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));' "$SVC_PUSH"
+printf ' M dirty-probe-file\n' >"$STUB_STATE_DIR/git-dirty"
+run_script start --timeout 30
+check "start-dirty: exits nonzero" "[ $RC -ne 0 ]"
+check "start-dirty: dirty checkout named" "grep -q 'worktree is dirty' '$CASE_DIR/err.txt'"
+check "start-dirty: no upload attempted" "! grep -q '^railway up ' '$STUB_STATE_DIR/calls.log'"
+end_case
+
+# --- start: push upload refused when secrets would be in scope ---------------------------
+new_case
+fixtures_parked
+node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+deps[process.argv[1]] = [];
+inst[process.argv[1]].latestDeployment = null;
+inst[process.argv[1]].activeDeployments = [];
+fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));' "$SVC_PUSH"
+mkdir -p "$CASE_DIR/fakeroot"
+touch "$CASE_DIR/fakeroot/.env"
+export GIT_TOPLEVEL="$CASE_DIR/fakeroot"
+run_script start --timeout 30
+check "start-secrets: exits nonzero" "[ $RC -ne 0 ]"
+check "start-secrets: unignored .env named" "grep -q 'unignored .env' '$CASE_DIR/err.txt'"
+check "start-secrets: no upload attempted" "! grep -q '^railway up ' '$STUB_STATE_DIR/calls.log'"
+end_case
+
+# --- start: failed DB probe aborts before dependents --------------------------------------
+new_case
+fixtures_parked
+set_push_history
 touch "$STUB_STATE_DIR/fail-ssh"
-run_script start --timeout 3
-check "e5: failed DB probe exits nonzero" "[ $RC -ne 0 ]"
-check "e5: dependents never scale when DB is unproven" "! grep -q 'railway scale .*--service $SVC_WEB' '$STUB_STATE_DIR/calls.log' && ! grep -q 'railway scale .*--service $SVC_PUSH' '$STUB_STATE_DIR/calls.log'"
+run_script start --timeout 8
+check "start-probe: exits nonzero" "[ $RC -ne 0 ]"
+check "start-probe: dependents never started on unproven DB" "! grep -q 'RedeployDeployment' '$STUB_STATE_DIR/calls.log' && ! grep -q '^railway up ' '$STUB_STATE_DIR/calls.log'"
+check "start-probe: never claims started" "! grep -q 'test environment started' '$CASE_DIR/out.txt'"
 end_case
 
-# e6: crashed replicas refused.
+# --- start: crashed DB replicas refuse ----------------------------------------------------
 new_case
-write_state <<JSON
-[$(svc "$SVC_DB" SUCCESS 1 1 2 sfo),$(svc "$SVC_WEB" SUCCESS 0 0 0 sfo),$(svc "$SVC_PUSH" SUCCESS 0 0 0 europe-west4-drams3a)]
-JSON
-run_script start --timeout 5
-check "e6: crashed replicas exit nonzero" "[ $RC -ne 0 ]"
-check "e6: crash named, dependents untouched" "grep -q 'crashed' '$CASE_DIR/err.txt' && ! grep -q 'railway scale .*--service $SVC_WEB' '$STUB_STATE_DIR/calls.log'"
+fixtures_parked
+set_push_history
+node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
+const e = list.find((s) => s.id === process.argv[1]);
+e.replicas = { configured: 1, running: 1, crashed: 1 };
+fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));' "$SVC_DB"
+run_script start --timeout 8
+check "start-crash: exits nonzero" "[ $RC -ne 0 ]"
+check "start-crash: crash named, dependents untouched" "grep -q 'crashed' '$CASE_DIR/err.txt' && ! grep -q 'RedeployDeployment' '$STUB_STATE_DIR/calls.log'"
+end_case
+
+# --- start: missing service refuses ---------------------------------------------------------
+new_case
+fixtures_parked
+touch "$STUB_STATE_DIR/missing-service:$SVC_DB"
+run_script start --timeout 8
+check "start-missing: exits nonzero" "[ $RC -ne 0 ]"
+check "start-missing: never claims started" "! grep -q 'test environment started' '$CASE_DIR/out.txt'"
+end_case
+
+# --- arg validation ----------------------------------------------------------------------------
+new_case
+fixtures_parked
+run_script bogus-command
+check "args: unknown argument exits 2" "[ $RC -eq 2 ]"
+run_script --timeout nope status
+check "args: bad timeout exits 2" "[ $RC -eq 2 ]"
+set +e
+RAILWAY_TEST_ENV_POLL_INTERVAL=1 sh "$SCRIPT" >"$CASE_DIR/out.txt" 2>"$CASE_DIR/err.txt"
+RC=$?
+set -e
+check "args: missing command exits 2" "[ $RC -eq 2 ]"
+end_case
+
+# --- SIGTERM during a stop wait exits 143 promptly, loop does not continue --------------------
+new_case
+fixtures_parked
+unpark_svc "$SVC_WEB"
+touch "$STUB_STATE_DIR/stubborn-stop"
+set +e
+RAILWAY_TEST_ENV_POLL_INTERVAL=1 sh "$SCRIPT" stop --timeout 60 >"$CASE_DIR/out.txt" 2>"$CASE_DIR/err.txt" &
+TPID=$!
+# Wait until a stop is actually in flight (bounded; slow machines need more
+# than a fixed sleep before the first StopDeployment is issued).
+i=0
+while [ "$i" -lt 30 ] && ! grep -q 'StopDeployment' "$STUB_STATE_DIR/calls.log"; do sleep 1; i=$((i+1)); done
+BEFORE="$(wc -l <"$STUB_STATE_DIR/calls.log")"
+kill -TERM "$TPID" 2>/dev/null || true
+T0=$(date +%s)
+wait "$TPID"
+TRC=$?
+T1=$(date +%s)
+sleep 2
+AFTER="$(wc -l <"$STUB_STATE_DIR/calls.log")"
+set -e
+check "sigterm: exits 143 on TERM" "[ $TRC -eq 143 ]"
+check "sigterm: exits promptly after TERM (<8s)" "[ $((T1 - T0)) -lt 8 ]"
+check "sigterm: loop does not continue (log stable)" "[ '$BEFORE' = '$AFTER' ]"
+check "sigterm: a stop was actually in flight" "grep -q 'StopDeployment' '$STUB_STATE_DIR/calls.log'"
 end_case
 
 echo "---"
