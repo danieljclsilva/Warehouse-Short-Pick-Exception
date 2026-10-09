@@ -40,6 +40,10 @@
 #   never-converge        -> redeploy/up mutations are no-ops (running stays 0)
 #   defer-next-<svc> heads N -> armed as defer-converge-<svc> when that
 #                            service next redeploys (async-build model)
+#   defer-fresh-<svc>     -> `railway redeploy`/RedeployDeployment mints the
+#                            fresh id as BUILDING with no running flip
+#                            (gradual-build model; old generation keeps
+#                            running while the fresh id builds)
 #   defer-converge-<svc>  -> that service lands after N service-list reads
 #                            (running stays 0 + stale crashed persists
 #                            until the countdown lands)
@@ -257,15 +261,25 @@ for (const svc of Object.keys(deps)) {
   if ((deps[svc] || []).some((n) => n && n.id === id)) owner = svc;
 }
 if (!owner) { console.error("stub: unknown deployment for redeploy " + id); process.exit(1); }
-for (const n of deps[owner]) { if (n.id === id) n.deploymentStopped = false; }
+// Live deploymentRedeploy mints a FRESH deployment id doing fresh work
+// (witnessed live 2026-10-09: redeploy of CRASHED a9de8c69 converged as
+// SUCCESS 674e32c2 1/1; the old id stays a stopped history row). Same-id
+// terminal+live coexistence never happens live, so the stub mints fresh.
+let n = 0;
+try { n = Number(fs.readFileSync(dir + "/redeploy-mutation-count", "utf8")) || 0; } catch {}
+n += 1;
+fs.writeFileSync(dir + "/redeploy-mutation-count", String(n));
+const fresh = "rm-" + owner.slice(0, 8) + "-" + n;
+const freshPending = fs.existsSync(dir + "/defer-fresh-" + owner);
+const node = { id: fresh, status: freshPending ? "BUILDING" : "SUCCESS", deploymentStopped: false, serviceId: owner, environmentId: process.env.STUB_TEST_ENV };
+deps[owner] = deps[owner] || [];
+deps[owner].unshift(node);
 const p = inst[owner];
 if (p) {
+  const st = freshPending ? "BUILDING" : "SUCCESS";
+  p.latestDeployment = { id: fresh, status: st, deploymentStopped: false, canRedeploy: true };
   p.activeDeployments = p.activeDeployments || [];
-  if (!p.activeDeployments.some((d) => d.id === id)) {
-    p.activeDeployments.push({ id, status: "SUCCESS", deploymentStopped: false });
-  } else {
-    p.activeDeployments.forEach((d) => { if (d.id === id) d.deploymentStopped = false; });
-  }
+  p.activeDeployments.push({ id: fresh, status: st, deploymentStopped: false });
 }
 // Arm-on-redeploy: a defer-next-<svc> template becomes the live countdown
 // when this redeploy runs, so pre-redeploy reads never consume it.
@@ -274,7 +288,7 @@ try {
   fs.writeFileSync(dir + "/defer-converge-" + owner, t);
   fs.unlinkSync(dir + "/defer-next-" + owner);
 } catch {}
-if (!fs.existsSync(dir + "/never-converge") && !fs.existsSync(dir + "/defer-converge-" + owner)) {
+if (!fs.existsSync(dir + "/never-converge") && !fs.existsSync(dir + "/defer-converge-" + owner) && !fs.existsSync(dir + "/defer-fresh-" + owner)) {
   const e = list.find((s) => s.id === owner);
   if (e) {
     e.replicas = e.replicas || {};
@@ -473,7 +487,30 @@ const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
 const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
 const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
 if (!deps[svc] && !inst[svc]) { console.error("stub: unknown service for redeploy"); process.exit(1); }
-if (!fs.existsSync(dir + "/never-converge")) {
+// Gradual-build model: defer-fresh-<svc> mints the fresh id as BUILDING
+// non-stopped with no running flip (old generation keeps serving while the
+// fresh generation builds). With never-converge also present it never lands.
+const freshIsPending = fs.existsSync(dir + "/defer-fresh-" + svc);
+const frozen = fs.existsSync(dir + "/never-converge") && !freshIsPending;
+if (!frozen && freshIsPending) {
+  // Gradual-build model: mint the fresh id as BUILDING with no running
+  // flip (old generation keeps serving while the fresh id builds).
+  let n = 0;
+  try { n = Number(fs.readFileSync(dir + "/redeploy-count", "utf8")) || 0; } catch {}
+  n += 1;
+  fs.writeFileSync(dir + "/redeploy-count", String(n));
+  const id = "rd-" + svc.slice(0, 8) + "-" + n;
+  const node = { id, status: "BUILDING", deploymentStopped: false, serviceId: svc, environmentId: process.env.STUB_TEST_ENV };
+  deps[svc] = deps[svc] || [];
+  deps[svc].unshift(node);
+  if (inst[svc]) {
+    inst[svc].activeDeployments = inst[svc].activeDeployments || [];
+    inst[svc].activeDeployments.push({ id, status: "BUILDING", deploymentStopped: false });
+  }
+  fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+  fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));
+  fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));
+} else if (!frozen) {
   let n = 0;
   try { n = Number(fs.readFileSync(dir + "/redeploy-count", "utf8")) || 0; } catch {}
   n += 1;
@@ -718,11 +755,17 @@ const svc = process.argv[1];
 const id = process.argv[2];
 const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
 const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
 deps[svc] = [{ id, status: "SUCCESS", deploymentStopped: true, serviceId: svc, environmentId: process.env.STUB_TEST_ENV }];
 inst[svc].latestDeployment = { id, status: "SUCCESS", deploymentStopped: true, canRedeploy: true };
 inst[svc].activeDeployments = [{ id, status: "SUCCESS", deploymentStopped: true }];
+// Strict counts (fail-closed): a stopped history is provably parked only
+// with explicit zero counts; replicas must never default.
+const e = list.find((s) => s && s.id === svc);
+if (e) e.replicas = { configured: 1, running: 0, crashed: 0 };
 fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
-fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));' "$SVC_PUSH" "$DEP_PUSH_HIST"
+fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));
+fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));' "$SVC_PUSH" "$DEP_PUSH_HIST"
 }
 
 # Web with no deployable deployment at all (forces --from-source path).
@@ -1026,15 +1069,11 @@ end_case
 # --- start: idempotent when already running+healthy -----------------------------
 new_case
 fixtures_parked
+set_push_history
+set_live_status "$SVC_WEB" SUCCESS
 unpark_svc "$SVC_WEB"
 unpark_svc "$SVC_DB"
-node -e '
-const fs = require("fs");
-const dir = process.env.STUB_STATE_DIR;
-const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
-const e = list.find((s) => s.id === process.argv[1]);
-e.replicas = { configured: 1, running: 1, crashed: 0 };
-fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));' "$SVC_PUSH"
+unpark_svc "$SVC_PUSH"
 run_script start --timeout 10
 check "start-idem: exits 0" "[ $RC -eq 0 ]"
 check "start-idem: reports already running+healthy" "grep -q 'already running+healthy' '$CASE_DIR/out.txt'"
@@ -1065,7 +1104,7 @@ set_crashed "$SVC_WEB" 1
 printf '2' >"$STUB_STATE_DIR/defer-next-$SVC_WEB"
 run_script start --timeout 30
 check "start-stalecrash: exits 0" "[ $RC -eq 0 ]"
-check "start-stalecrash: stale crash tolerated while in flight" "grep -q 'still in flight' '$CASE_DIR/err.txt'"
+check "start-stalecrash: stale crash tolerated while converging" "grep -q 'waiting' '$CASE_DIR/err.txt'"
 check "start-stalecrash: reports started" "grep -q 'test environment started' '$CASE_DIR/out.txt'"
 check "start-stalecrash: no scale calls" "no_scale_calls"
 end_case
@@ -1076,7 +1115,10 @@ run_script start --timeout 30
 check "start-happy: exits 0" "[ $RC -eq 0 ]"
 check "start-happy: DB redeploy precedes web redeploy" "log_order '^railway redeploy .*-s $SVC_DB' 'RedeployDeployment'"
 check "start-happy: DB probe precedes dependent starts" "log_order 'pg_isready' 'RedeployDeployment'"
-check "start-happy: web redeployed before push redeployed" "mut_order '$DEP_WEB' '$DEP_PUSH_HIST'"
+check "start-happy: web redeployed before push redeployed" "redeploy_logged '$DEP_WEB' && redeploy_logged '$DEP_PUSH_HIST' && mut_order '$DEP_WEB' '$DEP_PUSH_HIST'"
+check "start-happy: fresh web id captured and verified" "grep -q 'web-test redeploy requested (newest scoped deployment rm-' '$CASE_DIR/out.txt' && grep -q 'web-test running (running=1 configured=1 expected=rm-' '$CASE_DIR/out.txt'"
+check "start-happy: fresh push id captured and verified" "grep -q 'push-delivery redeploy requested (newest scoped deployment rm-' '$CASE_DIR/out.txt' && grep -q 'push-delivery running (running=1 configured=1 expected=rm-' '$CASE_DIR/out.txt'"
+check "start-happy: fresh DB id captured and verified" "grep -q 'Postgres-ltHj redeploy requested (newest scoped deployment rd-' '$CASE_DIR/out.txt' && grep -q 'Postgres-ltHj running (running=1 configured=1 expected=rd-' '$CASE_DIR/out.txt'"
 check "start-happy: redeploy is non-interactive (--yes)" "grep -q '^railway redeploy .*--yes' '$STUB_STATE_DIR/calls.log'"
 check "start-happy: reports started with autodeploy off" "grep -q 'test environment started' '$CASE_DIR/out.txt' && grep -q 'autodeploy stays off' '$CASE_DIR/out.txt'"
 check "start-happy: push startCommand preserved, no config writes" "grep -q 'npm run push:worker' '$STUB_STATE_DIR/instances.json' && ! grep -Eq 'variable set|config patch|service update' '$STUB_STATE_DIR/calls.log'"
@@ -1176,7 +1218,7 @@ end_case
 new_case
 fixtures_parked
 set_push_history
-touch "$STUB_STATE_DIR/never-converge"
+touch "$STUB_STATE_DIR/defer-fresh-$SVC_DB"
 node -e '
 const fs = require("fs");
 const dir = process.env.STUB_STATE_DIR;
@@ -1187,6 +1229,122 @@ fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));' "$SVC_DB"
 run_script start --timeout 8
 check "start-crash: exits nonzero" "[ $RC -ne 0 ]"
 check "start-crash: crash named, dependents untouched" "grep -q 'crashed' '$CASE_DIR/err.txt' && ! grep -q 'RedeployDeployment' '$STUB_STATE_DIR/calls.log'"
+end_case
+
+# --- start: old healthy running while the fresh deployment is still pending waits, never blesses ----
+# Blocker 2: the initiated deployment id (not running>0) is readiness. The
+# old generation still reports running=1 while the fresh redeploy id is
+# BUILDING non-stopped (defer-fresh gradual-build model): start must wait for
+# THAT id, never bless the old generation's running count, and time out
+# nonzero with dependents untouched.
+new_case
+fixtures_parked
+set_push_history
+touch "$STUB_STATE_DIR/defer-fresh-$SVC_DB"
+touch "$STUB_STATE_DIR/never-converge"
+node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
+const e = list.find((x) => x && x.id === process.argv[1]);
+e.replicas = { configured: 1, running: 1, crashed: 0 };
+fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));' "$SVC_DB"
+run_script start --timeout 8
+check "start-oldhealthy: exits nonzero (fresh id never converges)" "[ $RC -ne 0 ]"
+check "start-oldhealthy: waits on the fresh id, never blesses old running" "grep -q 'still BUILDING.*waiting' '$CASE_DIR/err.txt'"
+check "start-oldhealthy: never claims started on old running" "! grep -q 'test environment started' '$CASE_DIR/out.txt'"
+check "start-oldhealthy: dependents never started on unproven DB" "! grep -q 'RedeployDeployment' '$STUB_STATE_DIR/calls.log' && ! grep -q '^railway redeploy .*-s $SVC_WEB' '$STUB_STATE_DIR/calls.log'"
+end_case
+
+# --- start: partial replica counts refuse ------------------------------------------------------
+# Blocker 2: configured=2 but running=1 for the expected SUCCESS deployment
+# is partial, not ready. The shell must keep waiting (never declare running),
+# then time out nonzero — never claim started.
+new_case
+fixtures_parked
+set_push_history
+node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
+const e = list.find((x) => x && x.id === process.argv[1]);
+e.replicas = { configured: 2, running: 1, crashed: 0 };
+fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));' "$SVC_DB"
+run_script start --timeout 6
+check "start-partial: exits nonzero" "[ $RC -ne 0 ]"
+check "start-partial: never claims started on partial counts" "! grep -q 'test environment started' '$CASE_DIR/out.txt'"
+check "start-partial: partial replicas named" "grep -q 'partial replicas' '$CASE_DIR/err.txt'"
+end_case
+
+# --- start: stale crash with fresh pending waits; crash-loop fresh terminal refuses ------------
+# Blocker 2, two halves. (a) Stale crashed=1 while the fresh id is BUILDING:
+# tolerated while converging (already covered by start-stalecrash). (b) The
+# fresh id itself terminal CRASHED non-stopped with crashed>0: immediate
+# refusal naming the expected id, dependents untouched.
+new_case
+fixtures_parked
+set_push_history
+set_crashed "$SVC_DB" 1
+touch "$STUB_STATE_DIR/never-converge"
+node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const svc = process.argv[1];
+const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+// Pre-seed a live CRASHED row that the fresh redeploy id will share only
+// if the platform crash-loops it: here the fresh id stays distinct, so
+// flip the minted head to CRASHED after start mints it is racy; instead
+// seed a competing live CRASHED newcomer now — any live terminal row
+// refuses the start even with crashed>0 tolerated-while-pending.
+deps[svc] = deps[svc] || [];
+deps[svc].unshift({ id: "loop-0000-1111-2222-333333333333", status: "CRASHED", deploymentStopped: false, serviceId: svc, environmentId: process.env.STUB_TEST_ENV });
+fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
+fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));' "$SVC_DB"
+touch "$STUB_STATE_DIR/defer-fresh-$SVC_DB"
+run_script start --timeout 8
+check "start-crashloop: exits nonzero" "[ $RC -ne 0 ]"
+check "start-crashloop: terminal deployment named" "grep -q 'terminal .*CRASHED' '$CASE_DIR/err.txt'"
+check "start-crashloop: dependents untouched" "! grep -q 'RedeployDeployment' '$STUB_STATE_DIR/calls.log' && ! grep -q '^railway redeploy .*-s $SVC_WEB' '$STUB_STATE_DIR/calls.log'"
+end_case
+
+# --- status: unreadable readback exits nonzero (never WARNING success) --------------------------------
+# Blocker 2 tail: start/stop end with `if ! show_status; ... exit 1`, and the
+# status command surfaces the same readback. An unreadable snapshot must fail
+# the command (exit nonzero), never print WARNING and exit 0.
+new_case
+fixtures_parked
+touch "$STUB_STATE_DIR/fail-api-always"
+run_script status --timeout 10
+check "status-readfail: exits nonzero" "[ $RC -ne 0 ]"
+check "status-readfail: failure is named, never a WARNING success" "grep -qi 'fail' '$CASE_DIR/err.txt' && ! grep -q 'parked=true' '$CASE_DIR/out.txt'"
+check "status-readfail: no mutations on unreadable reads" "no_mutations"
+end_case
+
+# --- timeout: hung read is bounded by --timeout -------------------------------------------------
+# Blocker 3: a hung `railway api` (sleeping stub) must not outlive the
+# operation deadline. The stub sleeps longer than --timeout; the command
+# must exit nonzero within a bounded multiple of the deadline.
+new_case
+fixtures_parked
+printf '#!/bin/sh\necho "railway $*" >>"${STUB_STATE_DIR}/calls.log"\nsleep 60\nexit 0\n' >"$STUB_BIN/railway"
+chmod +x "$STUB_BIN/railway"
+T0=$(date +%s)
+run_script status --timeout 6
+T1=$(date +%s)
+check "hung-read: exits nonzero" "[ $RC -ne 0 ]"
+check "hung-read: bounded by timeout (<30s for 6s deadline)" "[ $((T1 - T0)) -lt 30 ]"
+end_case
+
+# --- args: zero timeout rejected ------------------------------------------------------------------
+# Blocker 3: --timeout 0 would disable every bound (busy-spin). Reject it.
+new_case
+fixtures_parked
+run_script status --timeout 0
+check "args: zero timeout exits 2" "[ $RC -eq 2 ]"
+run_script start --timeout 0
+check "args: zero timeout on start exits 2" "[ $RC -eq 2 ]"
+check "args: zero timeout issues no calls" "[ ! -s '$STUB_STATE_DIR/calls.log' ]"
 end_case
 
 # --- start: missing service refuses ---------------------------------------------------------

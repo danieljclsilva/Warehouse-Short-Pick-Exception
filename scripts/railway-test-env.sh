@@ -23,6 +23,10 @@
 # pending (QUEUED INITIALIZING WAITING BUILDING DEPLOYING NEEDS_APPROVAL);
 # configured replica counts are ignored; latest null only parked when scoped
 # lists confirm empty. A stale SUCCESS/stopped deployment is NEVER readiness.
+# Replica counts NEVER default: a missing service-list entry, missing
+# replicas, or non-integer counts refuse the snapshot (retryable read);
+# the sole exception is the witnessed source-less service shape (latest
+# null + active/pending/nodes all empty), which reads back parked.
 #
 # Stop: disable TEST web autodeploy FIRST (serviceInstanceAutoDeployUpdate
 # enabled:false, verified false before proceeding), then drain web+push via
@@ -32,14 +36,24 @@
 # QUEUED/INITIALIZING/WAITING singles that resist stopping. Unknown statuses
 # are refused. Any dependent ambiguity/failure keeps the DB up, exit nonzero.
 #
-# Start: DB first via `railway redeploy -p -e -s(db)` (image source), new
-# deployment id captured from the scoped deployments list, running>0 plus
-# pg_isready over `railway ssh` before dependents. Web via deploymentRedeploy
-# (works with autodeploy off) or redeploy --from-source; autodeploy is NEVER
-# re-enabled. Push via deploymentRedeploy when a historical deployment
-# exists, else `railway up --service --environment --project --detach` from a
-# validated clean checkout only. Neither path touches IaC, regions, or the
-# DB volume, and startCommand (npm run push:worker) is preserved.
+# Start: DB first via `railway redeploy -p -e -s(db)` (image source), the
+# single fresh deployment id selected by before/after scoped diff (ambiguous
+# concurrent changes refuse, never guess), then THAT deployment verified
+# running+healthy (present, non-stopped, SUCCESS, running>=configured>=1,
+# crashed 0, strict integer counts; pending BUILDING/DEPLOYING tolerated
+# while converging, terminal FAILED/CRASHED refused) plus pg_isready over
+# `railway ssh` before dependents. Web via deploymentRedeploy (works with
+# autodeploy off) or redeploy --from-source; autodeploy is NEVER re-enabled.
+# Push via deploymentRedeploy when a historical deployment exists, else
+# `railway up --service --environment --project --detach` from a validated
+# clean checkout only. Neither path touches IaC, regions, or the DB volume,
+# and startCommand (npm run push:worker) is preserved. Every Railway/SSH
+# child runs under scripts/railway-run-bounded.mjs (portable timeout, no
+# new deps) within the overall --timeout deadline (positive integer only);
+# signals kill the foreground child group (130/143) with no further
+# mutations. A timed-out `railway up` parks push-delivery before any retry
+# (uploads may continue server-side; never stack them). Final readback
+# failure after start/stop exits nonzero (never WARNING success).
 #
 # Safety:
 #  - Every command passes explicit project/environment/service IDs.
@@ -60,6 +74,7 @@ set -eu
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 GUARD="$SCRIPT_DIR/railway-test-env-guard.mjs"
 STATE_HELPER="$SCRIPT_DIR/railway-test-env-state.mjs"
+RUN_BOUNDED="$SCRIPT_DIR/railway-run-bounded.mjs"
 
 PROJECT="$(node "$GUARD" --print project)"
 TEST_ENV="$(node "$GUARD" --print test-env)"
@@ -101,6 +116,10 @@ case "$TIMEOUT_SECONDS" in
     echo "railway-test-env: --timeout must be a positive integer (seconds)" >&2
     exit 2 ;;
 esac
+if [ "$TIMEOUT_SECONDS" -le 0 ] 2>/dev/null; then
+  echo "railway-test-env: --timeout must be a positive integer (seconds)" >&2
+  exit 2
+fi
 
 case "$POLL_INTERVAL_SECONDS" in
   ''|*[!0-9]*|0*)
@@ -111,14 +130,49 @@ esac
 # --- production guard (fail closed) --------------------------------------
 TARGET_ENV="$(node "$GUARD" --assert-env "$ENV_OVERRIDE")" || exit 1
 
-# --- traps -----------------------------------------------------------------
-# INT/TERM exit immediately with conventional codes; the shell does NOT kill
-# already-sent server-side work (an in-flight deploymentStop already
-# received still completes), it only stops issuing further mutations.
-trap 'exit 130' INT
-trap 'exit 143' TERM
+# INT/TERM stop issuing further mutations and kill the foreground child
+# group promptly. Long-lived children run under railway-run-bounded (one
+# process group per command), so a hung railway/ssh/sleep cannot hold the
+# shell past the signal. Server-side work already received still completes;
+# the shell only guarantees no FURTHER mutations after the signal.
+CURRENT_PRIMARY_PID=""
+interrupt_trap() {
+  code="$1"
+  if [ -n "$CURRENT_PRIMARY_PID" ] && kill -0 "$CURRENT_PRIMARY_PID" 2>/dev/null; then
+    kill -TERM "-$CURRENT_PRIMARY_PID" 2>/dev/null || kill -TERM "$CURRENT_PRIMARY_PID" 2>/dev/null || true
+    sleep 1
+    if kill -0 "$CURRENT_PRIMARY_PID" 2>/dev/null; then
+      kill -KILL "-$CURRENT_PRIMARY_PID" 2>/dev/null || kill -KILL "$CURRENT_PRIMARY_PID" 2>/dev/null || true
+    fi
+  fi
+  exit "$code"
+}
+trap 'interrupt_trap 130' INT
+trap 'interrupt_trap 143' TERM
 
-# --- snapshot plumbing ------------------------------------------------------
+# Bounded foreground runner: every long-lived child (snapshot reads, Railway
+# mutations, ssh probes, redeploy/up) goes through railway-run-bounded so a
+# hung subprocess cannot outlive the overall --timeout. Per-call bound is
+# the caller's remaining budget (never larger than TIMEOUT_SECONDS, never
+# smaller than 1s); runner exit 124 means timeout. Signals kill the child
+# group via CURRENT_PRIMARY_PID (see traps above).
+run_primary() {
+  budget="$TIMEOUT_SECONDS"
+  case "$budget" in ''|*[!0-9]*) budget=300 ;; esac
+  if [ -n "${DEADLINE:-}" ]; then
+    now=$(date +%s)
+    budget=$((DEADLINE - now))
+  fi
+  if [ "$budget" -lt 1 ] 2>/dev/null; then budget=1; fi
+  if [ "$budget" -gt "$TIMEOUT_SECONDS" ] 2>/dev/null; then budget="$TIMEOUT_SECONDS"; fi
+  node "$RUN_BOUNDED" "$budget" "$@" &
+  CURRENT_PRIMARY_PID=$!
+  wait "$CURRENT_PRIMARY_PID"
+  rc=$?
+  CURRENT_PRIMARY_PID=""
+  return "$rc"
+}
+
 # Full scoped snapshot via the state helper (`railway api` reads only).
 # Exit 0 = ok ($SNAP_FILE holds JSON), 1 = retryable read error, 3 = refusal.
 SNAP_FILE=""
@@ -130,18 +184,24 @@ read_snapshot() {
     echo "railway-test-env: could not create temp file; refusing to continue" >&2
     return 3
   }
-  if node "$STATE_HELPER" --env "$TARGET_ENV" >"$SNAP_FILE" 2>"$SNAP_FILE.err"; then
+  # Hard per-read bound: a hung `railway api` chain cannot outlive the
+  # overall --timeout. Runner exit 124 = retryable read, never refusal;
+  # callers retry until the deadline, then fail nonzero.
+  run_primary node "$STATE_HELPER" --env "$TARGET_ENV" >"$SNAP_FILE" 2>"$SNAP_FILE.err"
+  snap_rc=$?
+  if [ "$snap_rc" -eq 0 ]; then
     rm -f "$SNAP_FILE.err"
     return 0
-  else
-    # NOTE: capture $? HERE in the else branch (the condition's status).
-    # `$?` after `fi` would be the if-statement's own status (0).
-    snap_rc=$?
   fi
   if [ "$snap_rc" -eq 3 ]; then
     cat "$SNAP_FILE.err" >&2; rm -f "$SNAP_FILE.err"
     echo "railway-test-env: snapshot refused (fail closed; see above)" >&2
     return 3
+  fi
+  if [ "$snap_rc" -eq 124 ]; then
+    echo "railway-test-env: snapshot read timed out (retrying until timeout)" >&2
+    rm -f "$SNAP_FILE.err"
+    return 1
   fi
   cat "$SNAP_FILE.err" >&2; rm -f "$SNAP_FILE.err"
   echo "railway-test-env: WARNING: snapshot read failed (retrying until timeout)" >&2
@@ -213,7 +273,8 @@ api_mutate() {
   # $1 = GraphQL mutation string, $2 = variables JSON. Response JSON is
   # intentionally discarded: callers verify through scoped readback, and
   # raw mutation output must never pollute status/start/stop reporting.
-  railway api "$1" --variables "$2" >/dev/null
+  # Bounded: a hung `railway api` surfaces as 124 (timeout), never silent.
+  run_primary railway api "$1" --variables "$2" >/dev/null
 }
 
 autodeploy_disable() {
@@ -224,8 +285,13 @@ autodeploy_disable() {
     echo "railway-test-env: autodeploy disable request failed; refusing to continue" >&2
     return 1
   fi
-  if ! autodeploy_json="$(node "$STATE_HELPER" --env "$TARGET_ENV" --autodeploy "$SVC_WEB")"; then
-    echo "railway-test-env: autodeploy status unreadable after disable; refusing to continue" >&2
+  if ! autodeploy_json="$(run_primary node "$STATE_HELPER" --env "$TARGET_ENV" --autodeploy "$SVC_WEB")"; then
+    autodeploy_rc=$?
+    if [ "$autodeploy_rc" -eq 124 ]; then
+      echo "railway-test-env: autodeploy status read timed out; refusing to continue" >&2
+    else
+      echo "railway-test-env: autodeploy status unreadable after disable; refusing to continue" >&2
+    fi
     return 1
   fi
   case "$autodeploy_json" in
@@ -345,37 +411,123 @@ for (const d of (s && s.active) || []) {
 }
 
 # --- start helpers --------------------------------------------------------------
+# $1 = key, $2 = label, $3 = expected initiated deployment id (may be empty
+# only when the mutation path returns no id — then before/after scoping in
+# the caller must have uniquely selected it, else the caller refuses).
+# Success requires ALL of: expected deployment present + non-stopped +
+# terminal-SUCCESS-or-converging (pending BUILDING/DEPLOYING tolerated while
+# running grows), running>=configured>=1 with strict integer counts, no
+# terminal FAILED/CRASHED for the expected id, and no malformed counts.
+# A stale previous crashed count is tolerated ONLY while the expected id is
+# distinctly pending or freshly SUCCESS (never while it is terminal-failed,
+# and never to bless old-generation running while the expected id is still
+# pending/failed).
 wait_for_running() {
-  # $1 = key, $2 = label. running>0 (stale stopped/SUCCESS never readiness).
+  key="$1"; label="$2"; expected="${3:-}"
   deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
   while :; do
     if read_snapshot; then
-      running="$(svc_running "$1")"
-      crashed="$(svc_crashed "$1")"
-      case "$crashed" in ''|*[!0-9]*) crashed=0 ;; esac
-      case "$running" in ''|*[!0-9]*) running=0 ;; esac
-      if [ "$crashed" -gt 0 ] 2>/dev/null; then
-        if svc_may_converge "$1"; then
-          echo "railway-test-env: $2 reports $crashed crashed replica(s) but a deployment is still in flight; waiting for convergence..." >&2
-        else
-          echo "railway-test-env: $2 reports $crashed crashed replica(s) with nothing in flight; refusing to continue" >&2
-          return 3
-        fi
-      fi
-      if [ "$running" -gt 0 ] 2>/dev/null; then
-        echo "railway-test-env: $2 running (running=$running)"
+      if wait_running_converged "$key" "$label" "$expected"; then
         return 0
+      else
+        # NOTE: capture $? HERE in the else branch (the condition's
+        # status). `$?` after `fi` would be the if-statement's own status.
+        wait_rc=$?
       fi
+      if [ "$wait_rc" -eq 3 ]; then return 3; fi
     else
       if [ "$?" -eq 3 ]; then return 3; fi
     fi
     now=$(date +%s)
     if [ "$now" -ge "$deadline" ]; then
-      echo "railway-test-env: timed out after ${TIMEOUT_SECONDS}s waiting for $2 (running>0)" >&2
+      echo "railway-test-env: timed out after ${TIMEOUT_SECONDS}s waiting for $label (expected deployment ${expected:-unknown} running+healthy)" >&2
       return 1
     fi
     sleep "$POLL_INTERVAL_SECONDS"
   done
+}
+
+# One snapshot verdict for wait_for_running. Exit 0 = converged healthy;
+# 1 = keep waiting; 3 = terminal refusal (crash-loop expected, unexpected
+# terminal, malformed counts). All diagnostics go to stderr; the single
+# stdout line is the success line so callers can distinguish silence.
+#
+# Generation matching: the expected id selects its own generation. Every
+# mutation path (redeploy, deploymentRedeploy, up) must produce exactly one
+# fresh id via the before/after scoped diff — otherwise the caller refuses.
+# Live redeploys mint fresh ids doing fresh work (witnessed live
+# 2026-10-09: redeploy of CRASHED a9de8c69 converged as SUCCESS 674e32c2
+# 1/1; the old id stays a stopped history row). A stopped expected entry
+# with no live SUCCESS generation waits; a live terminal row for the
+# expected id (or any live terminal row) refuses.
+wait_running_converged() {
+  key="$1"; label="$2"; expected="$3"
+  node -e '
+const fs = require("fs");
+const key = process.argv[1], label = process.argv[2], expected = process.argv[3] || "";
+const snapFile = process.argv[4];
+let root;
+try { root = JSON.parse(fs.readFileSync(snapFile, "utf8")); }
+catch { console.error(`railway-test-env: ${label} snapshot unreadable; retrying`); process.exit(1); }
+const s = root[key];
+if (!s || typeof s !== "object") { console.error(`railway-test-env: ${label} snapshot missing; retrying`); process.exit(1); }
+for (const f of ["running", "configured", "crashed"]) {
+  if (!Number.isInteger(s[f]) || s[f] < 0) {
+    console.error(`railway-test-env: ${label} reports malformed ${f}=${JSON.stringify(s[f])}; refusing to continue`);
+    process.exit(3);
+  }
+}
+const active = Array.isArray(s.active) ? s.active : null;
+if (active === null) { console.error(`railway-test-env: ${label} snapshot missing active list; refusing`); process.exit(3); }
+const TERMINAL_FAIL = ["FAILED", "CRASHED"];
+const PENDING = ["QUEUED", "INITIALIZING", "WAITING", "BUILDING", "DEPLOYING", "NEEDS_APPROVAL"];
+const live = active.filter((d) => d && d.id && d.deploymentStopped !== true);
+const byIdLive = new Map(live.map((d) => [String(d.id), d]));
+if (expected) {
+  const liveDep = byIdLive.get(String(expected));
+  const anyDep = active.find((d) => d && String(d.id) === String(expected));
+  if (!anyDep) { console.error(`railway-test-env: ${label} expected deployment ${expected} absent from scoped snapshot; retrying`); process.exit(1); }
+  if (!liveDep) {
+    // Expected id present but stopped: the fresh generation was stopped
+    // out from under the wait (concurrent stop or platform action).
+    // Refuse — converging on some OTHER live SUCCESS id would bless a
+    // generation this start did not initiate.
+    console.error(`railway-test-env: ${label} expected deployment ${expected} is stopped; refusing`);
+    process.exit(3);
+  }
+}
+// Terminal failure anywhere live (non-stopped) refuses BEFORE any
+// pending-wait: a live CRASHED/FAILED row is current platform state, not
+// previous-generation residue (redeploys mint fresh ids; old ids stay
+// stopped history rows). Waiting through a visible crash would bless a
+// crash-looping service as "converging".
+for (const d of live) {
+  if (!d || !d.id) continue;
+  const st = String(d.status || "").toUpperCase();
+  if (!TERMINAL_FAIL.includes(st)) continue;
+  if (expected && String(d.id) === String(expected)) {
+    console.error(`railway-test-env: ${label} expected deployment ${expected} terminal ${st}; refusing`);
+    process.exit(3);
+  }
+  console.error(`railway-test-env: ${label} deployment ${d.id} terminal ${st} with nothing converging; refusing`);
+  process.exit(3);
+}
+if (expected) {
+  const liveDep = byIdLive.get(String(expected));
+  const st = String((liveDep && liveDep.status) || "").toUpperCase();
+  if (TERMINAL_FAIL.includes(st)) { console.error(`railway-test-env: ${label} expected deployment ${expected} terminal ${st} non-stopped; refusing`); process.exit(3); }
+  if (PENDING.includes(st)) {
+    if (s.crashed > 0) console.error(`railway-test-env: ${label} reports ${s.crashed} crashed replica(s) but expected ${expected} still ${st}; waiting for convergence...`);
+    else console.error(`railway-test-env: ${label} expected ${expected} still ${st} (running=${s.running}); waiting...`);
+    process.exit(1);
+  }
+  if (st !== "SUCCESS") { console.error(`railway-test-env: ${label} expected deployment ${expected} has unknown status ${st}; refusing`); process.exit(3); }
+}
+if (s.configured < 1) { console.error(`railway-test-env: ${label} reports configured=${s.configured}; refusing (expected >=1)`); process.exit(3); }
+if (s.running < s.configured) { console.error(`railway-test-env: ${label} partial replicas running=${s.running} configured=${s.configured}; waiting...`); process.exit(1); }
+if (s.crashed > 0) { console.error(`railway-test-env: ${label} reports ${s.crashed} crashed replica(s) with nothing in flight; refusing to continue`); process.exit(3); }
+console.log(`railway-test-env: ${label} running (running=${s.running} configured=${s.configured}${expected ? ` expected=${expected}` : ""})`);
+' "$key" "$label" "$expected" "$SNAP_FILE"
 }
 
 wait_for_parked() {
@@ -402,23 +554,31 @@ wait_for_parked() {
 wait_for_db_ready() {
   deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
   while :; do
-    if railway ssh -p "$PROJECT" -e "$TARGET_ENV" -s "$SVC_DB" -- pg_isready 2>&1; then
+    if run_primary railway ssh -p "$PROJECT" -e "$TARGET_ENV" -s "$SVC_DB" -- pg_isready 2>&1; then
       echo "railway-test-env: Postgres-ltHj accepts connections (pg_isready)"
       return 0
+    else
+      ssh_rc=$?
+      if [ "$ssh_rc" -eq 124 ]; then
+        echo "railway-test-env: Postgres-ltHj pg_isready probe timed out; retrying..." >&2
+      else
+        echo "railway-test-env: Postgres-ltHj not accepting connections yet; retrying..." >&2
+      fi
     fi
     now=$(date +%s)
     if [ "$now" -ge "$deadline" ]; then
       echo "railway-test-env: timed out after ${TIMEOUT_SECONDS}s waiting for Postgres-ltHj to accept connections (needs working 'railway ssh'; see 'railway ssh keys')" >&2
       return 1
     fi
-    echo "railway-test-env: Postgres-ltHj not accepting connections yet; retrying..." >&2
     sleep "$POLL_INTERVAL_SECONDS"
   done
 }
 
 scoped_deployment_ids() {
   # $1 = service id. Newest-first scoped deployment ids (one per line).
-  railway api \
+  # Bounded read; empty output on failure so callers refuse (never select
+  # an ambiguous id). Callers distinguish refusal via the empty result.
+  run_primary railway api \
     'query ScopedDeployments($projectId: String!, $environmentId: String!, $serviceId: String!) { deployments(input: {projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId}, first: 50) { edges { node { id status } } } }' \
     --variables "{\"projectId\":\"$PROJECT\",\"environmentId\":\"$TARGET_ENV\",\"serviceId\":\"$1\"}" \
   | node -e '
@@ -434,6 +594,34 @@ process.stdin.on("end", () => {
     if (n && n.id) console.log(n.id);
   }
 });'
+}
+
+# Capture the single fresh id from a before/after scoped diff. $1 = service
+# id, $2 = file holding before-ids (one per line). Prints the id iff exactly
+# one new id appeared; otherwise prints nothing and returns 1 (ambiguous
+# concurrent change => caller refuses, never guesses).
+select_fresh_deployment_id() {
+  svc="$1"; before_file="$2"
+  after_file="$(mktemp)" || return 1
+  if ! scoped_deployment_ids "$svc" >"$after_file"; then
+    rm -f "$after_file"
+    return 1
+  fi
+  fresh=""
+  fresh_count=0
+  while read -r dep_id _rest; do
+    [ -n "$dep_id" ] || continue
+    if ! grep -Fxq "$dep_id" "$before_file" 2>/dev/null; then
+      fresh="$dep_id"
+      fresh_count=$((fresh_count + 1))
+    fi
+  done <"$after_file"
+  rm -f "$after_file"
+  if [ "$fresh_count" -eq 1 ]; then
+    printf '%s' "$fresh"
+    return 0
+  fi
+  return 1
 }
 
 validate_clean_checkout() {
@@ -501,68 +689,128 @@ case "$COMMAND" in
     ;;
   start)
     echo "railway-test-env: starting test env $TARGET_ENV (DB first)"
-    # Idempotent start: everything already running+healthy -> ok 0.
+    # Overall deadline: every wait loop and every bounded child shares it.
+    DEADLINE=$(( $(date +%s) + TIMEOUT_SECONDS ))
+    # Idempotent start: genuinely converged healthy snapshots only — strict
+    # integer counts, running>=configured>=1, crashed 0, latest SUCCESS
+    # non-stopped, plus pg_isready. running>0 alone never counts.
     if read_snapshot; then
-      all_up=1
-      for key in web db push; do
-        r="$(svc_running "$key")"; c="$(svc_crashed "$key")"
-        case "$r" in ''|*[!0-9]*) r=0 ;; esac
-        case "$c" in ''|*[!0-9]*) c=0 ;; esac
-        if [ "$r" -le 0 ] || [ "$c" -gt 0 ]; then all_up=0; fi
-      done
-      if [ "$all_up" -eq 1 ] && railway ssh -p "$PROJECT" -e "$TARGET_ENV" -s "$SVC_DB" -- pg_isready >/dev/null 2>&1; then
+      if wait_running_converged web "web-test" "" >/dev/null 2>&1 \
+        && wait_running_converged db "Postgres-ltHj" "" >/dev/null 2>&1 \
+        && wait_running_converged push "push-delivery" "" >/dev/null 2>&1 \
+        && run_primary railway ssh -p "$PROJECT" -e "$TARGET_ENV" -s "$SVC_DB" -- pg_isready >/dev/null 2>&1; then
         echo "railway-test-env: test environment already running+healthy (idempotent start)"
         autodeploy_disable || exit 1
         exit 0
       fi
     fi
-    # DB first (image source): redeploy, capture the new deployment id from
-    # the scoped list, wait running>0, then prove pg_isready.
-    if ! railway redeploy -s "$SVC_DB" -e "$TARGET_ENV" -p "$PROJECT" --yes; then
+    # DB first (image source): snapshot before-ids, redeploy, select the
+    # single fresh id (refuse ambiguous concurrent changes), wait for THAT
+    # deployment running+healthy, then prove pg_isready.
+    db_before="$(mktemp)" || exit 3
+    scoped_deployment_ids "$SVC_DB" >"$db_before" || { rm -f "$db_before"; echo "railway-test-env: DB scoped read failed before redeploy; refusing" >&2; exit 1; }
+    if ! run_primary railway redeploy -s "$SVC_DB" -e "$TARGET_ENV" -p "$PROJECT" --yes; then
+      rm -f "$db_before"
       echo "railway-test-env: DB redeploy request failed" >&2
       exit 1
     fi
-    if new_db_dep="$(scoped_deployment_ids "$SVC_DB" | head -n 1)"; then
-      [ -n "$new_db_dep" ] && echo "railway-test-env: Postgres-ltHj redeploy requested (newest scoped deployment $new_db_dep)"
+    if ! new_db_dep="$(select_fresh_deployment_id "$SVC_DB" "$db_before")"; then
+      rm -f "$db_before"
+      echo "railway-test-env: DB redeploy ambiguous (no single fresh deployment); refusing to guess" >&2
+      exit 1
     fi
-    wait_for_running db "Postgres-ltHj" || exit 1
+    rm -f "$db_before"
+    echo "railway-test-env: Postgres-ltHj redeploy requested (newest scoped deployment $new_db_dep)"
+    wait_for_running db "Postgres-ltHj" "$new_db_dep" || exit 1
     wait_for_db_ready || exit 1
     # Web via deploymentRedeploy (works with autodeploy off), else --from-source.
     web_latest="$(svc_latest web)"
     if [ -n "$web_latest" ]; then
+      web_before="$(mktemp)" || exit 3
+      scoped_deployment_ids "$SVC_WEB" >"$web_before" || { rm -f "$web_before"; echo "railway-test-env: web scoped read failed before redeploy; refusing" >&2; exit 1; }
       deployment_redeploy "$web_latest" || {
+        rm -f "$web_before"
         echo "railway-test-env: web deploymentRedeploy failed" >&2
         exit 1
       }
+      if ! new_web_dep="$(select_fresh_deployment_id "$SVC_WEB" "$web_before")"; then
+        rm -f "$web_before"
+        echo "railway-test-env: web deploymentRedeploy produced no single fresh deployment; refusing to guess" >&2
+        exit 1
+      fi
+      rm -f "$web_before"
+      echo "railway-test-env: web-test redeploy requested (newest scoped deployment $new_web_dep)"
     else
-      railway redeploy -s "$SVC_WEB" -e "$TARGET_ENV" -p "$PROJECT" --from-source --yes || {
+      web_before="$(mktemp)" || exit 3
+      scoped_deployment_ids "$SVC_WEB" >"$web_before" || { rm -f "$web_before"; echo "railway-test-env: web scoped read failed before redeploy; refusing" >&2; exit 1; }
+      run_primary railway redeploy -s "$SVC_WEB" -e "$TARGET_ENV" -p "$PROJECT" --from-source --yes || {
+        rm -f "$web_before"
         echo "railway-test-env: web redeploy --from-source failed" >&2
         exit 1
       }
+      if ! new_web_dep="$(select_fresh_deployment_id "$SVC_WEB" "$web_before")"; then
+        rm -f "$web_before"
+        echo "railway-test-env: web redeploy ambiguous (no single fresh deployment); refusing to guess" >&2
+        exit 1
+      fi
+      rm -f "$web_before"
+      echo "railway-test-env: web-test redeploy requested (newest scoped deployment $new_web_dep)"
     fi
-    wait_for_running web "web-test" || exit 1
+    wait_for_running web "web-test" "$new_web_dep" || exit 1
     # Push: redeployable historical deployment wins; `railway up` only from a
     # validated clean checkout. startCommand (npm run push:worker) preserved.
+    # Timeout recovery: uploads may keep running server-side after a client
+    # timeout, so park the service before retrying (never stack uploads).
     push_latest="$(svc_latest push)"
     if [ -n "$push_latest" ]; then
+      push_before="$(mktemp)" || exit 3
+      scoped_deployment_ids "$SVC_PUSH" >"$push_before" || { rm -f "$push_before"; echo "railway-test-env: push scoped read failed before redeploy; refusing" >&2; exit 1; }
       deployment_redeploy "$push_latest" || {
+        rm -f "$push_before"
         echo "railway-test-env: push deploymentRedeploy failed" >&2
         exit 1
       }
+      if ! new_push_dep="$(select_fresh_deployment_id "$SVC_PUSH" "$push_before")"; then
+        rm -f "$push_before"
+        echo "railway-test-env: push deploymentRedeploy produced no single fresh deployment; refusing to guess" >&2
+        exit 1
+      fi
+      rm -f "$push_before"
+      echo "railway-test-env: push-delivery redeploy requested (newest scoped deployment $new_push_dep)"
     else
       validate_clean_checkout || exit 1
-      railway up --service "$SVC_PUSH" --environment "$TARGET_ENV" --project "$PROJECT" --detach --yes || {
+      push_before="$(mktemp)" || exit 3
+      scoped_deployment_ids "$SVC_PUSH" >"$push_before" || { rm -f "$push_before"; echo "railway-test-env: push scoped read failed before upload; refusing" >&2; exit 1; }
+      if ! run_primary railway up --service "$SVC_PUSH" --environment "$TARGET_ENV" --project "$PROJECT" --detach --yes; then
+        up_rc=$?
+        rm -f "$push_before"
+        if [ "$up_rc" -eq 124 ]; then
+          echo "railway-test-env: push 'railway up' timed out; parking push-delivery before any retry (safe recovery)" >&2
+          stop_service push "push-delivery" >/dev/null 2>&1 || true
+        fi
         echo "railway-test-env: push 'railway up' fallback failed" >&2
         exit 1
-      }
+      fi
+      if ! new_push_dep="$(select_fresh_deployment_id "$SVC_PUSH" "$push_before" 2>/dev/null)"; then
+        rm -f "$push_before"
+        echo "railway-test-env: push upload ambiguous (no single fresh deployment); parking before any retry" >&2
+        stop_service push "push-delivery" >/dev/null 2>&1 || true
+        exit 1
+      fi
+      rm -f "$push_before"
+      echo "railway-test-env: push-delivery upload requested (newest scoped deployment $new_push_dep)"
     fi
-    wait_for_running push "push-delivery" || exit 1
+    wait_for_running push "push-delivery" "$new_push_dep" || exit 1
     autodeploy_disable || exit 1
     echo "railway-test-env: test environment started (deployments running + DB probe verified; autodeploy stays off)"
-    show_status || echo "railway-test-env: WARNING: started, but the final status readback failed" >&2
+    if ! show_status; then
+      echo "railway-test-env: started, but the final status readback failed (fail closed)" >&2
+      exit 1
+    fi
     ;;
   stop)
     echo "railway-test-env: stopping test env $TARGET_ENV (dependents first, DB last)"
+    DEADLINE=$(( $(date +%s) + TIMEOUT_SECONDS ))
     # Idempotent stop: everything already parked -> ok 0 (after autodeploy off).
     if read_snapshot; then
       if svc_parked web && svc_parked push && svc_parked db; then
@@ -601,7 +849,10 @@ case "$COMMAND" in
     autodeploy_disable || exit 1
     echo "railway-test-env: test environment stopped (dependents parked, DB parked; data, volumes, variables, and config are retained)"
     echo "railway-test-env: restart later with: sh scripts/railway-test-env.sh start"
-    show_status || echo "railway-test-env: WARNING: stopped, but the final status readback failed" >&2
+    if ! show_status; then
+      echo "railway-test-env: stopped, but the final status readback failed (fail closed)" >&2
+      exit 1
+    fi
     ;;
 esac
 cleanup_snap
