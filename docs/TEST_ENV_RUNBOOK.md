@@ -279,3 +279,11 @@ the stop set. Start success requires the initiated generations to remain
 healthy together in one final snapshot. Idempotent start requires a live
 SUCCESS latest generation, no pending work, full running replica convergence,
 and a successful DB probe.
+
+Final root witness: candidate `2d333e0`, 2026-10-09 03:53–03:59UTC;
+start/status/stop/status all returned0. Initiated DB `c84edabf`, web
+`c7d73abb`, push `ec408c8c` converged before stop. Final all running0,
+parked, no pending, autodeployfalse. Production snapshots unchanged and
+`https://shortpickexception.nl/api/health` returned status/databaseok.
+Gates: script156/156, full unit/integration315/315, lint/types/build/backup
+and migration validation pass.
