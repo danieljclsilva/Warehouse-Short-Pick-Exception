@@ -492,15 +492,15 @@ if (expected) {
     // still PENDING (BUILDING/WAITING/...) is normal mid-build platform
     // state: the platform unstops it when the build lands (witnessed live
     // 2026-10-09: fresh 7abc0c5e BUILDING+stopped after deploymentRedeploy).
-    // Wait for the land; a stopped SUCCESS or terminal id refuses.
+    // It waits below — AFTER the live-terminal sweep, so a visible
+    // crash-loop elsewhere still refuses fast instead of hiding behind
+    // the build wait. A stopped SUCCESS or terminal id refuses here.
     const stoppedEntry = active.find((d) => d && String(d.id) === String(expected));
     const stoppedStatus = String((stoppedEntry && stoppedEntry.status) || "").toUpperCase();
-    if (PENDING.includes(stoppedStatus)) {
-      console.error(`railway-test-env: ${label} expected deployment ${expected} still ${stoppedStatus} (stopped while building); waiting...`);
-      process.exit(1);
+    if (!PENDING.includes(stoppedStatus)) {
+      console.error(`railway-test-env: ${label} expected deployment ${expected} is stopped (${stoppedStatus || "unknown status"}); refusing`);
+      process.exit(3);
     }
-    console.error(`railway-test-env: ${label} expected deployment ${expected} is stopped (${stoppedStatus || "unknown status"}); refusing`);
-    process.exit(3);
   }
 } // end if (expected): presence asserted; liveness judged below
 // Terminal failure anywhere live (non-stopped) refuses BEFORE any
@@ -518,6 +518,18 @@ for (const d of live) {
   }
   console.error(`railway-test-env: ${label} deployment ${d.id} terminal ${st} with nothing converging; refusing`);
   process.exit(3);
+}
+// Stopped-while-building fresh ids wait here (after the terminal sweep):
+// the build may still land and unstop the deployment.
+if (expected) {
+  const liveDep = byIdLive.get(String(expected));
+  if (!liveDep) {
+    const stoppedEntry = active.find((d) => d && String(d.id) === String(expected));
+    const stoppedStatus = String((stoppedEntry && stoppedEntry.status) || "").toUpperCase();
+    if (s.crashed > 0) console.error(`railway-test-env: ${label} reports ${s.crashed} crashed replica(s) but expected ${expected} still ${stoppedStatus} (stopped while building); waiting for convergence...`);
+    else console.error(`railway-test-env: ${label} expected deployment ${expected} still ${stoppedStatus} (stopped while building); waiting...`);
+    process.exit(1);
+  }
 }
 if (expected) {
   const liveDep = byIdLive.get(String(expected));
