@@ -271,15 +271,15 @@ n += 1;
 fs.writeFileSync(dir + "/redeploy-mutation-count", String(n));
 const fresh = "rm-" + owner.slice(0, 8) + "-" + n;
 const freshPending = fs.existsSync(dir + "/defer-fresh-" + owner);
-const node = { id: fresh, status: freshPending ? "BUILDING" : "SUCCESS", deploymentStopped: false, serviceId: owner, environmentId: process.env.STUB_TEST_ENV };
+const node = { id: fresh, status: freshPending ? "BUILDING" : "SUCCESS", deploymentStopped: freshPending, serviceId: owner, environmentId: process.env.STUB_TEST_ENV };
 deps[owner] = deps[owner] || [];
 deps[owner].unshift(node);
 const p = inst[owner];
 if (p) {
   const st = freshPending ? "BUILDING" : "SUCCESS";
-  p.latestDeployment = { id: fresh, status: st, deploymentStopped: false, canRedeploy: true };
+  p.latestDeployment = { id: fresh, status: st, deploymentStopped: freshPending, canRedeploy: true };
   p.activeDeployments = p.activeDeployments || [];
-  p.activeDeployments.push({ id: fresh, status: st, deploymentStopped: false });
+  p.activeDeployments.push({ id: fresh, status: st, deploymentStopped: freshPending });
 }
 // Arm-on-redeploy: a defer-next-<svc> template becomes the live countdown
 // when this redeploy runs, so pre-redeploy reads never consume it.
@@ -500,12 +500,12 @@ if (!frozen && freshIsPending) {
   n += 1;
   fs.writeFileSync(dir + "/redeploy-count", String(n));
   const id = "rd-" + svc.slice(0, 8) + "-" + n;
-  const node = { id, status: "BUILDING", deploymentStopped: false, serviceId: svc, environmentId: process.env.STUB_TEST_ENV };
+  const node = { id, status: "BUILDING", deploymentStopped: true, serviceId: svc, environmentId: process.env.STUB_TEST_ENV };
   deps[svc] = deps[svc] || [];
   deps[svc].unshift(node);
   if (inst[svc]) {
     inst[svc].activeDeployments = inst[svc].activeDeployments || [];
-    inst[svc].activeDeployments.push({ id, status: "BUILDING", deploymentStopped: false });
+    inst[svc].activeDeployments.push({ id, status: "BUILDING", deploymentStopped: true });
   }
   fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
   fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));

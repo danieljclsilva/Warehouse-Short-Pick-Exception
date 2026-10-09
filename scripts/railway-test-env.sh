@@ -488,14 +488,20 @@ if (expected) {
   const anyDep = active.find((d) => d && String(d.id) === String(expected));
   if (!anyDep) { console.error(`railway-test-env: ${label} expected deployment ${expected} absent from scoped snapshot; retrying`); process.exit(1); }
   if (!liveDep) {
-    // Expected id present but stopped: the fresh generation was stopped
-    // out from under the wait (concurrent stop or platform action).
-    // Refuse — converging on some OTHER live SUCCESS id would bless a
-    // generation this start did not initiate.
-    console.error(`railway-test-env: ${label} expected deployment ${expected} is stopped; refusing`);
+    // Expected id present but stopped. A fresh id that is stopped while
+    // still PENDING (BUILDING/WAITING/...) is normal mid-build platform
+    // state: the platform unstops it when the build lands (witnessed live
+    // 2026-10-09: fresh 7abc0c5e BUILDING+stopped after deploymentRedeploy).
+    // Wait for the land; a stopped SUCCESS or terminal id refuses.
+    const stoppedEntry = active.find((d) => d && String(d.id) === String(expected));
+    const stoppedStatus = String((stoppedEntry && stoppedEntry.status) || "").toUpperCase();
+    if (PENDING.includes(stoppedStatus)) {
+      console.error(`railway-test-env: ${label} expected deployment ${expected} still ${stoppedStatus} (stopped while building); waiting...`);
+      process.exit(1);
+    }
+    console.error(`railway-test-env: ${label} expected deployment ${expected} is stopped (${stoppedStatus || "unknown status"}); refusing`);
     process.exit(3);
   }
-}
 // Terminal failure anywhere live (non-stopped) refuses BEFORE any
 // pending-wait: a live CRASHED/FAILED row is current platform state, not
 // previous-generation residue (redeploys mint fresh ids; old ids stay
