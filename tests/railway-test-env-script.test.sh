@@ -198,6 +198,7 @@ if [ "$1" = "api" ]; then
   done
   case "$QUERY" in
     *serviceInstanceAutoDeployStatus*)
+      if [ -f "$STUB_STATE_DIR/hang-autodeploy" ]; then sleep 60; fi
       node -e '
 const fs = require("fs");
 const dir = process.env.STUB_STATE_DIR;
@@ -218,6 +219,19 @@ const fs = require("fs");
 const dir = process.env.STUB_STATE_DIR;
 const st = JSON.parse(fs.readFileSync(dir + "/autodeploy.json", "utf8"));
 st.enabled = false;
+if (fs.existsSync(dir + "/drop-db-on-disable")) {
+  const svc = process.env.STUB_SVC_DB;
+  const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
+  for (const d of inst[svc].activeDeployments) d.deploymentStopped = true;
+  inst[svc].latestDeployment.deploymentStopped = true;
+  fs.writeFileSync(dir + "/instances.json",JSON.stringify(inst));
+  const deps=JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
+  for(const d of deps[svc]) d.deploymentStopped=true;
+  fs.writeFileSync(dir + "/deployments.json",JSON.stringify(deps));
+  const list=JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
+  list.find(s=>s.id===svc).replicas.running=0;
+  fs.writeFileSync(dir + "/servicelist.json",JSON.stringify(list));
+}
 fs.writeFileSync(dir + "/autodeploy.json", JSON.stringify(st));'
       fi
       node -e '
@@ -354,7 +368,7 @@ fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));' "$DEP_ID"
 const fs = require("fs");
 const dir = process.env.STUB_STATE_DIR;
 const id = process.argv[1];
-const early = ["QUEUED", "INITIALIZING", "WAITING"];
+const early = ["QUEUED", "INITIALIZING", "WAITING", "BUILDING", "DEPLOYING", "NEEDS_APPROVAL"];
 const deps = JSON.parse(fs.readFileSync(dir + "/deployments.json", "utf8"));
 const inst = JSON.parse(fs.readFileSync(dir + "/instances.json", "utf8"));
 const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
@@ -372,6 +386,7 @@ if (!early.includes(status)) {
 deps[owner] = (deps[owner] || []).filter((n) => !n || n.id !== id);
 const p = inst[owner];
 if (p && p.activeDeployments) p.activeDeployments = p.activeDeployments.filter((d) => d.id !== id);
+if (p && p.latestDeployment && p.latestDeployment.id === id) p.latestDeployment = null;
 const live = (deps[owner] || []).some((n) => n && n.deploymentStopped !== true);
 const e = list.find((s) => s.id === owner);
 if (e) {
@@ -441,7 +456,8 @@ if (vars.serviceId === webId && fs.existsSync(dir + "/race-swap-web")) {
   try { count = Number(fs.readFileSync(countFile, "utf8")) || 0; } catch {}
   count += 1;
   fs.writeFileSync(countFile, String(count));
-  if (count === 3 && !fs.existsSync(dir + "/race-injected")) {
+  const raceAt = fs.existsSync(dir + "/race-at") ? Number(fs.readFileSync(dir + "/race-at", "utf8")) : 3;
+  if (count === raceAt && !fs.existsSync(dir + "/race-injected")) {
     fs.writeFileSync(dir + "/race-injected", "raced");
     const raceId = process.env.STUB_RACE_ID;
     const node = { id: raceId, status: "BUILDING", deploymentStopped: false, serviceId: webId, environmentId: vars.environmentId };
@@ -462,7 +478,7 @@ const missing = fs.readdirSync(dir)
   .filter((f) => f.startsWith("missing-service:"))
   .map((f) => f.slice("missing-service:".length));
 const arr = (!vars.serviceId || missing.includes(vars.serviceId)) ? [] : (deps[vars.serviceId] || []);
-process.stdout.write(JSON.stringify({ data: { deployments: { edges: arr.map((n) => ({ node: n })) } } }));' "$VARS" "$SVC_WEB_ID"
+process.stdout.write(JSON.stringify({ data: { deployments: { edges: arr.map((n) => ({ node: n })), pageInfo: {hasNextPage:false,endCursor:null} } } }));' "$VARS" "$SVC_WEB_ID"
       exit $? ;;
     *) echo "stub: unexpected api query: $QUERY" >&2; exit 99 ;;
   esac
@@ -595,6 +611,7 @@ try {
 }' "$SVC"
   rc=$?
   if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+  if [ -f "$STUB_STATE_DIR/hang-up" ]; then sleep 60; fi
   echo "Deploy started for $SVC"
   exit 0
 fi
@@ -668,7 +685,7 @@ JSON
 {"$SVC_WEB":[{"id":"$DEP_WEB","status":"CRASHED","deploymentStopped":true,"serviceId":"$SVC_WEB","environmentId":"$TEST_ENV"}],"$SVC_DB":[{"id":"$DEP_DB","status":"SUCCESS","deploymentStopped":true,"serviceId":"$SVC_DB","environmentId":"$TEST_ENV"}],"$SVC_PUSH":[]}
 JSON
   cat >"$STUB_STATE_DIR/servicelist.json" <<JSON
-[{"id":"$SVC_WEB","replicas":{"configured":1,"running":0,"crashed":0}},{"id":"$SVC_DB","replicas":{"configured":1,"running":0,"crashed":0}},{"id":"$SVC_PUSH"}]
+[{"id":"$SVC_WEB","replicas":{"configured":1,"running":0,"crashed":0}},{"id":"$SVC_DB","replicas":{"configured":1,"running":0,"crashed":0}},{"id":"$SVC_PUSH","source":null,"replicas":null}]
 JSON
   printf '{"enabled":true,"canEnable":true}' >"$STUB_STATE_DIR/autodeploy.json"
 }
@@ -799,6 +816,7 @@ check() {
   else
     FAIL=$((FAIL + 1))
     echo "FAIL: $1"
+    cat "$CASE_DIR/err.txt" >&2
   fi
 }
 
@@ -924,7 +942,7 @@ check "stop-multi: autodeploy disabled+verified BEFORE any StopDeployment" "log_
 check "stop-multi: autodeploy update uses nested input scope" "grep -q 'AutoDeployUpdate' '$STUB_STATE_DIR/calls.log' && grep -q '\"input\"' '$STUB_STATE_DIR/calls.log' && grep -q '\"enabled\":false' '$STUB_STATE_DIR/calls.log'"
 check "stop-multi: both web deployments stopped (terminal + pending)" "stop_logged '$DEP_WEB' && stop_logged 'b111d000-1111-4222-8333-444444444444'"
 check "stop-multi: web stops before push stops before DB stops" "mut_order '$DEP_WEB' 'd9ac7000-1111-4222-8333-444444444444' && mut_order 'd9ac7000-1111-4222-8333-444444444444' '$DEP_DB'"
-check "stop-multi: BUILDING pending stopped, never removed" "stop_logged 'b111d000-1111-4222-8333-444444444444' && ! remove_logged 'b111d000-1111-4222-8333-444444444444'"
+check "stop-multi: stopped BUILDING cancelled before DB" "remove_logged 'b111d000-1111-4222-8333-444444444444' && mut_order 'b111d000-1111-4222-8333-444444444444' '$DEP_DB'"
 check "stop-multi: reports stopped with data retained" "grep -q 'test environment stopped' '$CASE_DIR/out.txt'"
 check "stop-multi: no scale calls" "no_scale_calls"
 end_case
@@ -1370,6 +1388,78 @@ set -e
 check "args: missing command exits 2" "[ $RC -eq 2 ]"
 end_case
 
+# A web deployment appears after separate park checks, just before the DB
+# mutation. Fresh combined dependent gate must leave DB untouched.
+new_case
+fixtures_parked
+unpark_svc "$SVC_WEB"
+set_live_status "$SVC_WEB" SUCCESS
+set_push_history
+unpark_svc "$SVC_PUSH"
+unpark_svc "$SVC_DB"
+touch "$STUB_STATE_DIR/race-swap-web"
+printf 9 >"$STUB_STATE_DIR/race-at"
+run_script stop --timeout 30
+check "late-race: injection occurred" "[ -f '$STUB_STATE_DIR/race-injected' ]"
+check "late-race: exit fails closed" "[ $RC -ne 0 ]"
+check "late-race: DB never mutated" "! mut_logged '$DEP_DB'"
+end_case
+
+# Already running counts cannot bypass a BUILDING latest generation.
+new_case
+fixtures_parked
+set_push_history
+unpark_svc "$SVC_WEB"
+unpark_svc "$SVC_DB"
+unpark_svc "$SVC_PUSH"
+set_live_status "$SVC_WEB" BUILDING
+touch "$STUB_STATE_DIR/defer-fresh-$SVC_DB"
+run_script start --timeout 4
+check "idempotent-building: never claims already healthy" "! grep -q 'already running+healthy' '$CASE_DIR/out.txt'"
+check "idempotent-building: exits nonzero" "[ $RC -ne 0 ]"
+end_case
+
+# TERM interrupts a captured autodeploy read, not only direct reads.
+new_case
+fixtures_parked
+touch "$STUB_STATE_DIR/hang-autodeploy"
+set +e
+RAILWAY_TEST_ENV_POLL_INTERVAL=1 sh "$SCRIPT" stop --timeout 60 >"$CASE_DIR/out.txt" 2>"$CASE_DIR/err.txt" &
+TPID=$!
+i=0
+while [ "$i" -lt 20 ] && ! grep -q 'serviceInstanceAutoDeployStatus' "$STUB_STATE_DIR/calls.log"; do sleep 1; i=$((i+1)); done
+T0=$(date +%s)
+kill -TERM "$TPID" 2>/dev/null || true
+wait "$TPID"
+TRC=$?
+T1=$(date +%s)
+set -e
+check "sigterm-capture: exits143 promptly" "[ $TRC -eq 143 ] && [ $((T1 - T0)) -lt 8 ]"
+check "sigterm-capture: no deployment mutation" "! grep -Eq 'StopDeployment|RemoveDeployment' '$STUB_STATE_DIR/calls.log'"
+end_case
+
+# Client upload timeout preserves124 and uses a separate bounded park budget.
+new_case
+fixtures_parked
+touch "$STUB_STATE_DIR/hang-up"
+run_script start --timeout 30
+check "up-timeout: real timeout recovery reached" "grep -q 'up.*timed out' '$CASE_DIR/err.txt'"
+check "up-timeout: exits nonzero, never started" "[ $RC -ne 0 ] && ! grep -q 'test environment started' '$CASE_DIR/out.txt'"
+check "up-timeout: uploaded push stopped in recovery" "stop_logged 'up-d528d77e-1'"
+end_case
+
+# A stopped BUILDING can land and wake: cancel it before touching DB.
+new_case
+fixtures_parked
+set_live_status "$SVC_WEB" BUILDING
+unpark_svc "$SVC_DB"
+run_script stop --timeout 30
+check "stopped-build: stop never mistakes build for parked" "stop_logged '$DEP_WEB'"
+check "stopped-build: pending build explicitly cancelled" "remove_logged '$DEP_WEB'"
+check "stopped-build: DB only after cancellation" "mut_order '$DEP_WEB' '$DEP_DB'"
+check "stopped-build: completes only after cancellation" "[ $RC -eq 0 ]"
+end_case
+
 # --- SIGTERM during a stop wait exits 143 promptly, loop does not continue --------------------
 new_case
 fixtures_parked
@@ -1395,6 +1485,29 @@ check "sigterm: exits 143 on TERM" "[ $TRC -eq 143 ]"
 check "sigterm: exits promptly after TERM (<8s)" "[ $((T1 - T0)) -lt 8 ]"
 check "sigterm: loop does not continue (log stable)" "[ '$BEFORE' = '$AFTER' ]"
 check "sigterm: a stop was actually in flight" "grep -q 'StopDeployment' '$STUB_STATE_DIR/calls.log'"
+end_case
+
+# Final readback must refuse a DB that lost readiness during dependent start.
+
+new_case
+fixtures_parked
+set_push_history
+set_live_status "$SVC_WEB" SUCCESS
+unpark_svc "$SVC_WEB"
+unpark_svc "$SVC_DB"
+unpark_svc "$SVC_PUSH"
+touch "$STUB_STATE_DIR/drop-db-on-disable"
+run_script start --timeout 30
+check "final-readiness: idempotent DB loss exitsnonzero" "[ $RC -ne 0 ]"
+check "final-readiness: never claimshealthy" "! grep -q 'already running+healthy' '$CASE_DIR/out.txt'"
+end_case
+new_case
+fixtures_parked
+set_push_history
+touch "$STUB_STATE_DIR/drop-db-on-disable"
+run_script start --timeout 30
+check "final-readiness: normalstart DB loss exitsnonzero" "[ $RC -ne 0 ]"
+check "final-readiness: never claimsstarted" "! grep -q 'test environment started' '$CASE_DIR/out.txt'"
 end_case
 
 echo "---"

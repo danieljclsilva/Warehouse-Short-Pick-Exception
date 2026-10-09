@@ -35,3 +35,9 @@ The durable mailbox avoids starting another Codex CLI agent. It is asynchronous,
 - After final acceptance or an unrecoverable stopped run, remove the run's scheduled heartbeat. Preserve branch and handoff. Do not archive the user's chat.
 
 The Codex app must remain running and the workstation available for local scheduled checks. Runtime transcripts and status live outside the repository; no secret or production data belongs in a mailbox or handoff.
+
+## Final review repair ownership (2026-10-09)
+
+- Prior OMP native-lifecycle and repair handoffs were independently reviewed; unsupported completion claims were not accepted. Root took integration and live/release ownership after unattended coordinator inbox findings remained unprocessed.
+- Shell worker: dispatcher, bounded runner, shell fixtures, actual child/descendant tests. State worker: strict snapshot helper, guard, state/guard tests and pagination. Independent explorer: read-only review against the reported findings. All workers preserved shared edits; only root may perform the final live cycle and release.
+- Durable final evidence: `/Users/komorinokage/.codex/omp-runs/shortpick-cost-reduction-20261008/native-lifecycle-final-repair-20261009-0538`. Release authorized by the user after checks pass; no additional approval required.

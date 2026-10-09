@@ -123,15 +123,25 @@ Start (DB-first, identity-aware):
 Timeouts/signals: every Railway/SSH child runs under
 `scripts/railway-run-bounded.mjs` (portable node timeout, no new deps)
 within the overall `--timeout` deadline (positive integer; 0 rejected).
-Signals kill the foreground child group (130/143) with no further
-mutations. Replica counts NEVER default: missing/unconfirmed counts
-refuse the snapshot (the witnessed source-less push shape — latest null
-+ empty scoped lists — reads back parked).
+Signals kill the foreground child group, including descendants (130/143),
+and stop issuing mutations. An exhausted operation budget refuses new work.
+A timed-out upload may already have reached Railway; cleanup gets a separate
+30-second budget and still reports the original failure. If cleanup is
+unconfirmed, inspect status and run stop before retrying. Replica counts
+NEVER default: missing/unconfirmed counts refuse the snapshot. The sole
+empty-replica allowance requires the exact source-less push service with
+explicit source/replicas/latest null and validated empty scoped history.
+History reads follow validated cursors with a bounded page limit; missing
+or inconsistent page information fails closed.
 
 Ordering: start brings Postgres-ltHj up first (dependents consume
 `DATABASE_URL`-style reference variables); stop drains dependents first
-and never touches the DB while a dependent drain is unconfirmed. A
-timeout or unconfirmed drain exits nonzero and LEAVES THE DATABASE UP.
+and never touches the DB while a dependent drain is unconfirmed. Both
+dependents must be parked in the same fresh snapshot before each DB stop
+or cancellation request. Final success rechecks all three services together.
+A timeout or unconfirmed dependent drain exits nonzero and leaves the DB
+untouched. Pending builds block parking even when Railway marks them stopped:
+the platform can unstop them when they land.
 
 ## Parked definition (normative)
 
@@ -236,7 +246,8 @@ Native per-service snapshot shape (informative; worker A/B schema):
   explicit redeploy/restart; replica counts are configuration, not stop
   state, and MUST NOT be used as a parking signal.
 - Web-test autodeploy is currently DISABLED (`enabled=false`) while the
-  test env is parked. Re-enable only on an explicit `start` decision.
+  test env is parked. The start command keeps it disabled; re-enable only
+  through a separate explicit operator decision.
 - Do NOT use `railway service source disconnect` to suppress autodeploys:
   disconnecting removes the repo binding (reconnect requires the GitHub
   App flow) and its semantics were not verified — prefer the autodeploy
@@ -253,3 +264,18 @@ Native per-service snapshot shape (informative; worker A/B schema):
 - `tests/` — guard unit tests + state-helper unit tests (run in routine
   `npm test`) + stub-CLI script tests (`npm run test:railway-script`,
   also in CI).
+
+### Final independent-review safeguards (2026-10-09)
+
+A stopped pending build still blocks parking: Railway can unstop it when it
+lands. After a native stop attempt and fresh readback, cancellation is
+restricted to stubborn early QUEUED/INITIALIZING/WAITING deployments or
+explicitly stopped pending BUILDING/DEPLOYING/NEEDS_APPROVAL deployments.
+Finished terminal deployments are not removed. An unconfirmed cancellation
+refuses success and leaves the dependent-drain database gate closed.
+
+Readbacks include validated paginated history and the latest deployment in
+the stop set. Start success requires the initiated generations to remain
+healthy together in one final snapshot. Idempotent start requires a live
+SUCCESS latest generation, no pending work, full running replica convergence,
+and a successful DB probe.

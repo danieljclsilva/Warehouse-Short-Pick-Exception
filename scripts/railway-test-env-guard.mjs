@@ -77,13 +77,15 @@ export function isParked(snapshot) {
   const active = Array.isArray(snapshot.active) ? snapshot.active : null;
   const pending = Array.isArray(snapshot.pending) ? snapshot.pending : null;
   if (active === null || pending === null) return false;
-  if (active.some((d) => d && d.deploymentStopped !== true)) return false;
+  if (active.some((d) => d && (d.deploymentStopped !== true || classifyDeployment(d.status) === "pending"))) return false;
   if (pending.length > 0) return false;
   return true;
 }
 
 // Compute the stop set for one service snapshot: every active non-stopped
-// deployment whose status classifies as pending or stoppable. Returns
+// deployment whose status classifies as pending or stoppable. Pending
+// deployments remain in the stop set even when marked stopped, because a
+// build landing can clear the flag and restart the service. Returns
 // { stop: [ids], unknown: [statuses] }. Removal candidates are a subset of
 // stop (REMOVABLE_STATUSES) and are only removed after a stop round leaves
 // them still active — the caller enforces that ordering, not this helper.
@@ -93,7 +95,7 @@ export function computeStopSet(snapshot) {
   const active = (snapshot && Array.isArray(snapshot.active)
     ? snapshot.active
     : []
-  ).filter((d) => d && d.deploymentStopped !== true && d.id);
+  ).filter((d) => d && d.id && (d.deploymentStopped !== true || classifyDeployment(d.status) === "pending"));
   for (const dep of active) {
     const kind = classifyDeployment(dep.status);
     if (kind === "pending" || kind === "stoppable") stop.push(dep.id);

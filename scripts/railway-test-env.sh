@@ -32,8 +32,9 @@
 # enabled:false, verified false before proceeding), then drain web+push via
 # deploymentStop over the FULL scoped snapshot (serviceInstance
 # activeDeployments + deployments list, not just latest), verify parked, and
-# only then stop the DB and verify parked. deploymentRemove is used ONLY for
-# QUEUED/INITIALIZING/WAITING singles that resist stopping. Unknown statuses
+# only then stop the DB and verify parked. deploymentRemove cancels early
+# QUEUED/INITIALIZING/WAITING singles or explicitly stopped pending
+# BUILDING/DEPLOYING/NEEDS_APPROVAL generations that can still land and wake. Unknown statuses
 # are refused. Any dependent ambiguity/failure keeps the DB up, exit nonzero.
 #
 # Start: DB first via `railway redeploy -p -e -s(db)` (image source), the
@@ -153,8 +154,8 @@ trap 'interrupt_trap 143' TERM
 # Bounded foreground runner: every long-lived child (snapshot reads, Railway
 # mutations, ssh probes, redeploy/up) goes through railway-run-bounded so a
 # hung subprocess cannot outlive the overall --timeout. Per-call bound is
-# the caller's remaining budget (never larger than TIMEOUT_SECONDS, never
-# smaller than 1s); runner exit 124 means timeout. Signals kill the child
+# the caller's remaining budget (never larger than TIMEOUT_SECONDS);
+# exhausted budgets refuse to spawn; runner exit 124 means timeout. Signals kill the child
 # group via CURRENT_PRIMARY_PID (see traps above).
 run_primary() {
   budget="$TIMEOUT_SECONDS"
@@ -163,7 +164,10 @@ run_primary() {
     now=$(date +%s)
     budget=$((DEADLINE - now))
   fi
-  if [ "$budget" -lt 1 ] 2>/dev/null; then budget=1; fi
+  if [ "$budget" -lt 1 ] 2>/dev/null; then
+    echo "railway-test-env: operation deadline exhausted; refusing to spawn $1" >&2
+    return 124
+  fi
   if [ "$budget" -gt "$TIMEOUT_SECONDS" ] 2>/dev/null; then budget="$TIMEOUT_SECONDS"; fi
   node "$RUN_BOUNDED" "$budget" "$@" &
   CURRENT_PRIMARY_PID=$!
@@ -171,6 +175,65 @@ run_primary() {
   rc=$?
   CURRENT_PRIMARY_PID=""
   return "$rc"
+}
+
+# Capture long-running output without a command substitution: keeping the
+# runner in the parent shell makes its PID available to INT/TERM traps.
+capture_primary() {
+  capture_file="$(mktemp)" || return 3
+  if run_primary "$@" >"$capture_file"; then
+    CAPTURED_OUTPUT="$(cat "$capture_file")"
+    rm -f "$capture_file"
+    return 0
+  else
+    capture_rc=$?
+    rm -f "$capture_file"
+    return "$capture_rc"
+  fi
+}
+
+# Polls consume the same operation budget; no wait phase extends it.
+poll_pause() {
+  remaining=$((DEADLINE - $(date +%s)))
+  if [ "$remaining" -le 0 ]; then return 124; fi
+  pause="$POLL_INTERVAL_SECONDS"
+  if [ "$pause" -gt "$remaining" ]; then pause="$remaining"; fi
+  sleep "$pause"
+}
+
+# A DB mutation requires BOTH dependents parked in one fresh snapshot.
+assert_dependents_parked() {
+  if ! read_snapshot; then
+    echo "railway-test-env: dependent snapshot unreadable; leaving DB untouched" >&2
+    return 1
+  fi
+  if ! svc_parked web || ! svc_parked push; then
+    echo "railway-test-env: dependent reappeared; leaving DB untouched" >&2
+    return 1
+  fi
+}
+
+assert_all_parked() {
+  read_snapshot || return 1
+  svc_parked web && svc_parked push && svc_parked db || {
+    echo "railway-test-env: final combined snapshot is not fully parked" >&2
+    return 1
+  }
+}
+
+# An upload may continue server-side after its client times out. Recovery
+# has its own explicit, bounded 30s budget and never converts failure to success.
+recover_push_upload() {
+  operation_deadline="$DEADLINE"
+  DEADLINE=$(( $(date +%s) + 30 ))
+  if stop_service push "push-delivery" && wait_for_parked push "push-delivery"; then
+    recovery_rc=0
+  else
+    recovery_rc=$?
+    echo "railway-test-env: upload cleanup uncertain; check status before retrying" >&2
+  fi
+  DEADLINE="$operation_deadline"
+  return "$recovery_rc"
 }
 
 # Full scoped snapshot via the state helper (`railway api` reads only).
@@ -259,8 +322,9 @@ const s = root[process.argv[1]];
 if (!s || !Array.isArray(s.active)) process.exit(3);
 let unknown = 0;
 for (const d of s.active) {
-  if (!d || !d.id || d.deploymentStopped === true) continue;
+  if (!d || !d.id) continue;
   const st = String(d.status || "").toUpperCase();
+  if (d.deploymentStopped === true && !pending.includes(st)) continue;
   if (pending.includes(st)) console.log(d.id + " pending");
   else if (stoppable.includes(st)) console.log(d.id + " stoppable");
   else { console.log("UNKNOWN " + d.status); unknown = 1; }
@@ -285,7 +349,9 @@ autodeploy_disable() {
     echo "railway-test-env: autodeploy disable request failed; refusing to continue" >&2
     return 1
   fi
-  if ! autodeploy_json="$(run_primary node "$STATE_HELPER" --env "$TARGET_ENV" --autodeploy "$SVC_WEB")"; then
+  if capture_primary node "$STATE_HELPER" --env "$TARGET_ENV" --autodeploy "$SVC_WEB"; then
+    autodeploy_json="$CAPTURED_OUTPUT"
+  else
     autodeploy_rc=$?
     if [ "$autodeploy_rc" -eq 124 ]; then
       echo "railway-test-env: autodeploy status read timed out; refusing to continue" >&2
@@ -327,7 +393,7 @@ deployment_redeploy() {
 # --- stop one service via native deployment semantics -------------------------
 # $1 = key, $2 = label. Bounded rounds: reread after every action; a changed
 # set recomputes. Unknown statuses refuse immediately. Removal only for
-# QUEUED/INITIALIZING/WAITING ids that survive a stop round.
+# early pending or explicitly stopped pending ids that survive a stop round.
 stop_service() {
   round=0
   removed_round=0
@@ -336,7 +402,7 @@ stop_service() {
     if read_snapshot; then snap_rc=0; else snap_rc=$?; fi
     if [ "$snap_rc" -ne 0 ]; then
       if [ "$snap_rc" -eq 3 ]; then return 3; fi
-      sleep "$POLL_INTERVAL_SECONDS"; continue
+      poll_pause; continue
     fi
     if svc_parked "$1"; then
       echo "railway-test-env: $2 parked (running=0, no active non-stopped, no pending)"
@@ -355,7 +421,7 @@ stop_service() {
     fi
     if [ ! -s "$plan_file" ]; then
       rm -f "$plan_file"
-      sleep "$POLL_INTERVAL_SECONDS"
+      poll_pause
       continue
     fi
     while read -r dep_id dep_class; do
@@ -365,6 +431,9 @@ stop_service() {
         echo "railway-test-env: $2 has unknown deployment status ($dep_class); REFUSING" >&2
         return 3
       fi
+      if [ "$1" = "db" ]; then
+        assert_dependents_parked || { rm -f "$plan_file"; return 1; }
+      fi
       echo "railway-test-env: stopping $2 deployment $dep_id ($dep_class)"
       if ! deployment_stop "$dep_id"; then
         echo "railway-test-env: deploymentStop failed for $dep_id; aborting (fail closed)" >&2
@@ -373,8 +442,9 @@ stop_service() {
       fi
     done <"$plan_file"
     rm -f "$plan_file"
-    sleep "$POLL_INTERVAL_SECONDS"
-    # Removal pass: only early-stage singles still active after stopping.
+    poll_pause
+    # Cancellation pass: early pending or stopped-pending builds may still
+    # land and wake, so a stopped flag alone never certifies parked.
     if read_snapshot; then snap_rc=0; else snap_rc=$?; fi
     if [ "$snap_rc" -ne 0 ]; then
       if [ "$snap_rc" -eq 3 ]; then return 3; fi
@@ -388,21 +458,23 @@ stop_service() {
       stubborn="$(node -e '
 const fs = require("fs");
 const early = ["QUEUED","INITIALIZING","WAITING"];
+const pending = [...early,"BUILDING","DEPLOYING","NEEDS_APPROVAL"];
 const root = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const s = root[process.argv[1]];
 for (const d of (s && s.active) || []) {
-  if (d && d.id && d.deploymentStopped !== true && early.includes(String(d.status).toUpperCase())) console.log(d.id);
+  if (d && d.id && (early.includes(String(d.status).toUpperCase()) || (d.deploymentStopped === true && pending.includes(String(d.status).toUpperCase())))) console.log(d.id);
 }' "$1" "$SNAP_FILE")" || stubborn=""
       if [ -n "$stubborn" ]; then
         removed_round=$((removed_round + 1))
         for dep_id in $stubborn; do
-          echo "railway-test-env: removing stubborn early deployment $dep_id ($2)"
+          if [ "$1" = "db" ]; then assert_dependents_parked || return 1; fi
+          echo "railway-test-env: cancelling stubborn pending deployment $dep_id ($2)"
           if ! deployment_remove "$dep_id"; then
             echo "railway-test-env: deploymentRemove failed for $dep_id; aborting" >&2
             return 1
           fi
         done
-        sleep "$POLL_INTERVAL_SECONDS"
+        poll_pause
       fi
     fi
   done
@@ -424,7 +496,7 @@ for (const d of (s && s.active) || []) {
 # pending/failed).
 wait_for_running() {
   key="$1"; label="$2"; expected="${3:-}"
-  deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
+  deadline="$DEADLINE"
   while :; do
     if read_snapshot; then
       if wait_running_converged "$key" "$label" "$expected"; then
@@ -443,7 +515,7 @@ wait_for_running() {
       echo "railway-test-env: timed out after ${TIMEOUT_SECONDS}s waiting for $label (expected deployment ${expected:-unknown} running+healthy)" >&2
       return 1
     fi
-    sleep "$POLL_INTERVAL_SECONDS"
+    poll_pause
   done
 }
 
@@ -483,6 +555,16 @@ const TERMINAL_FAIL = ["FAILED", "CRASHED"];
 const PENDING = ["QUEUED", "INITIALIZING", "WAITING", "BUILDING", "DEPLOYING", "NEEDS_APPROVAL"];
 const live = active.filter((d) => d && d.id && d.deploymentStopped !== true);
 const byIdLive = new Map(live.map((d) => [String(d.id), d]));
+if (!expected) {
+  const latest = s.latest;
+  if (!latest || latest.deploymentStopped === true || String(latest.status).toUpperCase() !== "SUCCESS") {
+    console.error(`railway-test-env: ${label} latest deployment is not live SUCCESS; refusing idempotent success`); process.exit(1);
+  }
+  if ((s.pending || []).length || live.some((d) => PENDING.includes(String(d.status).toUpperCase()))) {
+    console.error(`railway-test-env: ${label} pending deployment blocks idempotent success`); process.exit(1);
+  }
+}
+
 if (expected) {
   const liveDep = byIdLive.get(String(expected));
   const anyDep = active.find((d) => d && String(d.id) === String(expected));
@@ -551,7 +633,7 @@ console.log(`railway-test-env: ${label} running (running=${s.running} configured
 
 wait_for_parked() {
   # $1 = key, $2 = label. Bounded parked gate with fail-closed reads.
-  deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
+  deadline="$DEADLINE"
   while :; do
     if read_snapshot; then
       if svc_parked "$1"; then
@@ -566,12 +648,12 @@ wait_for_parked() {
       echo "railway-test-env: timed out after ${TIMEOUT_SECONDS}s waiting for $2 to park" >&2
       return 1
     fi
-    sleep "$POLL_INTERVAL_SECONDS"
+    poll_pause
   done
 }
 
 wait_for_db_ready() {
-  deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
+  deadline="$DEADLINE"
   while :; do
     if run_primary railway ssh -p "$PROJECT" -e "$TARGET_ENV" -s "$SVC_DB" -- pg_isready 2>&1; then
       echo "railway-test-env: Postgres-ltHj accepts connections (pg_isready)"
@@ -589,7 +671,7 @@ wait_for_db_ready() {
       echo "railway-test-env: timed out after ${TIMEOUT_SECONDS}s waiting for Postgres-ltHj to accept connections (needs working 'railway ssh'; see 'railway ssh keys')" >&2
       return 1
     fi
-    sleep "$POLL_INTERVAL_SECONDS"
+    poll_pause
   done
 }
 
@@ -597,10 +679,18 @@ scoped_deployment_ids() {
   # $1 = service id. Newest-first scoped deployment ids (one per line).
   # Bounded read; empty output on failure so callers refuse (never select
   # an ambiguous id). Callers distinguish refusal via the empty result.
-  run_primary railway api \
+  scoped_file="$(mktemp)" || return 3
+  if run_primary railway api \
     'query ScopedDeployments($projectId: String!, $environmentId: String!, $serviceId: String!) { deployments(input: {projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId}, first: 50) { edges { node { id status } } } }' \
     --variables "{\"projectId\":\"$PROJECT\",\"environmentId\":\"$TARGET_ENV\",\"serviceId\":\"$1\"}" \
-  | node -e '
+    >"$scoped_file"; then
+    :
+  else
+    scoped_rc=$?
+    rm -f "$scoped_file"
+    return "$scoped_rc"
+  fi
+  node -e '
 let data = "";
 process.stdin.on("data", (c) => { data += c; });
 process.stdin.on("end", () => {
@@ -612,11 +702,14 @@ process.stdin.on("end", () => {
     const n = (e && e.node) || e;
     if (n && n.id) console.log(n.id);
   }
-});'
+});' <"$scoped_file"
+  scoped_rc=$?
+  rm -f "$scoped_file"
+  return "$scoped_rc"
 }
 
 # Capture the single fresh id from a before/after scoped diff. $1 = service
-# id, $2 = file holding before-ids (one per line). Prints the id iff exactly
+# id, $2 = file holding before-ids (one per line). Sets FRESH_DEP_ID iff exactly
 # one new id appeared; otherwise prints nothing and returns 1 (ambiguous
 # concurrent change => caller refuses, never guesses).
 select_fresh_deployment_id() {
@@ -637,7 +730,7 @@ select_fresh_deployment_id() {
   done <"$after_file"
   rm -f "$after_file"
   if [ "$fresh_count" -eq 1 ]; then
-    printf '%s' "$fresh"
+    FRESH_DEP_ID="$fresh"
     return 0
   fi
   return 1
@@ -693,14 +786,24 @@ for (const key of ["web", "db", "push"]) {
   const latest = s.latest ? `${s.latest.id} ${s.latest.status}` : "-";
   console.log(`${s.service || key} [${s.serviceId}]: running=${s.running} configured=${s.configured} crashed=${s.crashed} parked=${s.parked} latest=${latest} pending=${(s.pending || []).length}`);
 }' "$SNAP_FILE"
-  if autodeploy_json="$(node "$STATE_HELPER" --env "$TARGET_ENV" --autodeploy "$SVC_WEB" 2>/dev/null)"; then
+  if capture_primary node "$STATE_HELPER" --env "$TARGET_ENV" --autodeploy "$SVC_WEB" 2>/dev/null; then
+    autodeploy_json="$CAPTURED_OUTPUT"
     echo "web-test autodeploy: $autodeploy_json"
   else
     echo "web-test autodeploy: unreadable" >&2
   fi
 }
 
+# Final success uses one fresh snapshot and the same generation predicate.
+assert_all_running() {
+  read_snapshot || return 1
+  wait_running_converged db "Postgres-ltHj" "${new_db_dep:-}" &&
+    wait_running_converged web "web-test" "${new_web_dep:-}" &&
+    wait_running_converged push "push-delivery" "${new_push_dep:-}"
+}
+
 # --- commands --------------------------------------------------------------
+DEADLINE=$(( $(date +%s) + TIMEOUT_SECONDS ))
 case "$COMMAND" in
   status)
     echo "railway-test-env: test environment $TARGET_ENV"
@@ -718,8 +821,9 @@ case "$COMMAND" in
         && wait_running_converged db "Postgres-ltHj" "" >/dev/null 2>&1 \
         && wait_running_converged push "push-delivery" "" >/dev/null 2>&1 \
         && run_primary railway ssh -p "$PROJECT" -e "$TARGET_ENV" -s "$SVC_DB" -- pg_isready >/dev/null 2>&1; then
-        echo "railway-test-env: test environment already running+healthy (idempotent start)"
         autodeploy_disable || exit 1
+        assert_all_running || exit 1
+        echo "railway-test-env: test environment already running+healthy (idempotent start)"
         exit 0
       fi
     fi
@@ -733,7 +837,9 @@ case "$COMMAND" in
       echo "railway-test-env: DB redeploy request failed" >&2
       exit 1
     fi
-    if ! new_db_dep="$(select_fresh_deployment_id "$SVC_DB" "$db_before")"; then
+    if select_fresh_deployment_id "$SVC_DB" "$db_before"; then
+      new_db_dep="$FRESH_DEP_ID"
+    else
       rm -f "$db_before"
       echo "railway-test-env: DB redeploy ambiguous (no single fresh deployment); refusing to guess" >&2
       exit 1
@@ -752,7 +858,9 @@ case "$COMMAND" in
         echo "railway-test-env: web deploymentRedeploy failed" >&2
         exit 1
       }
-      if ! new_web_dep="$(select_fresh_deployment_id "$SVC_WEB" "$web_before")"; then
+      if select_fresh_deployment_id "$SVC_WEB" "$web_before"; then
+        new_web_dep="$FRESH_DEP_ID"
+      else
         rm -f "$web_before"
         echo "railway-test-env: web deploymentRedeploy produced no single fresh deployment; refusing to guess" >&2
         exit 1
@@ -767,7 +875,9 @@ case "$COMMAND" in
         echo "railway-test-env: web redeploy --from-source failed" >&2
         exit 1
       }
-      if ! new_web_dep="$(select_fresh_deployment_id "$SVC_WEB" "$web_before")"; then
+      if select_fresh_deployment_id "$SVC_WEB" "$web_before"; then
+        new_web_dep="$FRESH_DEP_ID"
+      else
         rm -f "$web_before"
         echo "railway-test-env: web redeploy ambiguous (no single fresh deployment); refusing to guess" >&2
         exit 1
@@ -789,7 +899,9 @@ case "$COMMAND" in
         echo "railway-test-env: push deploymentRedeploy failed" >&2
         exit 1
       }
-      if ! new_push_dep="$(select_fresh_deployment_id "$SVC_PUSH" "$push_before")"; then
+      if select_fresh_deployment_id "$SVC_PUSH" "$push_before"; then
+        new_push_dep="$FRESH_DEP_ID"
+      else
         rm -f "$push_before"
         echo "railway-test-env: push deploymentRedeploy produced no single fresh deployment; refusing to guess" >&2
         exit 1
@@ -800,20 +912,24 @@ case "$COMMAND" in
       validate_clean_checkout || exit 1
       push_before="$(mktemp)" || exit 3
       scoped_deployment_ids "$SVC_PUSH" >"$push_before" || { rm -f "$push_before"; echo "railway-test-env: push scoped read failed before upload; refusing" >&2; exit 1; }
-      if ! run_primary railway up --service "$SVC_PUSH" --environment "$TARGET_ENV" --project "$PROJECT" --detach --yes; then
+      if run_primary railway up --service "$SVC_PUSH" --environment "$TARGET_ENV" --project "$PROJECT" --detach --yes; then
+        :
+      else
         up_rc=$?
         rm -f "$push_before"
         if [ "$up_rc" -eq 124 ]; then
           echo "railway-test-env: push 'railway up' timed out; parking push-delivery before any retry (safe recovery)" >&2
-          stop_service push "push-delivery" >/dev/null 2>&1 || true
+          recover_push_upload || true
         fi
         echo "railway-test-env: push 'railway up' fallback failed" >&2
         exit 1
       fi
-      if ! new_push_dep="$(select_fresh_deployment_id "$SVC_PUSH" "$push_before" 2>/dev/null)"; then
+      if select_fresh_deployment_id "$SVC_PUSH" "$push_before" 2>/dev/null; then
+        new_push_dep="$FRESH_DEP_ID"
+      else
         rm -f "$push_before"
         echo "railway-test-env: push upload ambiguous (no single fresh deployment); parking before any retry" >&2
-        stop_service push "push-delivery" >/dev/null 2>&1 || true
+        recover_push_upload || true
         exit 1
       fi
       rm -f "$push_before"
@@ -821,6 +937,7 @@ case "$COMMAND" in
     fi
     wait_for_running push "push-delivery" "$new_push_dep" || exit 1
     autodeploy_disable || exit 1
+    assert_all_running || exit 1
     echo "railway-test-env: test environment started (deployments running + DB probe verified; autodeploy stays off)"
     if ! show_status; then
       echo "railway-test-env: started, but the final status readback failed (fail closed)" >&2
@@ -835,6 +952,7 @@ case "$COMMAND" in
       if svc_parked web && svc_parked push && svc_parked db; then
         echo "railway-test-env: test environment already parked (idempotent stop)"
         autodeploy_disable || exit 1
+        assert_all_parked || exit 1
         exit 0
       fi
     fi
@@ -866,6 +984,7 @@ case "$COMMAND" in
       exit 1
     }
     autodeploy_disable || exit 1
+    assert_all_parked || exit 1
     echo "railway-test-env: test environment stopped (dependents parked, DB parked; data, volumes, variables, and config are retained)"
     echo "railway-test-env: restart later with: sh scripts/railway-test-env.sh start"
     if ! show_status; then

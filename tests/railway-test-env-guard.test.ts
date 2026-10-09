@@ -100,7 +100,23 @@ describe("railway test-env guard", () => {
     ).toBe(true);
   });
 
-  it("computes stop sets with stop[]/unknown[] (already-stopped excluded)", () => {
+  it("stopped pending deployments remain wakeup risks and stop candidates", () => {
+    for (const status of PENDING_STATUSES) {
+      const dep = { id: "pending-stopped", status, deploymentStopped: true };
+      // Even a stale caller-supplied pending list cannot erase an active build.
+      const snap = { running: 0, configured: 1, active: [dep], pending: [], latest: dep };
+      expect(isParked(snap), status).toBe(false);
+      expect(computeStopSet(snap).stop, status).toContain(dep.id);
+    }
+    for (const status of ["SUCCESS", "CRASHED"]) {
+      const dep = { id: "finished-stopped", status, deploymentStopped: true };
+      const snap = { running: 0, configured: 1, active: [dep], pending: [], latest: dep };
+      expect(isParked(snap), status).toBe(true);
+      expect(computeStopSet(snap).stop, status).toEqual([]);
+    }
+  });
+
+  it("computes stop sets with stop[]/unknown[] (finished stopped excluded)", () => {
     const snapshot = {
       active: [
         { id: "live-success", status: "SUCCESS", deploymentStopped: false },

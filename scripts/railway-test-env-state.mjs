@@ -15,15 +15,15 @@
 //   `railway service list` entry for the same service id; enabled comes ONLY
 //   from a validated autodeploy payload. Missing/unconfirmed reads throw
 //   READ_RETRYABLE (exit 1); refusal/not-found throws READ_TERMINAL (exit 3).
-// - SOLE narrow allowance: a null/missing replicas object is read as 0/0/0
+// - SOLE narrow allowance: an explicitly null replicas object is read as 0/0/0
 //   ONLY for the witnessed live source-less push shape, i.e. when the scoped
 //   snapshot itself already proves empty (latest null + active [] + pending
 //   []; active already merges the scoped deployments-list nodes, so empty
 //   active means no nodes either). Anything still in flight keeps its counts
 //   unconfirmed (retryable), never zeroed.
 // - GraphQL `errors` arrays, null/missing queried fields, missing
-//   activeDeployments/edges arrays, truncated history (pageInfo.hasNextPage),
-//   non-boolean deploymentStopped (undefined tolerates legacy missing field),
+//   activeDeployments/edges arrays, unconfirmed or unbounded pagination,
+//   missing/non-boolean deploymentStopped,
 //   and empty/non-string statuses are all READ_RETRYABLE, never defaulted.
 //
 // Exit codes: 0 ok / 1 retryable read error / 3 terminal refusal.
@@ -45,6 +45,10 @@ const SERVICE_LABELS = { web: "web-test", db: "Postgres-ltHj", push: "push-deliv
 
 // Portable read timeout (execFileSync option; no new deps, no shell timeout).
 const API_TIMEOUT_MS = 20000;
+
+// Private provenance: only snapshots built from validated, scoped empty
+// deployment history qualify for the source-less push exception.
+const emptyScopedSnapshots = new WeakSet();
 
 function retryable(message) {
   return Object.assign(new Error(message), { code: "READ_RETRYABLE" });
@@ -99,9 +103,10 @@ const INSTANCE_QUERY = `query SnapshotInstance($environmentId: String!, $service
   }
 }`;
 
-const DEPLOYMENTS_QUERY = `query SnapshotDeployments($projectId: String!, $environmentId: String!, $serviceId: String!) {
-  deployments(input: {projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId}, first: 50) {
+const DEPLOYMENTS_QUERY = `query SnapshotDeployments($projectId: String!, $environmentId: String!, $serviceId: String!, $after: String) {
+  deployments(input: {projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId}, first: 50, after: $after) {
     edges { node { id status deploymentStopped serviceId environmentId } }
+    pageInfo { hasNextPage endCursor }
   }
 }`;
 
@@ -154,8 +159,7 @@ function num(value, fallback = 0) {
 
 // Strict shape check for one deployment object (latest, active entry, or
 // scoped deployments-list node). Status must be a non-empty string (no
-// UNKNOWN default); deploymentStopped must be boolean where present —
-// undefined tolerates the legacy missing field, but non-boolean truthy
+// UNKNOWN default); deploymentStopped must be an explicit boolean: omissions and truthy
 // shapes (1, "true", ...) are rejected instead of coerced.
 function assertDeploymentShape(dep, where) {
   if (!dep || typeof dep !== "object" || Array.isArray(dep)) {
@@ -169,7 +173,7 @@ function assertDeploymentShape(dep, where) {
       `${where} deployment ${String(dep.id)} status is not a non-empty string (refusing UNKNOWN default)`,
     );
   }
-  if (dep.deploymentStopped !== undefined && typeof dep.deploymentStopped !== "boolean") {
+  if (typeof dep.deploymentStopped !== "boolean") {
     throw retryable(
       `${where} deployment ${String(dep.id)} deploymentStopped is not boolean (rejecting truthy shapes)`,
     );
@@ -201,13 +205,18 @@ export function applyReplicaCounts(snapshot, entry) {
   const reps = entry.replicas;
   if (reps === null || reps === undefined) {
     // SOLE narrow allowance: the witnessed live source-less push shape
-    // carries no replicas object at all. Reading it as 0/0/0 is only sound
+    // carries explicit source:null and replicas:null. Reading it as 0/0/0
+    // is only sound
     // when the scoped snapshot itself already proves empty (latest null +
     // active [] + pending []; active already merges the scoped
     // deployments-list nodes, so empty active means no nodes either).
     if (
       snapshot &&
-      (snapshot.latest === null || snapshot.latest === undefined) &&
+      snapshot.serviceId === SERVICE_IDS.push &&
+      emptyScopedSnapshots.has(snapshot) &&
+      Object.hasOwn(entry, "source") && entry.source === null &&
+      Object.hasOwn(entry, "replicas") && reps === null &&
+      snapshot.latest === null &&
       Array.isArray(snapshot.active) &&
       snapshot.active.length === 0 &&
       Array.isArray(snapshot.pending) &&
@@ -280,7 +289,7 @@ export function fetchServiceListEntries(environmentId) {
     // Replicas, when present, must be an object with integer-or-null fields;
     // anything else (string, array, float/bool fields) is a corrupt read.
     // Null/missing replicas as a whole are deferred to applyReplicaCounts,
-    // which only tolerates them for the provably-empty source-less shape.
+    // which only tolerates explicit null for the provably-empty source-less push.
     const reps = entry.replicas;
     if (reps !== undefined && reps !== null) {
       if (typeof reps !== "object" || Array.isArray(reps)) {
@@ -314,12 +323,18 @@ export function buildSnapshot(service, serviceId, instance, nodes) {
   if (!Array.isArray(nodes)) {
     throw retryable(`snapshot for ${service}: scoped deployment nodes not an array (refusing to default [])`);
   }
+  if (SERVICE_IDS[service] !== serviceId) {
+    throw terminal(`snapshot target identity mismatch for ${service}`);
+  }
   const inst = instance;
   const reps = inst.replicas || {};
-  const latestSource = inst.latestDeployment !== undefined ? inst.latestDeployment : inst.latest;
-  const latestRaw = latestSource || null;
+  const latestField = Object.hasOwn(inst, "latestDeployment") ? "latestDeployment" : "latest";
+  if (!Object.hasOwn(inst, latestField)) {
+    throw retryable(`snapshot for ${service}: latestDeployment field missing (refusing null default)`);
+  }
+  const latestRaw = inst[latestField];
   let latest = null;
-  if (latestRaw !== null && latestRaw !== undefined) {
+  if (latestRaw !== null) {
     // latestDeployment: null marks the source-less shape; a present value
     // must be well-formed (no silent null-latest on corrupt payloads).
     assertDeploymentShape(latestRaw, `${service} latestDeployment`);
@@ -352,6 +367,9 @@ export function buildSnapshot(service, serviceId, instance, nodes) {
       deploymentStopped: d.deploymentStopped === true,
     });
   };
+  // A latest deployment omitted by the active/history reads is still a
+  // known stop candidate; absence from another list cannot erase it.
+  if (latestRaw !== null) pushActive(latestRaw, `${service} latestDeployment`);
   for (const d of activeRaw) {
     pushActive(d, `${service} activeDeployments`);
   }
@@ -359,18 +377,19 @@ export function buildSnapshot(service, serviceId, instance, nodes) {
     // Defense in depth: the deployments query is already scoped by
     // project+environment+service server-side, but the push service ID is
     // shared with production, so drop any node that affirmatively names a
-    // different service or environment. Fields absent (older shapes) pass.
-    if (n && typeof n === "object") {
-      if (n.serviceId && String(n.serviceId) !== String(serviceId)) continue;
-      if (n.environmentId && String(n.environmentId) !== String(TEST_ENV_ID)) continue;
+    // different service or environment. Missing identity is an unreadable
+    // scoped history, never evidence of an empty stop set.
+    if (!n || typeof n.serviceId !== "string" || typeof n.environmentId !== "string") {
+      throw retryable(`snapshot for ${service}: deployment node scoped identity missing`);
     }
+    if (n.serviceId !== serviceId || n.environmentId !== TEST_ENV_ID) continue;
     pushActive(n, `${service} deployments node`);
   }
   const pending = active
     .filter(
-      (d) =>
-        d.deploymentStopped !== true &&
-        PENDING_STATUSES.includes(String(d.status).toUpperCase()),
+      // Railway can clear deploymentStopped when a build lands: pending
+      // deployments remain wakeup risks even after a successful stop call.
+      (d) => PENDING_STATUSES.includes(String(d.status).trim().toUpperCase()),
     )
     .map((d) => ({ id: d.id, status: d.status }));
   const snapshot = {
@@ -385,10 +404,16 @@ export function buildSnapshot(service, serviceId, instance, nodes) {
     parked: false,
   };
   snapshot.parked = isParked(snapshot);
+  if (nodes.length === 0 && latest === null && active.length === 0 && pending.length === 0) {
+    emptyScopedSnapshots.add(snapshot);
+  }
   return snapshot;
 }
 
 export function fetchServiceSnapshot(service, serviceId, environmentId, serviceListById) {
+  if (!assertTestEnv(environmentId).ok || SERVICE_IDS[service] !== serviceId) {
+    throw terminal("snapshot target identity is not an exact allowlisted test service");
+  }
   const vars = {
     environmentId,
     serviceId,
@@ -422,40 +447,40 @@ export function fetchServiceSnapshot(service, serviceId, environmentId, serviceL
       throw err;
     }
   }
-  let deploymentsEnv;
-  try {
-    deploymentsEnv = apiCall(DEPLOYMENTS_QUERY, { ...vars, projectId: PROJECT_ID });
-  } catch (err) {
-    throw retryable(`deployments read failed for ${service}: ${errMessage(err)}`);
+  const nodes = [];
+  const cursors = new Set();
+  let after = null;
+  for (let page = 0; ; page += 1) {
+    if (page >= 20) {
+      throw retryable(`deployments read failed for ${service}: history exceeds bounded pagination`);
+    }
+    let inner;
+    try {
+      inner = unwrapData(apiCall(DEPLOYMENTS_QUERY, { ...vars, projectId: PROJECT_ID, after }), "deployments");
+    } catch (err) {
+      throw retryable(`deployments read failed for ${service}: ${errMessage(err)}`);
+    }
+    if (!inner || typeof inner !== "object" || !Array.isArray(inner.edges)) {
+      throw retryable(`deployments read failed for ${service}: edges array missing (refusing to default [])`);
+    }
+    const info = inner.pageInfo;
+    if (!info || typeof info !== "object" || typeof info.hasNextPage !== "boolean" ||
+        !Object.hasOwn(info, "endCursor") || (info.endCursor !== null && typeof info.endCursor !== "string")) {
+      throw retryable(`deployments read failed for ${service}: pageInfo malformed or missing`);
+    }
+    for (const edge of inner.edges) {
+      if (!edge || typeof edge !== "object" || !Object.hasOwn(edge, "node")) {
+        throw retryable(`deployments read failed for ${service}: malformed edge`);
+      }
+      nodes.push(edge.node);
+    }
+    if (!info.hasNextPage) break;
+    if (inner.edges.length === 0 || typeof info.endCursor !== "string" || info.endCursor.length === 0 || cursors.has(info.endCursor)) {
+      throw retryable(`deployments read failed for ${service}: missing/repeated pagination cursor or empty continuation page`);
+    }
+    cursors.add(info.endCursor);
+    after = info.endCursor;
   }
-  let inner;
-  try {
-    const dep = unwrapData(deploymentsEnv, "deployments");
-    inner =
-      dep && typeof dep === "object" && dep.deployments && typeof dep.deployments === "object"
-        ? dep.deployments
-        : dep;
-  } catch (err) {
-    throw retryable(`deployments read failed for ${service}: ${errMessage(err)}`);
-  }
-  // Fail closed: a missing edges array is never defaulted to [] — and a
-  // truncated page (hasNextPage) means the full stop set cannot be
-  // established, so the read is refused outright.
-  if (!inner || typeof inner !== "object" || !Array.isArray(inner.edges)) {
-    throw retryable(
-      `deployments read failed for ${service}: edges array missing (refusing to default [])`,
-    );
-  }
-  if (
-    inner.pageInfo &&
-    typeof inner.pageInfo === "object" &&
-    inner.pageInfo.hasNextPage === true
-  ) {
-    throw retryable(
-      `deployments read failed for ${service}: history truncated (hasNextPage); full stop set cannot be established`,
-    );
-  }
-  const nodes = inner.edges.map((e) => (e && typeof e === "object" && e.node ? e.node : e));
   const instanceEmpty =
     instanceNullField ||
     instance === null ||

@@ -36,7 +36,7 @@ try {
 let finished = false;
 
 function killGroup(sig) {
-  if (!child || finished) return;
+  if (!child || !child.pid) return;
   try {
     process.kill(-child.pid, sig);
   } catch {

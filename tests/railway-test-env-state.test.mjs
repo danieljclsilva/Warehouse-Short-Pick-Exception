@@ -116,6 +116,7 @@ function deploymentsEnvelope(nodes) {
   return {
     data: {
       deployments: {
+        pageInfo: { hasNextPage: false, endCursor: null },
         edges: nodes.map((n) => ({ node: { ...n, serviceId: WEB, environmentId: TEST_ENV_ID } })),
       },
     },
@@ -129,6 +130,7 @@ describe("railway test-env state helper (pure)", () => {
         id: "a9de8c69-b7c4-4a0d-b53d-d4a94e89a5da",
         status: "CRASHED",
         deploymentStopped: true,
+        serviceId: WEB, environmentId: TEST_ENV_ID,
       },
     ]);
     expect(snap.serviceId).toBe(WEB);
@@ -163,6 +165,38 @@ describe("railway test-env state helper (pure)", () => {
     expect(snap.pending).toEqual([]);
     expect(isParked(snap)).toBe(true);
     expect(computeStopSet(snap)).toEqual({ stop: [], unknown: [] });
+  });
+
+  it("retains an unstopped latest deployment even when other lists omit it", () => {
+    for (const status of ["SUCCESS", "BUILDING"]) {
+      const snap = buildSnapshot("web", WEB, parkedInstance({
+        latestDeployment: { id: "latest-only", status, deploymentStopped: false },
+        activeDeployments: [],
+      }), []);
+      const merged = applyReplicaCounts(snap, { id: WEB, replicas: { configured: 1, running: 0, crashed: 0 } });
+      expect(merged.parked).toBe(false);
+      expect(computeStopSet(merged).stop).toContain("latest-only");
+    }
+    const stopped = buildSnapshot("web", WEB, parkedInstance({ activeDeployments: [] }), []);
+    expect(applyReplicaCounts(stopped, { id: WEB, replicas: { configured: 1, running: 0, crashed: 0 } }).parked).toBe(true);
+  });
+
+  it("keeps stopped pending deployments unparked until they finish", () => {
+    for (const status of ["BUILDING", "DEPLOYING", "QUEUED"]) {
+      const dep = { id: "stopped-build", status, deploymentStopped: true };
+      const snap = buildSnapshot("web", WEB, parkedInstance({ latestDeployment: dep, activeDeployments: [dep] }), []);
+      const merged = applyReplicaCounts(snap, { id: WEB, replicas: { running: 0, configured: 1, crashed: 0 } });
+      expect(merged.pending, status).toEqual([{ id: dep.id, status }]);
+      expect(merged.parked, status).toBe(false);
+      expect(computeStopSet(merged).stop, status).toContain(dep.id);
+    }
+    for (const status of ["SUCCESS", "CRASHED"]) {
+      const dep = { id: "stopped-finished", status, deploymentStopped: true };
+      const snap = buildSnapshot("web", WEB, parkedInstance({ latestDeployment: dep, activeDeployments: [dep] }), []);
+      const merged = applyReplicaCounts(snap, { id: WEB, replicas: { running: 0, configured: 1, crashed: 0 } });
+      expect(merged.pending, status).toEqual([]);
+      expect(merged.parked, status).toBe(true);
+    }
   });
 
   it("merges deployments-list nodes the instance payload omits", () => {
@@ -200,7 +234,7 @@ describe("railway test-env state helper (pure)", () => {
           { id: "old", status: "CRASHED", deploymentStopped: true },
         ],
       },
-      [{ id: "live-1", status: "SUCCESS", deploymentStopped: false }],
+      [{ id: "live-1", status: "SUCCESS", deploymentStopped: false, serviceId: WEB, environmentId: TEST_ENV_ID }],
     );
     expect(snap.pending).toEqual([{ id: "live-2", status: "DEPLOYING" }]);
     expect(isParked(snap)).toBe(false);
@@ -290,15 +324,39 @@ describe("applyReplicaCounts (fail closed, no manufactured zeros)", () => {
     expectCode(() => applyReplicaCounts(snap, { id: WEB, replicas: [0] }), "READ_RETRYABLE");
   });
 
-  it("still parks the source-less push with null/missing replicas when scoped lists prove empty", () => {
+  it("parks only explicitly source-less push with null replicas and scoped empty history", () => {
     const snap = buildSnapshot("push", PUSH, sourcelessPushInstance(), []);
     expect(snap.latest).toBeNull();
-    for (const entry of [{ id: PUSH }, { id: PUSH, replicas: null }]) {
+    for (const entry of [{ id: PUSH, source: null, replicas: null }]) {
       const merged = applyReplicaCounts(snap, entry);
       expect(merged).toMatchObject({ running: 0, configured: 0, crashed: 0 });
       expect(merged.parked).toBe(true);
       expect(isParked(merged)).toBe(true);
     }
+  });
+
+  it("never infers empty web or DB replicas even with null latest and empty lists", () => {
+    for (const [service, serviceId] of [["web", WEB], ["db", DB]]) {
+      const snap = buildSnapshot(service, serviceId, sourcelessPushInstance(), []);
+      expectCode(() => applyReplicaCounts(snap, { id: serviceId, source: null, replicas: null }), "READ_RETRYABLE");
+    }
+  });
+
+  it("rejects omitted source, replica fields and unvalidated empty snapshots", () => {
+    const snap = buildSnapshot("push", PUSH, sourcelessPushInstance(), []);
+    for (const entry of [
+      { id: PUSH, replicas: null },
+      { id: PUSH, source: null },
+      { id: PUSH, source: undefined, replicas: null },
+      { id: PUSH, source: {}, replicas: null },
+    ]) expectCode(() => applyReplicaCounts(snap, entry), "READ_RETRYABLE");
+    const entry = { id: PUSH, source: null, replicas: null };
+    expectCode(() => applyReplicaCounts({ ...snap }, entry), "READ_RETRYABLE");
+    expectCode(() => applyReplicaCounts({ ...snap, latest: undefined }, entry), "READ_RETRYABLE");
+    const history = buildSnapshot("push", PUSH, sourcelessPushInstance(), [
+      { id: "old", status: "CRASHED", deploymentStopped: true, serviceId: PUSH, environmentId: TEST_ENV_ID },
+    ]);
+    expectCode(() => applyReplicaCounts(history, entry), "READ_RETRYABLE");
   });
 });
 
@@ -346,6 +404,32 @@ describe("buildSnapshot (strict shapes, no silent defaults)", () => {
       () => buildSnapshot("web", WEB, parkedInstance(), null),
       "READ_RETRYABLE",
     );
+  });
+
+  it("requires an explicit null-or-deployment latest field", () => {
+    for (const value of [undefined, false, "", 0]) {
+      expectCode(() => buildSnapshot("push", PUSH, { ...sourcelessPushInstance(), latestDeployment: value }, []), "READ_RETRYABLE");
+    }
+    const instance = sourcelessPushInstance();
+    delete instance.latestDeployment;
+    expectCode(() => buildSnapshot("push", PUSH, instance, []), "READ_RETRYABLE");
+    expect(buildSnapshot("push", PUSH, { ...instance, latest: null }, []).latest).toBeNull();
+  });
+
+  it("requires queried deploymentStopped in latest, active, and history entries", () => {
+    const dep = { id: "missing-stopped", status: "SUCCESS" };
+    for (const instance of [
+      parkedInstance({ latestDeployment: dep }),
+      parkedInstance({ activeDeployments: [dep] }),
+    ]) expectCode(() => buildSnapshot("web", WEB, instance, []), "READ_RETRYABLE");
+    expectCode(() => buildSnapshot("web", WEB, parkedInstance(), [{ ...dep, serviceId: WEB, environmentId: TEST_ENV_ID }]), "READ_RETRYABLE");
+  });
+
+  it("requires exact scoped deployment history identity", () => {
+    const dep = { id: "missing-scope", status: "CRASHED", deploymentStopped: true };
+    for (const node of [dep, { ...dep, serviceId: WEB }, { ...dep, environmentId: TEST_ENV_ID }]) {
+      expectCode(() => buildSnapshot("web", WEB, parkedInstance(), [node]), "READ_RETRYABLE");
+    }
   });
 
   it("rejects non-boolean deploymentStopped shapes (no truthy coercion)", () => {
@@ -410,7 +494,7 @@ describe("fetchServiceListEntries (mocked railway)", () => {
     mockRailway({
       serviceList: [
         { id: WEB, replicas: { configured: 1, running: 0, crashed: 0 } },
-        { id: PUSH },
+        { id: PUSH, source: null, replicas: null },
       ],
     });
     const byId = fetchServiceListEntries(TEST_ENV_ID);
@@ -462,7 +546,7 @@ describe("fetchServiceSnapshot (mocked railway)", () => {
   it("maps null serviceInstance + empty deployments to READ_TERMINAL not-found", () => {
     mockRailway({
       instance: { data: { serviceInstance: null } },
-      deployments: { data: { deployments: { edges: [] } } },
+      deployments: { data: { deployments: { edges: [], pageInfo: { hasNextPage: false, endCursor: null } } } },
     });
     const err = expectCode(
       () => fetchServiceSnapshot("db", DB, TEST_ENV_ID, {}),
@@ -493,7 +577,7 @@ describe("fetchServiceSnapshot (mocked railway)", () => {
     );
   });
 
-  it("rejects truncated history (pageInfo.hasNextPage) — stop set unknowable", () => {
+  it("rejects continuation pages missing a cursor — stop set unknowable", () => {
     mockRailway({
       instance: { data: { serviceInstance: liveInstance(node.id, "CRASHED", true) } },
       deployments: { data: { deployments: { edges: [], pageInfo: { hasNextPage: true } } } },
@@ -505,6 +589,42 @@ describe("fetchServiceSnapshot (mocked railway)", () => {
         }),
       "READ_RETRYABLE",
     );
+  });
+
+  it("follows all scoped history pages and includes later pending deployments", () => {
+    mockRailway({ instance: { data: { serviceInstance: liveInstance(node.id, "CRASHED", true) } } });
+    const base = execMock.getMockImplementation();
+    execMock.mockImplementation((cmd, args) => {
+      if (args[0] === "api" && args[1].includes("SnapshotDeployments")) {
+        const vars = JSON.parse(args[3]);
+        const page = vars.after === null ? deploymentsEnvelope([node]) : deploymentsEnvelope([{ id: "second-page", status: "BUILDING", deploymentStopped: false }]);
+        page.data.deployments.pageInfo = { hasNextPage: vars.after === null, endCursor: vars.after === null ? "cursor-1" : null };
+        return JSON.stringify(page);
+      }
+      return base(cmd, args);
+    });
+    const snap = fetchServiceSnapshot("web", WEB, TEST_ENV_ID, {
+      [WEB]: { id: WEB, replicas: { configured: 1, running: 0, crashed: 0 } },
+    });
+    expect(snap.pending).toContainEqual({ id: "second-page", status: "BUILDING" });
+    expect(snap.parked).toBe(false);
+  });
+
+  it("rejects malformed, repeated and missing pagination evidence", () => {
+    for (const pageInfo of [undefined, {}, { hasNextPage: false }, { hasNextPage: "false", endCursor: null }, { hasNextPage: true, endCursor: "same" }]) {
+      const deployments = deploymentsEnvelope([node]);
+      if (pageInfo === undefined) delete deployments.data.deployments.pageInfo;
+      else deployments.data.deployments.pageInfo = pageInfo;
+      mockRailway({ instance: { data: { serviceInstance: liveInstance(node.id, "CRASHED", true) } }, deployments });
+      expectCode(() => fetchServiceSnapshot("web", WEB, TEST_ENV_ID, { [WEB]: { id: WEB, replicas: { configured: 1, running: 0, crashed: 0 } } }), "READ_RETRYABLE");
+    }
+  });
+
+  it("rejects snapshot scope mismatches before any read", () => {
+    const callCount = execMock.mock.calls.length;
+    expectCode(() => fetchServiceSnapshot("push", PUSH, "production", {}), "READ_TERMINAL");
+    expectCode(() => fetchServiceSnapshot("web", PUSH, TEST_ENV_ID, {}), "READ_TERMINAL");
+    expect(execMock.mock.calls).toHaveLength(callCount);
   });
 
   it("throws READ_TERMINAL when the required service-list entry is absent", () => {
