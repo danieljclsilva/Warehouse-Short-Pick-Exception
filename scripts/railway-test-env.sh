@@ -502,6 +502,7 @@ if (expected) {
     console.error(`railway-test-env: ${label} expected deployment ${expected} is stopped (${stoppedStatus || "unknown status"}); refusing`);
     process.exit(3);
   }
+} // end if (expected): presence asserted; liveness judged below
 // Terminal failure anywhere live (non-stopped) refuses BEFORE any
 // pending-wait: a live CRASHED/FAILED row is current platform state, not
 // previous-generation residue (redeploys mint fresh ids; old ids stay
