@@ -7,10 +7,11 @@ The director owns scope, material product decisions, final verification, and rel
 - Baseline `855e82b`; commit `cd77849` on `codex/railway-cost-reduction`; run dir `remaining-gates/`.
 - Workers via task tool with disjoint ownership: NavRouting → `src/components/auth-app.tsx` + 3 integration tests; CssTimeline → `check-workflow.tsx` + 3 test files; DashboardLint → `operations-dashboard.tsx` only. Manager owned plan/docs/gates/commit. No shared-file conflicts.
 - All 9 failures + lint error resolved; full gates green (see DEVELOPMENT_PLAN.md entry). Handoff `remaining-gates/handoff.md`, signal `review_ready`.
-## Current batch (2026-10-09, native lifecycle correction/recovery)
-- Baseline `b438606`; branch `codex/railway-cost-reduction`; recovery run dir `native-lifecycle-recovery-20261009-0238` (prior `native-lifecycle-fix-20261009` exited at max-time with 7 dirty files, no handoff — preserved and finished here).
-- Manager owned all script/helper/test edits (no live workers); one read-only reviewer (`HorribleCondor`, 6 findings, no mutations). Commits `22d2070` (native stop/start correction + docs) + `581b51c` (stale-crash tolerance + async-build stub model).
-- Result: 117/117 shell checks, 17/17 state+guard unit tests, full `npm test` 276/276 (disposable local DB), backup/typecheck/lint/build clean; live TEST start→status→stop→status round-trip witnessed via the scripts, TEST parked with autodeploy off, production verified unchanged. Handoff `native-lifecycle-recovery-20261009-0238/handoff.md`, signal `review_ready`. No main push/merge, no production changes (reserved for heartbeat independent review).
+## Current batch (2026-10-09, fail-closed review repair)
+- Baseline `0a5a45f`; branch `codex/railway-cost-reduction`; run dir `native-lifecycle-review-repair-20261009-0338`.
+- Coordinator owned shell/integration/docs/live; state worker owned `scripts/railway-test-env-state.mjs` + `tests/railway-test-env-state.test.mjs` only; one read-only reviewer (9 findings, no edits). No overlapping test edits.
+- Result: strict snapshot (fail-closed reads, 35/35 unit), identity-aware start (fresh-id capture + initiated-id verification), bounded subprocesses (portable runner, 130/143, --timeout 0 rejected), 138/138 shell checks, full `npm test` 302/302 (disposable DB), typecheck/lint/build clean; live TEST start→stop witnessed (DB `8329e8b4`, web `274e403a`, push `921af0d0`; TEST parked, autodeploy off, volume retained; PROD 200 unchanged). Commits `2aa1b99` + `9819a91` + `82ab858`. Handoff `native-lifecycle-review-repair-20261009-0338/handoff.md`, signal `review_ready`. No main push/merge, no production changes (reserved for heartbeat independent review).
+- Prior correction/recovery batch (`22d2070` + `581b51c`, 117/117 + 276/276, handoff `native-lifecycle-recovery-20261009-0238/handoff.md`) superseded by this repair; retained as history.
 
 ## Previous batch (superseded history)
 

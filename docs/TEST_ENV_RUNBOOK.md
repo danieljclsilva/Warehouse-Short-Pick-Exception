@@ -93,23 +93,40 @@ Stop (autodeploy off FIRST, then dependents, DB last):
 4. Confirm parked per the definition below. Volumes, variables, config,
    and all data are retained — only running deployments are stopped.
 
-Start (DB-first):
+Start (DB-first, identity-aware):
 
-1. Redeploy the database service first (TEST-scoped redeploy), then wait
-   for it to accept connections: in-container `pg_isready` probe over
+1. Redeploy the database service first (TEST-scoped redeploy), capture the
+   single fresh deployment id by before/after scoped diff (ambiguous
+   concurrent changes refuse, never guess), wait for THAT deployment
+   (present, non-stopped, SUCCESS, running>=configured>=1, crashed 0 —
+   a fresh id that is stopped while still BUILDING/pending waits for the
+   land; a stopped SUCCESS/terminal id refuses), then wait for it to
+   accept connections: in-container `pg_isready` probe over
    `railway ssh` (needs a registered SSH key — see `railway ssh keys`).
    The Postgres host is a `*.railway.internal` name, unreachable from
    the operator shell, so the probe runs inside the DB container.
 2. Only after the DB probe passes, redeploy web-test and push-delivery
-   (TEST-scoped).
-3. Source-less push recovery: push-delivery currently has no configured
-   source and no current deployment, so a plain redeploy has nothing to
-   redeploy. Recover it with a scoped upload from a clean checkout
+   (TEST-scoped `deploymentRedeploy`, same fresh-id capture + verification
+   per service). Autodeploy stays off throughout.
+3. Source-less push recovery: if push-delivery has no redeployable
+   deployment, recover it with a scoped upload from a clean checkout
    (`railway up --service <push-id> --environment <test-env> --project
    <project> --detach`), keeping its `npm run push:worker` start
-   command. Never copy a production deployment into test.
+   command. A timed-out upload parks push-delivery before any retry
+   (uploads may continue server-side; never stack them). Never copy a
+   production deployment into test.
 4. Re-enable web-test autodeploy only when wanted (explicit operator
    decision, verified back with `serviceInstanceAutoDeployStatus`).
+   The final status readback after start/stop must succeed — a readback
+   failure exits nonzero (never WARNING success).
+
+Timeouts/signals: every Railway/SSH child runs under
+`scripts/railway-run-bounded.mjs` (portable node timeout, no new deps)
+within the overall `--timeout` deadline (positive integer; 0 rejected).
+Signals kill the foreground child group (130/143) with no further
+mutations. Replica counts NEVER default: missing/unconfirmed counts
+refuse the snapshot (the witnessed source-less push shape — latest null
++ empty scoped lists — reads back parked).
 
 Ordering: start brings Postgres-ltHj up first (dependents consume
 `DATABASE_URL`-style reference variables); stop drains dependents first
@@ -162,7 +179,33 @@ Native per-service snapshot shape (informative; worker A/B schema):
 
 ## Live round-trip evidence (2026-10-09, manager-executed via the scripts)
 
-- Start (`sh scripts/railway-test-env.sh start`, rc 0, ~148 s):
+- Repair roundtrip 2026-10-09 (fail-closed repair witness, `2aa1b99` +
+  `9819a91` + `82ab858`):
+  Start (rc 0, ~137 s): DB redeploy → `8329e8b4` SUCCESS running=1 +
+  `pg_isready`; web `deploymentRedeploy` → fresh `274e403a` waited through
+  BUILDING+stopped (stopped-while-building platform shape) → SUCCESS
+  running=1; push `deploymentRedeploy` → fresh `921af0d0` through
+  DEPLOYING+stopped → SUCCESS running=1. All verified by initiated-id
+  (never running>0 alone). Final: all running=1, crashed=0, autodeploy
+  `enabled=false`. (An earlier attempt with the same code refused
+  correctly when a fresh web id read back stopped, then converged on
+  retry after the platform unstopped it on land — the wait does not
+  bless stopped SUCCESS/terminal ids.)
+- Stop (rc 0, ~149 s): web+push `deploymentStop` → parked, then DB
+  `deploymentStop 8329e8b4` → parked. Final: web `274e403a`
+  CRASHED+stopped, DB `8329e8b4` SUCCESS+stopped, push `921af0d0`
+  CRASHED+stopped, all running=0, no pending, autodeploy `enabled=false`,
+  volume `postgres-volume-yEF7` retained. (Stopped deployments presenting
+  as CRASHED with running=0 is normal platform behavior — parked is
+  defined by running/active/pending, never by the terminal status label.)
+- Production untouched throughout: web/push/Postgres 1/1 running before
+  and after, `https://web-production-f1537.up.railway.app/api/health`
+  200 before and after. No production DB access, no main push, no IaC
+  apply. TEST web/push/DB parked, no pending, web autodeploy off,
+  volume retained.
+
+- Prior roundtrip 2026-10-09 (pre-repair code):
+  Start (rc 0, ~148 s):
   DB redeploy `b3c7ad06` → running=1 + `pg_isready` accepting connections;
   web `deploymentRedeploy` → `674e32c2` SUCCESS running=1 (a first attempt
   earlier refused on a stale crashed=1 count while fresh redeploy `231c4603`
@@ -171,7 +214,7 @@ Native per-service snapshot shape (informative; worker A/B schema):
   push `railway up` from the committed clean checkout → `4d807426`
   SUCCESS running=1 with `npm run push:worker` preserved.
   Final: all three running=1, crashed=0, autodeploy still `enabled=false`.
-- Stop (`sh scripts/railway-test-env.sh stop`, rc 0, ~200 s):
+- Stop (rc 0, ~200 s):
   web+push `deploymentStop` → parked, then DB `deploymentStop b3c7ad06`
   → parked. One transient `Operation timed out (os error 60)` snapshot
   read retried successfully mid-drain. No `deploymentRemove` needed.
