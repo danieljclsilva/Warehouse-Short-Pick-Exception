@@ -172,6 +172,20 @@ svc_running() { extract_field "$1" running; }
 svc_crashed() { extract_field "$1" crashed; }
 svc_latest() { extract_field "$1" latest | cut -d' ' -f1; }
 
+# True (0) when the snapshot shows any active non-stopped deployment for
+# the service: something is still in flight that could converge (or crash).
+# Tells a stale crashed count (previous generation, fresh redeploy already
+# BUILDING — witnessed live 2026-10-09) from a terminal crash with nothing
+# left running.
+svc_may_converge() {
+  node -e '
+const fs = require("fs");
+const root = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const s = root[process.argv[1]] || {};
+const live = ((s.active) || []).filter((d) => d && d.id && d.deploymentStopped !== true);
+process.exit(live.length > 0 ? 0 : 1);' "$1" "$SNAP_FILE"
+}
+
 # Stop set from the FULL scoped snapshot: active non-stopped ids whose
 # status is pending or stoppable (one per line: "<id> <CLASS>").
 # Unknown statuses -> prints "UNKNOWN <status>" lines and returns 3.
@@ -341,8 +355,12 @@ wait_for_running() {
       case "$crashed" in ''|*[!0-9]*) crashed=0 ;; esac
       case "$running" in ''|*[!0-9]*) running=0 ;; esac
       if [ "$crashed" -gt 0 ] 2>/dev/null; then
-        echo "railway-test-env: $2 reports $crashed crashed replica(s); refusing to continue" >&2
-        return 3
+        if svc_may_converge "$1"; then
+          echo "railway-test-env: $2 reports $crashed crashed replica(s) but a deployment is still in flight; waiting for convergence..." >&2
+        else
+          echo "railway-test-env: $2 reports $crashed crashed replica(s) with nothing in flight; refusing to continue" >&2
+          return 3
+        fi
       fi
       if [ "$running" -gt 0 ] 2>/dev/null; then
         echo "railway-test-env: $2 running (running=$running)"

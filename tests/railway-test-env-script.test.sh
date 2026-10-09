@@ -38,6 +38,11 @@
 #   fail-mutation-once    -> first StopDeployment exits 1 (mid-drain error)
 #   fail-redeploy         -> RedeployDeployment exits 1
 #   never-converge        -> redeploy/up mutations are no-ops (running stays 0)
+#   defer-next-<svc> heads N -> armed as defer-converge-<svc> when that
+#                            service next redeploys (async-build model)
+#   defer-converge-<svc>  -> that service lands after N service-list reads
+#                            (running stays 0 + stale crashed persists
+#                            until the countdown lands)
 #   stubborn-stop         -> StopDeployment succeeds without mutating (no park)
 #   resist-stop-<dep-id>  -> that deployment survives StopDeployment (removal path)
 #   pin-running-<svc-id>  -> that service's running stays 1 (stuck drain)
@@ -152,6 +157,28 @@ if [ "$1" = "service" ] && [ "${2:-}" = "list" ]; then
 const fs = require("fs");
 const dir = process.env.STUB_STATE_DIR;
 const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
+// Deferred convergence (async-build model): defer-converge-<svcId> holds a
+// remaining read count; each service-list read ticks it down, and at zero
+// the fresh generation lands (running=1, stale crashed cleared — witnessed
+// live 2026-10-09). Redeploy handlers skip the instant flip while armed.
+for (const f of fs.readdirSync(dir).filter((x) => x.startsWith("defer-converge-"))) {
+  const svc = f.slice("defer-converge-".length);
+  let n = 0;
+  try { n = Number(fs.readFileSync(dir + "/" + f, "utf8")) || 0; } catch {}
+  if (n <= 1) {
+    try { fs.unlinkSync(dir + "/" + f); } catch {}
+    const e = list.find((s) => s && s.id === svc);
+    if (e) {
+      e.replicas = e.replicas || {};
+      e.replicas.running = 1;
+      e.replicas.crashed = 0;
+      e.replicas.configured = Math.max(e.replicas.configured || 0, 1);
+    }
+  } else {
+    fs.writeFileSync(dir + "/" + f, String(n - 1));
+  }
+}
+fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));
 const missing = fs.readdirSync(dir)
   .filter((f) => f.startsWith("missing-service:"))
   .map((f) => f.slice("missing-service:".length));
@@ -207,6 +234,7 @@ if (!e) { console.error("stub: unknown service for redeploy"); process.exit(1); 
 if (!fs.existsSync(dir + "/never-converge")) {
   e.replicas = e.replicas || {};
   e.replicas.running = 1;
+  e.replicas.crashed = 0; // fresh/resumed generation clears the stale crashed count (witnessed live 2026-10-09)
   e.replicas.configured = Math.max(e.replicas.configured || 0, 1);
   fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));
 }
@@ -239,11 +267,19 @@ if (p) {
     p.activeDeployments.forEach((d) => { if (d.id === id) d.deploymentStopped = false; });
   }
 }
-if (!fs.existsSync(dir + "/never-converge")) {
+// Arm-on-redeploy: a defer-next-<svc> template becomes the live countdown
+// when this redeploy runs, so pre-redeploy reads never consume it.
+try {
+  const t = fs.readFileSync(dir + "/defer-next-" + owner, "utf8");
+  fs.writeFileSync(dir + "/defer-converge-" + owner, t);
+  fs.unlinkSync(dir + "/defer-next-" + owner);
+} catch {}
+if (!fs.existsSync(dir + "/never-converge") && !fs.existsSync(dir + "/defer-converge-" + owner)) {
   const e = list.find((s) => s.id === owner);
   if (e) {
     e.replicas = e.replicas || {};
     e.replicas.running = 1;
+  e.replicas.crashed = 0; // fresh/resumed generation clears the stale crashed count (witnessed live 2026-10-09)
     e.replicas.configured = Math.max(e.replicas.configured || 0, 1);
   }
 }
@@ -450,11 +486,19 @@ if (!fs.existsSync(dir + "/never-converge")) {
     inst[svc].activeDeployments = inst[svc].activeDeployments || [];
     inst[svc].activeDeployments.push({ id, status: "SUCCESS", deploymentStopped: false });
   }
+try {
+  const t = fs.readFileSync(dir + "/defer-next-" + svc, "utf8");
+  fs.writeFileSync(dir + "/defer-converge-" + svc, t);
+  fs.unlinkSync(dir + "/defer-next-" + svc);
+} catch {}
+  if (!fs.existsSync(dir + "/defer-converge-" + svc)) {
   const e = list.find((s) => s.id === svc);
   if (e) {
     e.replicas = e.replicas || {};
     e.replicas.running = 1;
+  e.replicas.crashed = 0; // fresh/resumed generation clears the stale crashed count (witnessed live 2026-10-09)
     e.replicas.configured = Math.max(e.replicas.configured || 0, 1);
+  }
   }
   fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
   fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));
@@ -494,11 +538,19 @@ if (!fs.existsSync(dir + "/never-converge")) {
   deps[svc].unshift(node);
   inst[svc].latestDeployment = { id, status: "SUCCESS", deploymentStopped: false, canRedeploy: true };
   inst[svc].activeDeployments = [{ id, status: "SUCCESS", deploymentStopped: false }];
+try {
+  const t = fs.readFileSync(dir + "/defer-next-" + svc, "utf8");
+  fs.writeFileSync(dir + "/defer-converge-" + svc, t);
+  fs.unlinkSync(dir + "/defer-next-" + svc);
+} catch {}
+  if (!fs.existsSync(dir + "/defer-converge-" + svc)) {
   const e = list.find((s) => s.id === svc);
   if (e) {
     e.replicas = e.replicas || {};
     e.replicas.running = 1;
+  e.replicas.crashed = 0; // fresh/resumed generation clears the stale crashed count (witnessed live 2026-10-09)
     e.replicas.configured = Math.max(e.replicas.configured || 0, 1);
+  }
   }
   fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));
   fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));
@@ -601,6 +653,7 @@ const e = list.find((s) => s.id === id);
 if (e) {
   e.replicas = e.replicas || {};
   e.replicas.running = 1;
+  e.replicas.crashed = 0; // fresh/resumed generation clears the stale crashed count (witnessed live 2026-10-09)
   e.replicas.configured = Math.max(e.replicas.configured || 0, 1);
 }
 fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));
@@ -625,6 +678,17 @@ fs.writeFileSync(dir + "/instances.json", JSON.stringify(inst));
 fs.writeFileSync(dir + "/deployments.json", JSON.stringify(deps));' "$1" "$2"
 }
 
+# Set the crashed replica count for one service (stale-crash shapes).
+set_crashed() {
+  node -e '
+const fs = require("fs");
+const dir = process.env.STUB_STATE_DIR;
+const list = JSON.parse(fs.readFileSync(dir + "/servicelist.json", "utf8"));
+const e = list.find((s) => s.id === process.argv[1]);
+e.replicas = e.replicas || {};
+e.replicas.crashed = Number(process.argv[2]) || 0;
+fs.writeFileSync(dir + "/servicelist.json", JSON.stringify(list));' "$1" "$2"
+}
 # Append an extra active non-stopped deployment to one service.
 add_active() {
   node -e '
@@ -988,6 +1052,23 @@ check "start-stale: never claims started" "! grep -q 'test environment started' 
 check "start-stale: DB redeploy requested first" "grep -q '^railway redeploy .*-s $SVC_DB' '$STUB_STATE_DIR/calls.log'"
 check "start-stale: dependents never started on unproven DB" "! grep -q 'RedeployDeployment' '$STUB_STATE_DIR/calls.log' && ! grep -q '^railway redeploy .*-s $SVC_WEB' '$STUB_STATE_DIR/calls.log'"
 end_case
+
+# --- start: stale crashed count converges when a redeploy is in flight --------
+# Live shape 2026-10-09: web parked CRASHED+stopped with crashed=1; the fresh
+# redeploy builds (running 0, crashed still 1) then lands (running 1,
+# crashed 0). Refusing on the stale count aborts a healthy start; refusing
+# only with nothing in flight keeps the start-crash guard intact.
+new_case
+fixtures_parked
+set_push_history
+set_crashed "$SVC_WEB" 1
+printf '2' >"$STUB_STATE_DIR/defer-next-$SVC_WEB"
+run_script start --timeout 30
+check "start-stalecrash: exits 0" "[ $RC -eq 0 ]"
+check "start-stalecrash: stale crash tolerated while in flight" "grep -q 'still in flight' '$CASE_DIR/err.txt'"
+check "start-stalecrash: reports started" "grep -q 'test environment started' '$CASE_DIR/out.txt'"
+check "start-stalecrash: no scale calls" "no_scale_calls"
+end_case
 new_case
 fixtures_parked
 set_push_history
@@ -1088,9 +1169,14 @@ check "start-probe: never claims started" "! grep -q 'test environment started' 
 end_case
 
 # --- start: crashed DB replicas refuse ----------------------------------------------------
+# Persistent crash: the redeploy cannot heal it (never-converge), so the DB
+# never runs with nothing in flight and the crash refusal (not a silent
+# timeout) names the crash while dependents stay untouched. The healable
+# stale-crash shape is covered by start-stalecrash.
 new_case
 fixtures_parked
 set_push_history
+touch "$STUB_STATE_DIR/never-converge"
 node -e '
 const fs = require("fs");
 const dir = process.env.STUB_STATE_DIR;
