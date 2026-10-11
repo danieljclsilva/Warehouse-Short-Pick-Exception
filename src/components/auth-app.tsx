@@ -184,6 +184,8 @@ type DeepLinkLine = {
   replenishmentState?: string | null;
   replenishmentNote?: string | null;
   replenishmentActorName?: string | null;
+  actionOwnerName?: string | null;
+  replenishmentRetrieverName?: string | null;
   nextActionCode?: string | null;
   blockingReasonCode?: string | null;
   pickerRetrieval?: boolean | null;
@@ -202,6 +204,7 @@ type DeepLinkCase = {
   resolvedAt?: string | null;
   closedAt?: string | null;
   lines?: DeepLinkLine[] | null;
+  lineProjections?: Array<{ lineId: string; nextActionCode?: string | null; actionOwnerName?: string | null; replenishmentRetrieverName?: string | null }> | null;
   events?: CaseTimelineEvent[] | null;
   eventsPagination?: { total: number; page: number; pageSize: number; totalPages: number } | null;
   messages?: CaseTimelineMessage[] | null;
@@ -209,23 +212,27 @@ type DeepLinkCase = {
 
 type BriefInstruction = { key: MessageKey; values?: Record<string, string> };
 
-export function briefInstructionForLine(line: { nextActionCode?: string | null; blockingReasonCode?: string | null; checkerName?: string | null; retrieverName?: string | null; replenishmentActorName?: string | null; discoveredLocation?: string | null; location?: string | null; originalLocation?: string | null; pickerRetrieval?: boolean | null }): BriefInstruction | null {
+export function briefInstructionForLine(line: Omit<DeepLinkLine, "id"> & { id?: string }): BriefInstruction | null {
   const nextAction = line.nextActionCode ?? null;
-  const owner = line.checkerName ?? line.retrieverName ?? line.replenishmentActorName ?? null;
-  const ownerSuffix = owner ? ` · ${owner}` : "";
-  const base = { ownerSeparator: owner ? " " : "", ownerSuffix };
+  const ownerFor = (name: string | null | undefined) => {
+    const owner = name ?? null;
+    return { ownerSeparator: owner ? " " : "", ownerSuffix: owner ? ` · ${owner}` : "" };
+  };
+  const noOwner = { ownerSeparator: "", ownerSuffix: "" };
   switch (nextAction) {
-    case "CLAIM_CHECK": return { key: "navInstructionClaimCheck", values: base };
-    case "COMPLETE_CHECK": return { key: "navInstructionCompleteCheck", values: base };
+    case "CLAIM_CHECK": return { key: "navInstructionClaimCheck", values: noOwner };
+    case "COMPLETE_CHECK": return { key: "navInstructionCompleteCheck", values: ownerFor(line.actionOwnerName ?? line.checkerName) };
     case "RETRIEVE": {
       const place = line.discoveredLocation ?? line.location ?? line.originalLocation ?? null;
-      if (line.pickerRetrieval === true) return { key: "navInstructionPickerRetrieve", values: place ? { ...base, location: place } : base };
-      return { key: place ? "navInstructionRetrieve" : "navInstructionRetrieveHandoff", values: place ? { ...base, location: place } : base };
+      const fallback = line.pickerRetrieval === true ? noOwner : ownerFor(line.actionOwnerName ?? line.retrieverName);
+      if (line.pickerRetrieval === true) return { key: "navInstructionPickerRetrieve", values: place ? { ...fallback, location: place } : fallback };
+      return { key: place ? "navInstructionRetrieve" : "navInstructionRetrieveHandoff", values: place ? { ...fallback, location: place } : fallback };
     }
-    case "REPLENISH": return { key: "navInstructionReplenish", values: base };
-    case "STAGE_ORDER": return { key: "navInstructionStageOrder", values: base };
-    case "RESOLVE": return { key: "navInstructionResolve", values: base };
-    case "WAIT": return { key: "navInstructionWait", values: base };
+    case "REPLENISH": return { key: "navInstructionReplenish", values: ownerFor(line.actionOwnerName ?? line.replenishmentRetrieverName) };
+    case "STAGE_ORDER": return { key: "navInstructionStageOrder", values: noOwner };
+    case "RESOLVE": return { key: "navInstructionResolve", values: noOwner };
+    case "REQUEST_CHECK": return { key: "navInstructionRequestCheck", values: noOwner };
+    case "WAIT": return { key: "navInstructionWait", values: line.actionOwnerName ? ownerFor(line.actionOwnerName) : noOwner };
     case "NONE": return null;
     default: return null;
   }
@@ -276,7 +283,9 @@ export function DeepCaseView({ tr, locale = "en", data, lineId, canViewMessages,
   const lines = data.lines ?? [];
   const visibleMessages = canViewMessages && Array.isArray(data.messages) ? data.messages : [];
   const focusedLine = lineId !== null ? lines.find((line) => line.id === lineId) ?? null : null;
-  const instructionTarget = fromNotification ? (focusedLine ?? (lines.length === 1 ? lines[0] : null)) : null;
+  const rawTarget = fromNotification ? (focusedLine ?? (lines.length === 1 ? lines[0] : null)) : null;
+  const projected = rawTarget && Array.isArray(data.lineProjections) ? data.lineProjections.find((entry) => entry.lineId === rawTarget.id) ?? null : null;
+  const instructionTarget = rawTarget && projected ? { ...rawTarget, nextActionCode: projected.nextActionCode ?? rawTarget.nextActionCode, actionOwnerName: projected.actionOwnerName ?? rawTarget.actionOwnerName ?? null, replenishmentRetrieverName: projected.replenishmentRetrieverName ?? rawTarget.replenishmentRetrieverName ?? null } : rawTarget;
   const instructionKey = instructionTarget ? `${data.id}:${instructionTarget.id}:${instructionTarget.nextActionCode ?? ""}` : null;
   const instruction = !closed && instructionTarget && instructionKey !== dismissedInstructionKey ? briefInstructionForLine(instructionTarget) : null;
   return (
@@ -517,7 +526,8 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
   const [deepCaseId, setDeepCaseId] = useState<string | null>(null);
   const [deepLineId, setDeepLineId] = useState<string | null>(null);
   const [deepCaseFromNotification, setDeepCaseFromNotification] = useState(false);
-  const [liveFocus, setLiveFocus] = useState<{ section: LiveSection; caseId: string; nonce: number } | null>(null);
+  const [liveFocus, setLiveFocus] = useState<{ section: LiveSection; caseId: string; lineId: string | null; nonce: number } | null>(null);
+  const [pendingNotificationId, setPendingNotificationId] = useState<string | null>(null);
   const { messages: t } = getMessages(locale);
   const tr = useCallback((key: MessageKey, values?: Record<string, string>) => translate(t, key, values), [t]);
   const localeRef = useRef<Locale>(locale);
@@ -571,6 +581,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             const deepLine = window.location.pathname === "/" ? params.get("line") : null;
             const requestedSection = window.location.pathname === "/"
               && params.get("section") === "notifications";
+            const pushNotificationId = window.location.pathname === "/" ? params.get("notification") : null;
             if (deepCase) {
               const section = liveSectionForUser(body.user, null);
               if (section) {
@@ -579,7 +590,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
                 setDeepCaseFromNotification(false);
                 setActiveSection(section);
                 setMobileNavOpen(false);
-                setLiveFocus({ section, caseId: deepCase, nonce: Date.now() });
+                setLiveFocus({ section, caseId: deepCase, lineId: deepLine, nonce: Date.now() });
               } else {
                 setDeepCaseId(deepCase);
                 setDeepLineId(deepLine);
@@ -587,9 +598,13 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
                 setActiveSection(firstSection?.key ?? "workspace");
                 setLiveFocus(null);
               }
+            } else if (requestedSection && pushNotificationId) {
+              setActiveSection("notifications");
+              setPendingNotificationId(pushNotificationId);
+              setLiveFocus(null);
             } else setActiveSection(requestedSection ? "notifications" : firstSection?.key ?? "workspace");
             setView("workspace");
-            if (requestedSection) router.replace("/", { scroll: false });
+            if (requestedSection && !pushNotificationId) router.replace("/", { scroll: false });
           }
         } else if (response.status !== 401 && !cancelled) {
           setSessionError(trRef.current("sessionError"));
@@ -659,27 +674,34 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
     });
   }, [badgeEnabled]);
   useVisibilityPolling(refreshBadges, 15_000, badgeEnabled);
+  const handleAuthoritativeUnreadCount = useCallback((nextUnread: number) => {
+    const current = userRef.current;
+    if (!current || !badgeMountedRef.current || !badgeEnabledRef.current) return;
+    badgeGenerationRef.current += 1;
+    setUnreadCount(nextUnread);
+  }, []);
 
   const canCreateInvites = user?.role === "ADMIN" || Boolean(user?.permissions.includes("CREATE_INVITES"));
   const canUsePickerWorkflow = Boolean(user && ["PICKER", "TROUBLESHOOTER"].includes(user.role) && user.permissions.some((permission) => permission === "REPORT_SHORT_PICK" || permission === "VIEW_OWN_CASES"));
   const canOverrideDuplicateLine = Boolean(user?.permissions.includes("OVERRIDE_DUPLICATE_SHORT_PICK_LINE"));
   const assignableRoles = user ? inviteRolesByActor[user.role] ?? [] : [];
   const openCaseFromNotification = useCallback((caseId: string, lineId: string | null, notification?: { notification?: { type?: string | null; payload?: Record<string, unknown> | null } | null }) => {
-    if (!user) return;
+    const current = userRef.current;
+    if (!current) return;
     const inner = notification?.notification ?? null;
     const payload = inner?.payload && typeof inner.payload === "object" ? inner.payload as Record<string, unknown> : {};
     const flaggedLine = typeof payload.shortPickLineId === "string" ? payload.shortPickLineId
       : typeof payload.lineId === "string" ? payload.lineId : null;
     const targetLine = lineId ?? flaggedLine;
     const targetUrl = `/?case=${encodeURIComponent(caseId)}${targetLine ? `&line=${encodeURIComponent(targetLine)}` : ""}`;
-    const section = liveSectionForUser(user, inner?.type ?? null);
+    const section = liveSectionForUser(current, inner?.type ?? null);
     if (section) {
       setDeepCaseId(null);
       setDeepLineId(null);
       setDeepCaseFromNotification(false);
       setActiveSection(section);
       setMobileNavOpen(false);
-      setLiveFocus({ section, caseId, nonce: Date.now() });
+      setLiveFocus({ section, caseId, lineId: targetLine, nonce: Date.now() });
     } else {
       setDeepCaseId(caseId);
       setDeepLineId(targetLine);
@@ -687,7 +709,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
       setLiveFocus(null);
     }
     router.replace(targetUrl, { scroll: false });
-  }, [router, user]);
+  }, [router]);
   const openLiveCase = useCallback((caseId: string, lineId: string | null) => {
     if (!user) return;
     setDeepCaseId(null);
@@ -712,6 +734,15 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
     router.replace(`/?case=${encodeURIComponent(caseId)}`, { scroll: false });
   }, [router]);
   const consumeLiveFocus = useCallback(() => { setLiveFocus(null); }, []);
+  const consumePendingNotification = useCallback(() => {
+    setPendingNotificationId(null);
+    const next = new URLSearchParams(window.location.search);
+    if (next.has("notification")) {
+      next.delete("notification");
+      const suffix = next.toString();
+      router.replace(suffix ? `/?${suffix}` : "/", { scroll: false });
+    }
+  }, [router]);
   const closeFocusedCase = useCallback(() => {
     setDeepCaseId(null);
     setDeepLineId(null);
@@ -809,7 +840,34 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
         localeRef.current = body.user.preferredLanguage || locale;
       }
       const firstSection = navigationFor(body.user);
-      setActiveSection(firstSection.at(0)?.key ?? "workspace");
+      const params = new URLSearchParams(window.location.search);
+      const deepCase = window.location.pathname === "/" ? params.get("case") : null;
+      const deepLine = window.location.pathname === "/" ? params.get("line") : null;
+      const pushNotificationId = window.location.pathname === "/" ? params.get("notification") : null;
+      const requestedSection = window.location.pathname === "/" && params.get("section") === "notifications";
+      if (deepCase) {
+        const section = liveSectionForUser(body.user, null);
+        if (section) {
+          setDeepCaseId(null);
+          setDeepLineId(null);
+          setDeepCaseFromNotification(false);
+          setActiveSection(section);
+          setMobileNavOpen(false);
+          setLiveFocus({ section, caseId: deepCase, lineId: deepLine, nonce: Date.now() });
+        } else {
+          setDeepCaseId(deepCase);
+          setDeepLineId(deepLine);
+          setDeepCaseFromNotification(true);
+          setActiveSection(firstSection.at(0)?.key ?? "workspace");
+          setLiveFocus(null);
+        }
+      } else if (requestedSection && pushNotificationId) {
+        setActiveSection("notifications");
+        setPendingNotificationId(pushNotificationId);
+        setLiveFocus(null);
+      } else {
+        setActiveSection(firstSection.at(0)?.key ?? "workspace");
+      }
       setView("workspace");
       setPin("");
     } catch {
@@ -1025,8 +1083,10 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
                 canReopen={user.permissions.includes("REOPEN_CASE")}
                 canChangePhase={user.permissions.includes("MARK_ORDER_STAGED")}
                 canRecordReplenishment={user.permissions.includes("RECORD_REPLENISHMENT")}
+                canRequestCheck={user.permissions.includes("ASSIGN_CHECK")}
                 canReportLocation={user.permissions.includes("REPORT_NEW_LOCATION")}
                 focusedCaseId={liveFocus?.section === "openCases" ? liveFocus.caseId : null}
+                focusedLineId={liveFocus?.section === "openCases" ? liveFocus.lineId : null}
                 focusedNonce={liveFocus?.section === "openCases" ? liveFocus.nonce : 0}
                 focusFromNotification={liveFocus?.section === "openCases"}
                 onFocusConsumed={consumeLiveFocus}
@@ -1034,21 +1094,25 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
               />
             ) : activeSection === "notifications" ? (
               <NotificationCenter
+                key={user.id}
                 tr={tr}
                 locale={locale}
                 canManagePreferences={user.permissions.includes("VIEW_ALL_OPEN_CASES")}
                 onOpenCase={(caseId, lineId, notification) => openCaseFromNotification(caseId, lineId ?? null, notification)}
                 onReviewPhotos={user.permissions.includes("APPROVE_PROFILE_PHOTO") || user.role === "ADMIN" ? () => selectSection("users") : undefined}
-                onUnreadChange={setUnreadCount}
+                onUnreadChange={handleAuthoritativeUnreadCount}
+                focusedNotificationId={pendingNotificationId}
+                onNotificationConsumed={consumePendingNotification}
+                recipientScope={user.id}
               />
             ) : activeSection === "reports" && allowedNavigation.some((item) => item.key === "reports") ? (
               <AnalyticsDashboard tr={tr} locale={locale} canExport={user.permissions.includes("EXPORT_ANALYTICS")} />
             ) : canUsePickerWorkflow && activeSection === "myWork" ? (
-              <PickerWorkflow locale={locale} tr={tr} userId={user.id} canReportShortPick={Boolean(user.permissions.includes("REPORT_SHORT_PICK"))} canViewOwnCases={user.permissions.includes("VIEW_OWN_CASES")} canViewMessages={user.permissions.includes("VIEW_CASE_MESSAGES")} canAddMessages={user.permissions.includes("ADD_CASE_MESSAGE")} canOverrideDuplicateLine={canOverrideDuplicateLine} canStage={user.permissions.includes("MARK_ORDER_STAGED")} canConfirmRetrieval={user.permissions.includes("CONFIRM_RETRIEVAL")} canClose={user.permissions.includes("RESOLVE_CASE")} canRecordReplenishment={user.permissions.includes("RECORD_REPLENISHMENT")} canReportLocation={user.permissions.includes("REPORT_NEW_LOCATION")} focusedCaseId={liveFocus?.section === "myWork" ? liveFocus.caseId : null} focusedNonce={liveFocus?.section === "myWork" ? liveFocus.nonce : 0} focusFromNotification={liveFocus?.section === "myWork"} onFocusConsumed={consumeLiveFocus} onFocusedClose={closeFocusedCase} />
+              <PickerWorkflow locale={locale} tr={tr} userId={user.id} canReportShortPick={Boolean(user.permissions.includes("REPORT_SHORT_PICK"))} canViewOwnCases={user.permissions.includes("VIEW_OWN_CASES")} canViewMessages={user.permissions.includes("VIEW_CASE_MESSAGES")} canAddMessages={user.permissions.includes("ADD_CASE_MESSAGE")} canOverrideDuplicateLine={canOverrideDuplicateLine} canStage={user.permissions.includes("MARK_ORDER_STAGED")} canConfirmRetrieval={user.permissions.includes("CONFIRM_RETRIEVAL")} canClose={user.permissions.includes("RESOLVE_CASE")} canRecordReplenishment={user.permissions.includes("RECORD_REPLENISHMENT")} canReportLocation={user.permissions.includes("REPORT_NEW_LOCATION")} focusedCaseId={liveFocus?.section === "myWork" ? liveFocus.caseId : null} focusedNonce={liveFocus?.section === "myWork" ? liveFocus.nonce : 0} focusFromNotification={liveFocus?.section === "myWork"} focusedLineId={liveFocus?.section === "myWork" ? liveFocus.lineId : null} onFocusConsumed={consumeLiveFocus} onFocusedClose={closeFocusedCase} />
             ) : activeSection === "history" && allowedNavigation.some((item) => item.key === "history") ? (
               <CaseHistory locale={locale} tr={tr} onOpenCase={openHistoryCase} />
             ) : activeSection === "assignments" && allowedNavigation.some((item) => item.key === "assignments") ? (
-              <CheckWorkflow locale={locale} tr={tr} canViewAvailable={user.permissions.includes("VIEW_AVAILABLE_CHECKS") || user.permissions.includes("ASSIGN_CHECK")} canClaim={user.permissions.includes("CLAIM_CHECK")} canComplete={user.permissions.includes("COMPLETE_CHECK")} canAssign={user.permissions.includes("ASSIGN_CHECK")} canReassign={user.permissions.includes("REASSIGN_CHECK")} canRetrieve={user.permissions.includes("CONFIRM_RETRIEVAL")} canMessage={user.permissions.includes("ADD_CASE_MESSAGE")} canRecordReplenishment={user.permissions.includes("RECORD_REPLENISHMENT")} canReportLocation={user.permissions.includes("REPORT_NEW_LOCATION")} canViewAllOpenCases={user.permissions.includes("VIEW_ALL_OPEN_CASES")} focusedCaseId={liveFocus?.section === "assignments" ? liveFocus.caseId : null} focusedNonce={liveFocus?.section === "assignments" ? liveFocus.nonce : 0} onFocusConsumed={consumeLiveFocus} onFocusedClose={closeFocusedCase} />
+              <CheckWorkflow locale={locale} tr={tr} canViewAvailable={user.permissions.includes("VIEW_AVAILABLE_CHECKS") || user.permissions.includes("ASSIGN_CHECK")} canClaim={user.permissions.includes("CLAIM_CHECK")} canComplete={user.permissions.includes("COMPLETE_CHECK")} canAssign={user.permissions.includes("ASSIGN_CHECK")} canReassign={user.permissions.includes("REASSIGN_CHECK")} canRetrieve={user.permissions.includes("CONFIRM_RETRIEVAL")} canMessage={user.permissions.includes("ADD_CASE_MESSAGE")} canRecordReplenishment={user.permissions.includes("RECORD_REPLENISHMENT")} canReportLocation={user.permissions.includes("REPORT_NEW_LOCATION")} canViewAllOpenCases={user.permissions.includes("VIEW_ALL_OPEN_CASES")} focusedCaseId={liveFocus?.section === "assignments" ? liveFocus.caseId : null} focusedNonce={liveFocus?.section === "assignments" ? liveFocus.nonce : 0} focusedLineId={liveFocus?.section === "assignments" ? liveFocus.lineId : null} onFocusConsumed={consumeLiveFocus} onFocusedClose={closeFocusedCase} />
             ) : canCreateInvites && activeSection === "invitations" ? (
               <>
                 <div className="content-heading"><div><h1>{tr("inviteManagementTitle")}</h1><p>{tr("inviteManagementDescription")}</p></div></div>

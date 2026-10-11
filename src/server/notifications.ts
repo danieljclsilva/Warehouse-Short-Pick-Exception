@@ -68,6 +68,19 @@ export async function insertResponsibilityNotification(tx: DbOperations, input: 
   if (!recipient) return null;
   return insertNotification(tx, input);
 }
+export type InformationalNotificationType = Extract<NotificationType, "ORDER_STAGED" | "CHECK_RESOLVED_EXTERNALLY">;
+
+export async function insertInformationalNotification(tx: DbOperations, input: Omit<NotificationInput, "type"> & {
+  type: InformationalNotificationType;
+  excludeActorId?: string | null;
+}) {
+  if (input.excludeActorId && input.recipientUserId === input.excludeActorId) return null;
+  const [recipient] = await tx.select({ id: users.id }).from(users).where(and(eq(users.id, input.recipientUserId), eq(users.status, "ACTIVE"))).limit(1);
+  if (!recipient) return null;
+  return insertNotification(tx, { recipientUserId: input.recipientUserId, type: input.type,
+    caseId: input.caseId, shortPickLineId: input.shortPickLineId, payload: input.payload, dedupeKey: input.dedupeKey });
+}
+
 
 const managerMonitoringKeys = new Set<PreferenceKey>(preferenceKeys);
 
@@ -235,12 +248,32 @@ export async function getNotifications(auth: AuthContext, options: { page?: numb
   return { notifications: rows, unreadCount: unread[0]?.count ?? 0, ...paginationMeta(totalRow[0]?.count ?? 0, parsed.page, parsed.pageSize) };
 }
 
+export async function getNotificationById(auth: AuthContext, notificationId: string) {
+  const scope = and(eq(notifications.id, notificationId), eq(notifications.recipientUserId, auth.user.id));
+  const [row] = await getDb().select({ id: notifications.id, type: notifications.type, caseId: notifications.caseId,
+    shortPickLineId: notifications.shortPickLineId, payload: notifications.payload,
+    createdAt: notifications.createdAt, readAt: notifications.readAt })
+    .from(notifications).where(scope).limit(1);
+  if (!row) throw new CaseApiError("CASE_NOT_FOUND", "Notification not found", 404);
+  return row;
+}
+
+async function recipientUnreadCount(recipientUserId: string) {
+  const unread = await getDb().select({ count: sql<number>`count(*)::int` }).from(notifications)
+    .where(and(eq(notifications.recipientUserId, recipientUserId), isNull(notifications.readAt)));
+  return unread[0]?.count ?? 0;
+}
+
 export async function markNotificationRead(auth: AuthContext, notificationId: string) {
-  const readAt = new Date();
-  const [updated] = await getDb().update(notifications).set({ readAt })
-    .where(and(eq(notifications.id, notificationId), eq(notifications.recipientUserId, auth.user.id))).returning({ id: notifications.id, readAt: notifications.readAt });
-  if (!updated) throw new CaseApiError("CASE_NOT_FOUND", "Notification not found", 404);
-  return { id: updated.id, readAt: updated.readAt };
+  const db = getDb();
+  const [updated] = await db.update(notifications).set({ readAt: new Date() })
+    .where(and(eq(notifications.id, notificationId), eq(notifications.recipientUserId, auth.user.id), isNull(notifications.readAt)))
+    .returning({ id: notifications.id, readAt: notifications.readAt });
+  if (updated) return { id: updated.id, readAt: updated.readAt, unreadCount: await recipientUnreadCount(auth.user.id) };
+  const [existing] = await db.select({ id: notifications.id, readAt: notifications.readAt }).from(notifications)
+    .where(and(eq(notifications.id, notificationId), eq(notifications.recipientUserId, auth.user.id))).limit(1);
+  if (!existing) throw new CaseApiError("CASE_NOT_FOUND", "Notification not found", 404);
+  return { id: existing.id, readAt: existing.readAt, unreadCount: await recipientUnreadCount(auth.user.id) };
 }
 
 /**
@@ -254,9 +287,7 @@ export async function markAllNotificationsRead(auth: AuthContext) {
   const updated = await getDb().update(notifications).set({ readAt })
     .where(and(eq(notifications.recipientUserId, auth.user.id), isNull(notifications.readAt)))
     .returning({ id: notifications.id });
-  const unread = await getDb().select({ count: sql<number>`count(*)::int` }).from(notifications)
-    .where(and(eq(notifications.recipientUserId, auth.user.id), isNull(notifications.readAt)));
-  return { updated: updated.length, unreadCount: unread[0]?.count ?? 0 };
+  return { updated: updated.length, unreadCount: await recipientUnreadCount(auth.user.id) };
 }
 
 function requireMonitoringPermission(auth: AuthContext) {

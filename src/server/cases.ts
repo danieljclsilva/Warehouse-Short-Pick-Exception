@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { auditLog, caseEvents, caseMessages, checkTasks, orderCases, shortPickLines, users } from "@/db/schema";
@@ -8,6 +8,7 @@ import { insertMonitoringNotifications } from "@/server/notifications";
 import { getCurrentConfiguration } from "@/server/configuration";
 import { paginationMeta, paginationOffset, paginationQuerySchema } from "@/server/pagination";
 import { CaseApiError } from "@/server/case-errors";
+import { aggregateCaseDisplayStatus } from "@/domain/case-display-status";
 
 export const orderNumberSchema = z.string().trim().regex(/^\d+$/, "Order number must contain digits only").max(64);
 export const lookupOrderSchema = z.object({ orderNumber: orderNumberSchema });
@@ -29,9 +30,9 @@ export function normalizeOrderNumber(value: string) {
   return orderNumberSchema.parse(value);
 }
 
-export type NextActionCode = "CLAIM_CHECK" | "COMPLETE_CHECK" | "RETRIEVE" | "STAGE_ORDER" | "REPLENISH" | "RESOLVE" | "WAIT" | "NONE";
-export type BlockingReasonCode = "CAPACITY_REACHED" | "CHECK_CLAIMED" | "AWAITING_RETRIEVAL" | "AWAITING_REPLENISHMENT" | "CASE_CLOSED" | null;
-export type LineDisplayStatus = "OPEN" | "CHECKING" | "FOUND" | "FOUND_AT_ORIGINAL" | "WAITING_RETRIEVAL" | "RETRIEVING" | "RETRIEVED" | "NOT_FOUND" | "WRONG_LOCATION" | "TROUBLESHOOTING" | "RESOLVED" | "CANCELLED";
+export type NextActionCode = "CLAIM_CHECK" | "COMPLETE_CHECK" | "REQUEST_CHECK" | "RETRIEVE" | "STAGE_ORDER" | "REPLENISH" | "RESOLVE" | "WAIT" | "NONE";
+export type BlockingReasonCode = "CAPACITY_REACHED" | "CHECK_CLAIMED" | "AWAITING_RETRIEVAL" | "AWAITING_REPLENISHMENT" | "NO_ACTIVE_CHECK" | "CASE_CLOSED" | null;
+export type LineDisplayStatus = "OPEN" | "CHECKING" | "FOUND" | "FOUND_AT_ORIGINAL" | "WAITING_RETRIEVAL" | "RETRIEVING" | "RETRIEVAL_FAILED" | "RETRIEVED" | "NOT_FOUND" | "WRONG_LOCATION" | "TROUBLESHOOTING" | "RESOLVED" | "CANCELLED";
 export type ReplenishmentState = "NONE" | "WAITING" | "COMPLETED";
 export type LineProjection = {
   lineId: string; caseId: string; orderNumber: string;
@@ -59,13 +60,21 @@ type CheckTaskRow = typeof checkTasks.$inferSelect;
 function displayStatusForLine(line: ShortPickLineRow, latestCompletionCode: string | null): LineDisplayStatus {
   if (line.state === "RESOLVED") return line.retrievalState === "RETRIEVED" ? "RETRIEVED" : "RESOLVED";
   if (line.state === "CANCELLED") return "CANCELLED";
+  // A nonterminal completed replenishment carries a pending/failed retrieval obligation.
+  // Surface it as waiting retrieval/retry before any active-check or replenishment hint, without mutating main state.
+  // FOUND lines keep their own branch below so a nonfailed FOUND_AT_ORIGINAL stays distinct; FAILED still dominates there.
+  if (line.state !== "FOUND" && line.replenishmentState === "COMPLETED" && (line.retrievalState === "PENDING" || line.retrievalState === "IN_PROGRESS" || line.retrievalState === "FAILED")) {
+    return line.retrievalState === "FAILED" ? "RETRIEVAL_FAILED" : line.retrievalState === "IN_PROGRESS" ? "RETRIEVING" : "WAITING_RETRIEVAL";
+  }
   if (line.state === "CHECKING") return "CHECKING";
-  if (line.state === "RETRIEVING") return "RETRIEVING";
+  if (line.state === "RETRIEVING") return line.retrievalState === "FAILED" ? "RETRIEVAL_FAILED" : "RETRIEVING";
   if (line.state === "FOUND") {
+    // Failure dominates an original-location finding: a failed retry must read as a retry, never as a ready hint.
+    if (line.retrievalState === "FAILED") return "RETRIEVAL_FAILED";
     if (latestCompletionCode === "FOUND_AT_ORIGINAL" && !line.discoveredLocation) return "FOUND_AT_ORIGINAL";
     if (line.retrievalState === "IN_PROGRESS") return "RETRIEVING";
     if (line.retrievalState === "RETRIEVED") return "RETRIEVED";
-    if (line.retrievalState === "PENDING" || line.retrievalState === "FAILED") return "WAITING_RETRIEVAL";
+    if (line.retrievalState === "PENDING") return "WAITING_RETRIEVAL";
     return "FOUND";
   }
   if (line.state === "OPEN") {
@@ -76,21 +85,38 @@ function displayStatusForLine(line: ShortPickLineRow, latestCompletionCode: stri
   return "TROUBLESHOOTING";
 }
 
-function nextActionForLine(line: ShortPickLineRow, phase: "PICKING" | "STAGED" | "CLOSED", hasActiveCheck: boolean): {
+function nextActionForLine(line: ShortPickLineRow, phase: "PICKING" | "STAGED" | "CLOSED", activeTask: CheckTaskRow | null, hasNonCompletedTask: boolean): {
   nextActionCode: NextActionCode; nextActionParams: Record<string, string>; actionOwnerUserId: string | null; blockingReasonCode: BlockingReasonCode;
 } {
   if (phase === "CLOSED") return { nextActionCode: "NONE", nextActionParams: {}, actionOwnerUserId: null, blockingReasonCode: "CASE_CLOSED" };
   if (line.state === "RESOLVED" || line.state === "CANCELLED") return { nextActionCode: "NONE", nextActionParams: {}, actionOwnerUserId: null, blockingReasonCode: null };
-  if (line.state === "CHECKING" || hasActiveCheck) {
-    return { nextActionCode: "COMPLETE_CHECK", nextActionParams: { lineId: line.id }, actionOwnerUserId: line.currentResponsibleUserId, blockingReasonCode: "CHECK_CLAIMED" };
+  // A materialized completed-replenishment obligation outranks check/replenishment hints.
+  // A COMPLETED marker without a materialized retrieval obligation has no pickup to
+  // promise: it waits on the named replenishment retriever (tracked backfill covers
+  // legacy rows). REPLENISH is only ever projected while replenishment is WAITING.
+  if (line.replenishmentState === "COMPLETED"
+    && (line.retrievalState === "PENDING" || line.retrievalState === "IN_PROGRESS" || line.retrievalState === "FAILED")) {
+    return { nextActionCode: "RETRIEVE", nextActionParams: { lineId: line.id }, actionOwnerUserId: line.retrievalResponsibleUserId, blockingReasonCode: "AWAITING_RETRIEVAL" };
+  }
+  if (line.state === "OPEN" && line.replenishmentState === "COMPLETED") {
+    return { nextActionCode: "WAIT", nextActionParams: { lineId: line.id }, actionOwnerUserId: line.replenishmentRetrieverUserId, blockingReasonCode: "AWAITING_RETRIEVAL" };
+  }
+  if (line.state === "CHECKING" || activeTask) {
+    const owner = activeTask ? (activeTask.assignedToUserId ?? activeTask.claimedByUserId) : line.currentResponsibleUserId;
+    return { nextActionCode: "COMPLETE_CHECK", nextActionParams: { lineId: line.id }, actionOwnerUserId: owner, blockingReasonCode: "CHECK_CLAIMED" };
   }
   if ((line.state === "FOUND" && (line.retrievalState === "PENDING" || line.retrievalState === "FAILED" || line.retrievalState === "IN_PROGRESS")) || line.state === "RETRIEVING") {
     return { nextActionCode: "RETRIEVE", nextActionParams: { lineId: line.id }, actionOwnerUserId: line.retrievalResponsibleUserId, blockingReasonCode: "AWAITING_RETRIEVAL" };
   }
-  if (line.state === "OPEN" && line.replenishmentState !== "NONE") {
+  if (line.state === "OPEN" && line.replenishmentState === "WAITING") {
     return { nextActionCode: "REPLENISH", nextActionParams: { lineId: line.id }, actionOwnerUserId: line.replenishmentRetrieverUserId, blockingReasonCode: "AWAITING_REPLENISHMENT" };
   }
-  if (line.state === "OPEN") return { nextActionCode: "CLAIM_CHECK", nextActionParams: { lineId: line.id }, actionOwnerUserId: null, blockingReasonCode: null };
+  if (line.state === "OPEN") {
+    // Task availability is authoritative: never project CLAIM_CHECK without an AVAILABLE task.
+    // OPEN with no noncompleted task is an explicit coded manager follow-up (ASSIGN_CHECK holders request it).
+    if (!hasNonCompletedTask) return { nextActionCode: "REQUEST_CHECK", nextActionParams: { lineId: line.id, requiredPermission: "ASSIGN_CHECK" }, actionOwnerUserId: null, blockingReasonCode: "NO_ACTIVE_CHECK" };
+    return { nextActionCode: "CLAIM_CHECK", nextActionParams: { lineId: line.id }, actionOwnerUserId: null, blockingReasonCode: null };
+  }
   return { nextActionCode: "WAIT", nextActionParams: { lineId: line.id }, actionOwnerUserId: line.currentResponsibleUserId, blockingReasonCode: null };
 }
 
@@ -98,24 +124,24 @@ export function projectLines(args: {
   orderNumber: string; phase: "PICKING" | "STAGED" | "CLOSED";
   lines: ShortPickLineRow[]; checks: CheckTaskRow[]; names: Map<string, string | null>;
 }): LineProjection[] {
-  const activeCheckLineIds: Record<string, true> = {};
   const latestCompletion: Record<string, string | null> = {};
   const ordered = [...args.checks].sort((a, b) => (b.completedAt?.getTime() ?? 0) - (a.completedAt?.getTime() ?? 0));
-  for (const check of args.checks) {
-    if (check.status === "CLAIMED" || check.status === "ASSIGNED") activeCheckLineIds[check.shortPickLineId] = true;
-  }
   for (const check of ordered) {
     if (check.status === "COMPLETED" && latestCompletion[check.shortPickLineId] === undefined) latestCompletion[check.shortPickLineId] = check.completionCode;
   }
-  const activeChecker: Record<string, CheckTaskRow> = {};
+  // Availability is derived from tasks, never from stale line fields: CLAIMED/ASSIGNED wins over AVAILABLE on the same line.
+  const activeTaskByLine: Record<string, CheckTaskRow> = {};
+  const hasNonCompletedTask: Record<string, true> = {};
   for (const check of args.checks) {
-    if ((check.status === "CLAIMED" || check.status === "ASSIGNED") && activeChecker[check.shortPickLineId] === undefined) activeChecker[check.shortPickLineId] = check;
+    if (check.status === "COMPLETED") continue;
+    hasNonCompletedTask[check.shortPickLineId] = true;
+    if ((check.status === "CLAIMED" || check.status === "ASSIGNED") && activeTaskByLine[check.shortPickLineId] === undefined) activeTaskByLine[check.shortPickLineId] = check;
   }
   return args.lines.map((line) => {
     const code = latestCompletion[line.id] ?? null;
-    const checker = activeChecker[line.id] ?? null;
+    const checker = activeTaskByLine[line.id] ?? null;
     const checkerUserId = checker ? (checker.assignedToUserId ?? checker.claimedByUserId) : null;
-    const action = nextActionForLine(line, args.phase, activeCheckLineIds[line.id] === true);
+    const action = nextActionForLine(line, args.phase, checker, hasNonCompletedTask[line.id] === true);
     const replenishmentState: ReplenishmentState = line.replenishmentState === "WAITING" || line.replenishmentState === "COMPLETED" ? line.replenishmentState : "NONE";
     return {
       lineId: line.id, caseId: line.caseId, orderNumber: args.orderNumber,
@@ -199,12 +225,15 @@ async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: st
     const assigneeUserId = explicitId ?? (event.eventType === "CHECK_CLAIMED" && typeof entry?.actorUserId === "string" ? entry.actorUserId : null);
     return { ...event, assigneeName: assigneeUserId ? (names.get(assigneeUserId) ?? null) : null };
   });
-  const unresolvedLines = lines.filter((line) => line.state !== "RESOLVED" && line.state !== "CANCELLED");
-  const checkingCount = lines.filter((line) => line.state === "CHECKING").length;
-  const currentIssue = lines.some((line) => line.retrievalState === "FAILED") ? "RETRIEVAL_FAILED"
-    : lines.some((line) => line.state === "FOUND") ? "RETRIEVAL_PENDING"
-      : checkingCount ? "CHECKING" : unresolvedLines.length ? "OPEN" : "READY_TO_CLOSE";
   const lineProjections = projectLines({ orderNumber: record.orderNumber, phase: record.phase, lines, checks, names });
+  const aggregate = aggregateCaseDisplayStatus(record.phase, lines.map((line) => ({ id: line.id, state: line.state, retrievalState: line.retrievalState, replenishmentState: line.replenishmentState })), lineProjections);
+  const checkingCount = lines.filter((line) => line.state === "CHECKING"
+    && !(line.replenishmentState === "COMPLETED" && (line.retrievalState === "PENDING" || line.retrievalState === "IN_PROGRESS" || line.retrievalState === "FAILED"))).length;
+  // Compatibility: the only consumer renders `issue_${currentIssue}` and labels
+  // exist only for RETRIEVAL_PENDING (never WAITING_RETRIEVAL/RETRIEVING), so map
+  // both retrieval projections onto it. All closed cases read CLOSED.
+  const currentIssue = aggregate === "WAITING_RETRIEVAL" || aggregate === "RETRIEVING" ? "RETRIEVAL_PENDING" : aggregate;
+  const unresolvedLines = lines.filter((line) => line.state !== "RESOLVED" && line.state !== "CANCELLED");
   const projection: CaseProjection = { caseId: record.id, orderNumber: record.orderNumber, phase: record.phase, openLineCount: unresolvedLines.length, lines: lineProjections };
   return { ...record, pickerName: record.pickingUserId ? names.get(record.pickingUserId) ?? null : null,
     pickerIdentifier: record.pickingUserId ? identifiers.get(record.pickingUserId) ?? null : null,
@@ -231,7 +260,9 @@ export async function hasCurrentCaseResponsibility(
   if (row.currentCaseResponsibleUserId === auth.user.id) return true;
   const [retrieval] = await db.select({ id: shortPickLines.id }).from(shortPickLines).where(and(
     eq(shortPickLines.caseId, row.id), eq(shortPickLines.retrievalResponsibleUserId, auth.user.id),
-    eq(shortPickLines.state, "FOUND"), inArray(shortPickLines.retrievalState, ["PENDING", "FAILED"]),
+    inArray(shortPickLines.retrievalState, ["PENDING", "FAILED"]),
+    ne(shortPickLines.state, "RESOLVED"), ne(shortPickLines.state, "CANCELLED"),
+    or(eq(shortPickLines.state, "FOUND"), eq(shortPickLines.replenishmentState, "COMPLETED")),
   )).limit(1);
   if (retrieval) return true;
   const [check] = await db.select({ id: checkTasks.id }).from(checkTasks).innerJoin(shortPickLines, eq(checkTasks.shortPickLineId, shortPickLines.id))
@@ -345,6 +376,10 @@ export async function addCaseLine(auth: AuthContext, caseId: string, input: z.in
     const details = { lineId: line!.id, location: normalizedLocation, sku: normalizedSku, quantity: input.quantity, ...(duplicate ? { duplicateOfLineId: duplicate.id, override: true } : {}) };
     await tx.insert(caseEvents).values({ caseId, shortPickLineId: line!.id, actorUserId: auth.user.id, eventType: duplicate ? "SHORT_PICK_LINE_DUPLICATE_OVERRIDE_USED" : "SHORT_PICK_LINE_ADDED", details });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: duplicate ? "SHORT_PICK_LINE_DUPLICATE_OVERRIDE_USED" : "SHORT_PICK_LINE_ADDED", details: { caseId, ...details } });
+    // D1: one monitoring emission per successful insertion (authorized duplicates included).
+    // Preferences and actor exclusion apply inside; rejected duplicates return above without emitting.
+    await insertMonitoringNotifications(tx, { type: "NEW_SHORT_PICK", caseId, shortPickLineId: line!.id,
+      payload: { lineId: line!.id, orderNumber: record.orderNumber, location: normalizedLocation, sku: normalizedSku, quantity: input.quantity }, excludeUserId: auth.user.id });
     return { kind: "CREATED" as const, line: line! };
   });
   if (result.kind === "DUPLICATE") {
@@ -367,7 +402,7 @@ export async function getCaseForUser(auth: AuthContext, caseId: string, timeline
       return { ...detail, readOnly: true as const };
     }
     if (!canReadCase(auth, row)) {
-      if (!hasAuthPermission(auth, "VIEW_CASE_MESSAGES") || !(await hasCurrentCaseResponsibility(tx, auth, row))) {
+      if (!hasAuthPermission(auth, "VIEW_OWN_CASES") || !(await hasCurrentCaseResponsibility(tx, auth, row))) {
         throw new CaseApiError("CASE_ACCESS_DENIED", "You cannot access this case", 403);
       }
     }
@@ -384,7 +419,7 @@ export async function listCasesForUser(auth: AuthContext, scope: "mine" | "activ
   if (scope === "active" && !hasAuthPermission(auth, "VIEW_ALL_OPEN_CASES")) throw new CaseApiError("CASE_ACCESS_DENIED", "You cannot view all active cases", 403);
   if (scope === "mine" && !hasAuthPermission(auth, "VIEW_OWN_CASES")) throw new CaseApiError("CASE_ACCESS_DENIED", "You cannot view your cases", 403);
   const parsed = caseListQuerySchema.parse({ scope, page: options.page ?? 1, pageSize: options.pageSize ?? 20 });
-  const where = and(isOpen, ...(scope === "mine" ? [eq(orderCases.pickingUserId, auth.user.id)] : []));
+  const where = and(isOpen, ...(scope === "mine" ? [or(eq(orderCases.pickingUserId, auth.user.id), eq(orderCases.currentCaseResponsibleUserId, auth.user.id))] : []));
   const [countRow] = await db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(where);
   const total = countRow?.count ?? 0;
   // Empty pages stay empty: no clamping to the last page, so filters survive paging.

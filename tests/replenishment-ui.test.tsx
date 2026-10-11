@@ -12,7 +12,7 @@ const read = (relative: string) =>
   readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
 
 describe("replenishment UI wiring", () => {
-  it("offers the state-only writer on manager surfaces, never on picker My Work", () => {
+  it("offers the grant-controlled writer on manager surfaces; picker grant defaults off", () => {
     for (const surface of [
       "../src/components/check-workflow.tsx",
       "../src/components/operations-dashboard.tsx",
@@ -23,17 +23,16 @@ describe("replenishment UI wiring", () => {
     }
     expect(read("../src/components/case-line-card.tsx")).toContain("ReplenishmentForm");
     const picker = read("../src/components/picker-workflow.tsx");
-    expect(picker).not.toContain("ReplenishmentForm");
-    expect(picker).toContain("SharedCaseLineCard");
-    expect(picker).toContain("canRecordReplenishment: false");
+    expect(picker).not.toContain("canRecordReplenishment: false");
+    expect(picker).toContain("canRecordReplenishment,");
+    expect(picker).toContain("canRecordReplenishment = false");
   });
 
-  it("posts state only: no note, no assignment, no directory fetch", () => {
+  it("uses the paginated eligible-user directory for named completion (never the admin list)", () => {
     const form = read("../src/components/replenishment-form.tsx");
-    expect(form).toContain("JSON.stringify({ state })");
-    expect(form).not.toContain("/api/users/directory");
+    expect(form).toContain("/api/users/directory");
+    expect(form).toContain("retrieverUserId");
     expect(form).not.toContain("/api/admin/users");
-    expect(form).not.toContain("retrieverUserId");
   });
 
   it("localizes the writer, badge, location reporter, retrieval prompt, and notices in all four languages", () => {

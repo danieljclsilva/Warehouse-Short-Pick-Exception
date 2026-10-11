@@ -16,6 +16,8 @@ type OrderCase = {
   phase: string;
   physicalState: string;
   createdAt: string;
+  pickingUserId?: string | null;
+  currentCaseResponsibleUserId?: string | null;
   responsibleName?: string | null;
   responsibleIdentifier?: string | null;
   source?: string;
@@ -41,12 +43,13 @@ type PickerWorkflowProps = {
   canStage: boolean;
   canConfirmRetrieval: boolean;
   canClose: boolean;
-  /** Legacy: pickers never record replenishment; retained for caller compat, ignored. */
+  /** Explicit RECORD_REPLENISHMENT grant: normally false, but a granted picker gets the shared writer. */
   canRecordReplenishment?: boolean;
   canReportLocation?: boolean;
   canViewMessages?: boolean;
   canAddMessages?: boolean;
   focusedCaseId?: string | null;
+  focusedLineId?: string | null;
   focusedNonce?: number;
   focusFromNotification?: boolean;
   onFocusConsumed?: () => void;
@@ -145,7 +148,7 @@ function LocationReportForm({ tr, caseId, lineId, onReported }: {
   );
 }
 
-export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canViewOwnCases = false, canOverrideDuplicateLine, canStage, canConfirmRetrieval, canClose, canReportLocation = false, canViewMessages = false, canAddMessages = false, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: PickerWorkflowProps) {
+export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canViewOwnCases = false, canOverrideDuplicateLine, canStage, canConfirmRetrieval, canClose, canRecordReplenishment = false, canReportLocation = false, canViewMessages = false, canAddMessages = false, focusedCaseId, focusedLineId = null, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: PickerWorkflowProps) {
   const [timelinePages, setTimelinePages] = useState<Record<string, number>>({});
   const [openCaseTabs, setOpenCaseTabs] = useState<OpenCaseTab[]>([]);
   const [openCasesLoading, setOpenCasesLoading] = useState(canViewOwnCases);
@@ -238,12 +241,17 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
   }, [loadOpenCaseTabs, tr]);
   const focusConsumedRef = useRef(0);
   const [focusOverlayNonce, setFocusOverlayNonce] = useState(0);
+  const focusedLineRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (!focusedCaseId || !focusedNonce || focusConsumedRef.current === focusedNonce) return;
     focusConsumedRef.current = focusedNonce;
     queueMicrotask(() => { if (focusFromNotification) setFocusOverlayNonce(focusedNonce); });
     void openCase(focusedCaseId).finally(() => { onFocusConsumed?.(); });
   }, [focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, openCase]);
+  useEffect(() => {
+    if (!focusedLineId || !activeCase || activeCase.id !== focusedCaseId) return;
+    focusedLineRef.current?.scrollIntoView({ block: "nearest" });
+  }, [focusedLineId, focusedCaseId, activeCase]);
   const focusOverlay = focusOverlayNonce !== 0;
   const stageOrder = async () => {
     if (!activeCase) return;
@@ -463,10 +471,11 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
           </>}
           linesClassName="check-detail-lines"
           lines={displayCase.lines.length === 0 ? <p className="case-empty-lines">{tr("noItemsYet")}</p> : displayCase.lines.map((line) => {
-              const canRetrieveLine = canConfirmRetrieval && line.state === "FOUND" && line.retrievalResponsibleUserId === userId && ["PENDING", "FAILED"].includes(line.retrievalState || "");
+              const canRetrieveLine = canConfirmRetrieval && !["RESOLVED", "CANCELLED"].includes(line.state)
+                && (line.state === "FOUND" || line.replenishmentState === "COMPLETED")
+                && line.retrievalResponsibleUserId === userId && ["PENDING", "FAILED"].includes(line.retrievalState || "");
               const canReportLocationLine = canReportLocation && activeCase && activeCase.phase !== "CLOSED" && !["RESOLVED", "CANCELLED"].includes(line.state);
-              return <SharedCaseLineCard
-                key={line.id}
+              return <span key={line.id} data-line-id={line.id} ref={focusedLineId === line.id ? focusedLineRef : undefined} className="picker-detail-line-anchor"><SharedCaseLineCard
                 tr={tr}
                 caseId={displayCase.id}
                 casePhase={displayCase.phase}
@@ -475,17 +484,17 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
                 showRetrievalNotRequired={false}
                 retrievalPrompt={canRetrieveLine ? <p className="picker-retrieval-prompt" role="status">{tr("pickerRetrievalPrompt" as MessageKey, { location: line.discoveredLocation || line.location })}</p> : null}
                 actions={{
-                  canRecordReplenishment: false,
+                  canRecordReplenishment,
                   canRetrieve: canRetrieveLine,
                   canReportLocation: Boolean(canReportLocationLine),
                   busyId: busy ? activeCase?.id ?? "busy" : "",
-                  onSaved: () => {},
+                  onSaved: async () => { if (activeCase) await openCase(activeCase.id, timelinePages[activeCase.id] ?? 1); },
                   onRetrieve: (_lineId, result) => void confirmLineRetrieval(line.id, result),
                   reportForm: (lineId) => canReportLocationLine && activeCase ? <LocationReportForm tr={tr} caseId={activeCase.id} lineId={lineId} onReported={async () => { await openCase(activeCase.id); setActionNotice(tr("reportLocationSaved" as MessageKey)); }} /> : null,
                 }}
-              />;
+              /></span>;
             })}
-          afterLines={canReportShortPick && displayCase.phase === "PICKING" && (!showLineForm ? <button className="primary-button add-line-button" type="button" onClick={() => { setShowLineForm(true); setDuplicateLine(null); }}>{tr("addMissingItem")}</button> : (
+          afterLines={canReportShortPick && displayCase.phase === "PICKING" && (!displayCase.id || displayCase.pickingUserId === userId) && (!showLineForm ? <button className="primary-button add-line-button" type="button" onClick={() => { setShowLineForm(true); setDuplicateLine(null); }}>{tr("addMissingItem")}</button> : (
             <form className="add-line-panel" onSubmit={(event) => { event.preventDefault(); void addLine(false); }}>
               <div className="add-line-heading"><h3>{tr("addMissingItem")}</h3><button className="text-button" type="button" onClick={() => { if (pendingOrder) closeDetail(); else { setShowLineForm(false); setDuplicateLine(null); } }}>{tr("cancel")}</button></div>
               <label className="form-field"><span>{tr("location")}</span><ScanInput autoComplete="off" autoCapitalize="characters" value={location} onChange={(value) => { setLocation(value); setDuplicateLine(null); }} onScannedExtra={() => setDuplicateLine(null)} required tr={tr} scanKind="location" fieldLabel={tr("location")} /></label>

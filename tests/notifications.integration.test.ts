@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, inArray, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
+import webpush from "web-push";
 import { closeDb, getDb } from "../src/db";
-import { auditLog, caseEvents, checkTasks, configurationVersions, notificationPreferences, notifications, orderCases, sessions, shortPickLines, users } from "../src/db/schema";
+import { auditLog, caseEvents, checkTasks, configurationVersions, notificationPreferences, notifications, orderCases, pushOutbox, pushSubscriptions, sessions, shortPickLines, users } from "../src/db/schema";
 import { defaultPermissions, type Role } from "../src/domain/permissions";
 import { createSession } from "../src/server/auth";
 import { hashPin } from "../src/server/security";
@@ -119,6 +120,55 @@ describeDatabase("Phase 5 notification routing and isolation", () => {
     const unread = await notificationsRoute(request("/api/notifications", "GET", undefined, checkerCookie));
     expect((await unread.json()).notifications.find((row: { id: string }) => row.id === assignment.id).readAt).not.toBeNull();
     expect((await notificationsRoute(request("/api/notifications", "GET", undefined, leaderCookie))).status).toBe(200);
+  });
+
+  it("notifies an assigned picker in-app and queues each enabled device regardless of monitoring preferences", async () => {
+    const item = await createCase("91");
+    const picker = await makeUser("PICKER", "assigned-picker");
+    const cookie = (await createSession(picker.id)).cookie.split(";")[0]!;
+    const originalEnv = {
+      publicKey: process.env.PUSH_PUBLIC_KEY,
+      privateKey: process.env.PUSH_PRIVATE_KEY,
+      subject: process.env.PUSH_SUBJECT,
+    };
+    const vapid = webpush.generateVAPIDKeys();
+    process.env.PUSH_PUBLIC_KEY = vapid.publicKey;
+    process.env.PUSH_PRIVATE_KEY = vapid.privateKey;
+    process.env.PUSH_SUBJECT = "mailto:test@example.invalid";
+    const db = getDb();
+    const devices = await db.insert(pushSubscriptions).values([
+      { userId: picker.id, endpoint: `https://fcm.googleapis.com/fcm/send/${suffix}-picker-phone`, p256dh: "A".repeat(87), auth: "B".repeat(22) },
+      { userId: picker.id, endpoint: `https://fcm.googleapis.com/fcm/send/${suffix}-picker-tablet`, p256dh: "C".repeat(87), auth: "D".repeat(22) },
+      { userId: picker.id, endpoint: `https://fcm.googleapis.com/fcm/send/${suffix}-picker-disabled`, p256dh: "E".repeat(87), auth: "F".repeat(22), disabledAt: new Date() },
+    ]).returning();
+    try {
+      await db.insert(notificationPreferences).values({ userId: picker.id, key: "CHECK_CLAIMED", enabled: false });
+      const assigned = await assignCheckRoute(request(`/api/checks/${item.taskId}/assign`, "PATCH", { userId: picker.id }, leaderCookie), { params: Promise.resolve({ id: item.taskId }) });
+      expect(assigned.status).toBe(200);
+      const response = await notificationsRoute(request("/api/notifications", "GET", undefined, cookie));
+      const body = await response.json();
+      const assignment = body.notifications.find((row: { type: string; caseId: string }) => row.type === "RESPONSIBILITY_CHECK_ASSIGNED" && row.caseId === item.id);
+      expect(assignment).toMatchObject({ caseId: item.id, shortPickLineId: item.lines[0]!.id, readAt: null, payload: { taskId: item.taskId } });
+      expect(body.unreadCount).toBe(1);
+      const queued = await db.select().from(pushOutbox).where(eq(pushOutbox.notificationId, assignment.id));
+      expect(queued).toHaveLength(2);
+      expect(queued.map((row) => row.subscriptionId).sort()).toEqual(devices.slice(0, 2).map((device) => device.id).sort());
+      expect(queued.every((row) => row.status === "QUEUED")).toBe(true);
+
+      // A picker with no subscribed device must still get the required in-app alert.
+      const unsubscribed = await makeUser("PICKER", "unsubscribed-picker");
+      const reassigned = await assignCheckRoute(request(`/api/checks/${item.taskId}/assign`, "PATCH", { userId: unsubscribed.id }, leaderCookie), { params: Promise.resolve({ id: item.taskId }) });
+      expect(reassigned.status).toBe(200);
+      const [reassignment] = await db.select().from(notifications).where(eq(notifications.recipientUserId, unsubscribed.id));
+      expect(reassignment).toMatchObject({ type: "RESPONSIBILITY_CHECK_ASSIGNED", caseId: item.id, payload: { reassigned: true } });
+      expect(await db.select().from(pushOutbox).where(eq(pushOutbox.notificationId, reassignment!.id))).toHaveLength(0);
+    } finally {
+      await db.delete(pushOutbox).where(inArray(pushOutbox.subscriptionId, devices.map((device) => device.id)));
+      await db.delete(pushSubscriptions).where(eq(pushSubscriptions.userId, picker.id));
+      for (const [key, value] of Object.entries({ PUSH_PUBLIC_KEY: originalEnv.publicKey, PUSH_PRIVATE_KEY: originalEnv.privateKey, PUSH_SUBJECT: originalEnv.subject })) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
   });
 
   it("routes a staged new location to the active case resolver before the checker", async () => {

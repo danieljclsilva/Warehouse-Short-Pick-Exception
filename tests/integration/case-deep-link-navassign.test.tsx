@@ -72,14 +72,27 @@ describe("NavAssign: per-case brief instruction from codes", () => {
   it("renders one line per nextAction code with the owner named where present", () => {
     expect(briefInstructionForLine({ nextActionCode: "CLAIM_CHECK" })).toEqual({ key: "navInstructionClaimCheck", values: { ownerSeparator: "", ownerSuffix: "" } });
     expect(briefInstructionForLine({ nextActionCode: "COMPLETE_CHECK", checkerName: "Checker Two" })).toEqual({ key: "navInstructionCompleteCheck", values: { ownerSeparator: " ", ownerSuffix: " · Checker Two" } });
+    expect(briefInstructionForLine({ nextActionCode: "COMPLETE_CHECK", actionOwnerName: "Owner A", checkerName: "Checker Two" })).toEqual({ key: "navInstructionCompleteCheck", values: { ownerSeparator: " ", ownerSuffix: " · Owner A" } });
     expect(briefInstructionForLine({ nextActionCode: "RETRIEVE", discoveredLocation: "02.BB.9", retrieverName: "Picker One" })).toEqual(
       { key: "navInstructionRetrieve", values: { location: "02.BB.9", ownerSeparator: " ", ownerSuffix: " · Picker One" } });
+    expect(briefInstructionForLine({ nextActionCode: "RETRIEVE", discoveredLocation: "02.BB.9", checkerName: "Checker Two", retrieverName: "Picker One" })).toEqual(
+      { key: "navInstructionRetrieve", values: { location: "02.BB.9", ownerSeparator: " ", ownerSuffix: " · Picker One" } });
+    expect(briefInstructionForLine({ nextActionCode: "RETRIEVE", discoveredLocation: "02.BB.9", actionOwnerName: "Owner B", checkerName: "Checker Two", retrieverName: "Picker One" })).toEqual(
+      { key: "navInstructionRetrieve", values: { location: "02.BB.9", ownerSeparator: " ", ownerSuffix: " · Owner B" } });
     expect(briefInstructionForLine({ nextActionCode: "RETRIEVE" })).toEqual({ key: "navInstructionRetrieveHandoff", values: { ownerSeparator: "", ownerSuffix: "" } });
     expect(briefInstructionForLine({ nextActionCode: "RETRIEVE", discoveredLocation: "02.BB.9", pickerRetrieval: true })).toEqual(
       { key: "navInstructionPickerRetrieve", values: { location: "02.BB.9", ownerSeparator: "", ownerSuffix: "" } });
+    expect(briefInstructionForLine({ nextActionCode: "REPLENISH", replenishmentRetrieverName: "Retriever R" })).toEqual(
+      { key: "navInstructionReplenish", values: { ownerSeparator: " ", ownerSuffix: " · Retriever R" } });
+    expect(briefInstructionForLine({ nextActionCode: "REPLENISH", actionOwnerName: "Owner C", replenishmentRetrieverName: "Retriever R", replenishmentActorName: "Troubleshooter" })).toEqual(
+      { key: "navInstructionReplenish", values: { ownerSeparator: " ", ownerSuffix: " · Owner C" } });
     expect(briefInstructionForLine({ nextActionCode: "REPLENISH", replenishmentActorName: "Troubleshooter" })).toEqual(
-      { key: "navInstructionReplenish", values: { ownerSeparator: " ", ownerSuffix: " · Troubleshooter" } });
+      { key: "navInstructionReplenish", values: { ownerSeparator: "", ownerSuffix: "" } });
+    expect(briefInstructionForLine({ nextActionCode: "REQUEST_CHECK", checkerName: "Stale Checker" })).toEqual({ key: "navInstructionRequestCheck", values: { ownerSeparator: "", ownerSuffix: "" } });
+    expect(briefInstructionForLine({ nextActionCode: "WAIT", actionOwnerName: "Owner W" })).toEqual({ key: "navInstructionWait", values: { ownerSeparator: " ", ownerSuffix: " · Owner W" } });
+    expect(briefInstructionForLine({ nextActionCode: "WAIT" })).toEqual({ key: "navInstructionWait", values: { ownerSeparator: "", ownerSuffix: "" } });
     expect(briefInstructionForLine({ nextActionCode: "NONE" })).toBeNull();
+    expect(briefInstructionForLine({})).toBeNull();
     const html = renderToString(createElement(DeepCaseView, {
       tr: trFor("en"),
       data: { ...baseCase, lines: [{ ...baseLine, nextActionCode: "RETRIEVE", discoveredLocation: "02.BB.9", retrieverName: "Picker One" }] },

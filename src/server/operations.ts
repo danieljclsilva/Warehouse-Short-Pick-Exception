@@ -1,11 +1,13 @@
-import { and, desc, eq, gte, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, ne, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { auditLog, caseEvents, caseMessages, checkTasks, configurationVersions, orderCases, shortPickLines, users } from "@/db/schema";
-import { addLineSchema, CaseApiError, createCaseSchema, getCaseForUser, hasCurrentCaseResponsibility, normalizeOrderNumber, projectLines, summarizeDashboard } from "@/server/cases";
+import { addLineSchema, CaseApiError, createCaseSchema, getCaseForUser, hasCurrentCaseResponsibility, normalizeOrderNumber, projectLines } from "@/server/cases";
+import { aggregateCaseDisplayStatus } from "@/domain/case-display-status";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
-import { getCurrentConfiguration, normalizeConfigurationValues } from "@/server/configuration";
+import { CONFIGURATION_DEFAULTS, getConfigurationVersion, getCurrentConfiguration, normalizeConfigurationValues } from "@/server/configuration";
+import { rerouteCaseRetrievals } from "@/server/retrieval-routing";
 import { insertMonitoringNotifications, insertResponsibilityNotification } from "@/server/notifications";
 import { paginationMeta, paginationOffset, paginationQuerySchema } from "@/server/pagination";
 
@@ -73,17 +75,17 @@ export async function getOperationsDashboard(auth: AuthContext, options: { page?
     if (!caseConfiguration) throw new Error(`Configuration version is missing for case ${row.id}`);
     const ownLines = byCase.get(row.id) ?? [];
     const ownChecks = ownLines.flatMap((line) => checksByLine.get(line.id) ?? []);
+    const lineProjections = projectLines({ orderNumber: row.orderNumber, phase: row.phase, lines: ownLines, checks: ownChecks, names });
+    const aggregate = aggregateCaseDisplayStatus(row.phase, ownLines.map((line) => ({ id: line.id, state: line.state, retrievalState: line.retrievalState, replenishmentState: line.replenishmentState })), lineProjections);
+    const currentIssue = aggregate === "WAITING_RETRIEVAL" || aggregate === "RETRIEVING" ? "RETRIEVAL_PENDING" : aggregate;
+    const checkingCount = ownLines.filter((line) => line.state === "CHECKING"
+      && !(line.replenishmentState === "COMPLETED" && (line.retrievalState === "PENDING" || line.retrievalState === "IN_PROGRESS" || line.retrievalState === "FAILED"))).length;
     const openLineCount = ownLines.filter((line) => !terminalStates.has(line.state)).length;
     const missingCount = ownLines.filter((line) => !terminalStates.has(line.state)).reduce((total, line) => total + line.missingQuantity, 0);
-    const checkingCount = ownLines.filter((line) => line.state === "CHECKING").length;
-    const currentIssue = ownLines.some((line) => line.retrievalState === "FAILED") ? "RETRIEVAL_FAILED"
-      : ownLines.some((line) => line.state === "FOUND") ? "RETRIEVAL_PENDING"
-        : checkingCount ? "CHECKING" : missingCount ? "OPEN" : "READY_TO_CLOSE";
     const ageMinutes = Math.floor((now.getTime() - row.createdAt.getTime()) / 60_000);
     const attentionLevel = ageMinutes >= caseConfiguration.CRITICAL_THRESHOLD_MINUTES ? "CRITICAL"
       : ageMinutes >= caseConfiguration.ATTENTION_THRESHOLD_MINUTES ? "ATTENTION"
         : ageMinutes >= caseConfiguration.WARNING_THRESHOLD_MINUTES ? "WARNING" : "NORMAL";
-    const lineProjections = projectLines({ orderNumber: row.orderNumber, phase: row.phase, lines: ownLines, checks: ownChecks, names });
     return { ...row, pickerName: row.pickingUserId ? names.get(row.pickingUserId) ?? null : null,
       pickerIdentifier: row.pickingUserId ? identifiers.get(row.pickingUserId) ?? null : null,
       responsibleName: row.currentCaseResponsibleUserId ? names.get(row.currentCaseResponsibleUserId) ?? null : null,
@@ -93,18 +95,38 @@ export async function getOperationsDashboard(auth: AuthContext, options: { page?
         reporterName: names.get(line.reportedByUserId) ?? null, reporterIdentifier: identifiers.get(line.reportedByUserId) ?? null })),
       projection: { caseId: row.id, orderNumber: row.orderNumber, phase: row.phase, openLineCount, lines: lineProjections }, lineProjections };
   });
-  const [resolved] = await db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(and(eq(orderCases.phase, "CLOSED"), gte(orderCases.resolvedAt, today)));
+  // Global header aggregates: every count below spans ALL open cases, independent of the requested page.
+  // Open lines are nonterminal shortage lines (state NOT IN RESOLVED/CANCELLED); piece quantities stay separate.
+  const openLineFilter = and(activePhase, notInArray(shortPickLines.state, ["RESOLVED", "CANCELLED"]));
+  // Completed replenishment preserves main CHECKING but hides it from the check
+  // queue while its retrieval obligation is PENDING/IN_PROGRESS/FAILED.
+  const guardedCheckingFilter = and(openLineFilter, eq(shortPickLines.state, "CHECKING"),
+    sql`not (${shortPickLines.replenishmentState} = 'COMPLETED' and ${shortPickLines.retrievalState} in ('PENDING', 'IN_PROGRESS', 'FAILED'))`);
+  // Pinned-threshold fallback mirrors normalizeConfigurationValues: stored rows merge over
+  // CONFIGURATION_DEFAULTS, so a missing/non-numeric CRITICAL_THRESHOLD_MINUTES reads as the default (15).
+  const [[resolved], [globalOpenLines], [globalChecking], [globalStaged], [globalMissing], [globalOverThreshold]] = await Promise.all([
+    db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(and(eq(orderCases.phase, "CLOSED"), gte(orderCases.resolvedAt, today))),
+    db.select({ count: sql<number>`count(*)::int` }).from(shortPickLines).innerJoin(orderCases, eq(shortPickLines.caseId, orderCases.id)).where(openLineFilter),
+    db.select({ count: sql<number>`count(*)::int` }).from(shortPickLines).innerJoin(orderCases, eq(shortPickLines.caseId, orderCases.id)).where(guardedCheckingFilter),
+    db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(eq(orderCases.phase, "STAGED")),
+    db.select({ total: sql<number>`coalesce(sum(${shortPickLines.missingQuantity})::int, 0)` }).from(shortPickLines).innerJoin(orderCases, eq(shortPickLines.caseId, orderCases.id)).where(openLineFilter),
+    db.select({ count: sql<number>`count(*)::int` }).from(orderCases)
+      .innerJoin(configurationVersions, eq(orderCases.configurationVersionId, configurationVersions.id))
+      .where(sql`${orderCases.phase} <> 'CLOSED' AND ${orderCases.createdAt} <= now() - make_interval(mins => CASE WHEN (${configurationVersions.values} ->> 'CRITICAL_THRESHOLD_MINUTES') ~ '^[0-9]+$' THEN (${configurationVersions.values} ->> 'CRITICAL_THRESHOLD_MINUTES')::int ELSE ${CONFIGURATION_DEFAULTS.CRITICAL_THRESHOLD_MINUTES} END)`),
+  ]);
   const resolvedToday = resolved?.count ?? 0;
-  const summary = summarizeDashboard(cases, resolvedToday);
-  // Metrics describe the requested page; openCases/openShortPicks totals come from openTotal below.
+  const summary = { openCases: openTotal, openLines: globalOpenLines?.count ?? 0, checking: globalChecking?.count ?? 0,
+    staged: globalStaged?.count ?? 0, overThreshold: globalOverThreshold?.count ?? 0, resolvedToday,
+    openMissingQuantity: globalMissing?.total ?? 0 };
   return { metrics: {
     openCases: openTotal,
-    openShortPicks: cases.reduce((total, item) => total + item.missingCount, 0),
+    openShortPicks: summary.openLines,
+    openMissingQuantity: summary.openMissingQuantity,
     checking: summary.checking,
     staged: summary.staged,
     overThreshold: summary.overThreshold,
     resolvedToday: summary.resolvedToday,
-  }, summary: { ...summary, openCases: openTotal }, attentionThresholdMinutes: threshold, thresholds: { warning: configuration.WARNING_THRESHOLD_MINUTES, attention: configuration.ATTENTION_THRESHOLD_MINUTES, critical: configuration.CRITICAL_THRESHOLD_MINUTES }, cases,
+  }, summary, attentionThresholdMinutes: threshold, thresholds: { warning: configuration.WARNING_THRESHOLD_MINUTES, attention: configuration.ATTENTION_THRESHOLD_MINUTES, critical: configuration.CRITICAL_THRESHOLD_MINUTES }, cases,
     ...paginationMeta(openTotal, parsed.page, parsed.pageSize),
     recentClosedCases: closedRows.map((row) => ({
       id: row.id, orderNumber: row.orderNumber, phase: "CLOSED" as const, createdAt: row.createdAt, resolvedAt: row.resolvedAt,
@@ -182,11 +204,18 @@ export async function assignCaseResponsibility(auth: AuthContext, caseId: string
     if (!record || record.phase === "CLOSED") throw new CaseApiError("CASE_NOT_OPEN", "Case is closed or missing", 409);
     const [target] = await tx.select().from(users).where(and(eq(users.id, userId), eq(users.status, "ACTIVE"))).limit(1);
     if (!target || !["TROUBLESHOOTER", "TEAM_LEADER", "MANAGER", "ASSISTANT", "ADMIN"].includes(target.role)) throw new CaseApiError("CASE_ACCESS_DENIED", "Assignee must be an active resolver", 400);
-    await tx.update(orderCases).set({ currentCaseResponsibleUserId: userId, updatedAt: new Date(), version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
+    const persisted = { ...record, currentCaseResponsibleUserId: userId, updatedAt: new Date() };
+    await tx.update(orderCases).set({ currentCaseResponsibleUserId: userId, updatedAt: persisted.updatedAt, version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
     await tx.insert(caseEvents).values({ caseId, actorUserId: auth.user.id, eventType: "RESPONSIBILITY_CHANGED", details: { previousUserId: record.currentCaseResponsibleUserId, responsibleUserId: userId } });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "RESPONSIBILITY_CHANGED", details: { caseId, previousUserId: record.currentCaseResponsibleUserId, userId } });
     await insertResponsibilityNotification(tx, { recipientUserId: userId, type: "RESPONSIBILITY_CASE_ASSIGNED", caseId,
       payload: { orderNumber: record.orderNumber, previousUserId: record.currentCaseResponsibleUserId } });
+    // STAGED resolver transfer re-derives pending/failed retrieval ownership via the
+    // shared helper (same transaction). PICKING stays picker-governed and terminal or
+    // already-retrieved obligations are never touched; the helper notifies new owners.
+    if (persisted.phase === "STAGED") {
+      await rerouteCaseRetrievals(tx, { caseRecord: persisted, actorUserId: auth.user.id, reason: "CASE_RESPONSIBILITY_CHANGED", preserveEligibleManualOwner: false });
+    }
     return { caseId, responsibleUserId: userId };
   });
 }
@@ -363,23 +392,28 @@ export async function overrideCaseState(auth: AuthContext, caseId: string, input
         details: { caseId, command: input.command, reason: input.reason, before, after: { taskId: stale.id, status: "COMPLETED" } } });
       return { caseId, lineId: line.id, releasedTaskId: stale.id };
     }
+    if (record.phase === "CLOSED") throw new CaseApiError("CASE_NOT_OPEN", "Case is closed", 409);
     const [line] = input.lineId
       ? await tx.select().from(shortPickLines).where(and(eq(shortPickLines.id, input.lineId), eq(shortPickLines.caseId, caseId))).limit(1)
       : [null];
     if (input.lineId && !line) throw new CaseApiError("CASE_NOT_FOUND", "Line not found", 404);
-    const targets = (input.lineId && line ? [line] : await tx.select().from(shortPickLines).where(and(eq(shortPickLines.caseId, caseId), eq(shortPickLines.state, "FOUND"))));
-    const before = { phase: record.phase, lines: targets.map((item) => ({ lineId: item.id, retrievalResponsibleUserId: item.retrievalResponsibleUserId })) };
-    for (const item of targets) {
-      const owner = record.phase === "PICKING" ? record.pickingUserId : record.currentCaseResponsibleUserId;
-      await tx.update(shortPickLines).set({ retrievalResponsibleUserId: owner, currentResponsibleUserId: owner ?? item.currentResponsibleUserId, updatedAt: now, version: sql`${shortPickLines.version} + 1` }).where(eq(shortPickLines.id, item.id));
-      await tx.insert(caseEvents).values({ caseId, shortPickLineId: item.id, actorUserId: auth.user.id, eventType: "RETRIEVAL_ASSIGNED",
-        details: { responsibleUserId: owner, previousUserId: item.retrievalResponsibleUserId, casePhase: record.phase, source: "OVERRIDE_REDERIVE" } });
+    const scope = input.lineId && line ? await tx.select().from(shortPickLines).where(and(eq(shortPickLines.id, line.id), eq(shortPickLines.caseId, caseId))) : null;
+    const scopeBefore = { phase: record.phase, lines: (scope ?? []).map((item) => ({ lineId: item.id, retrievalResponsibleUserId: item.retrievalResponsibleUserId })) };
+    // Shared re-derivation covers every pending/failed retrieval obligation under the
+    // persisted phase, preserves eligible STAGED manual owners, and only emits
+    // events/notifications for lines whose owner actually changes (idempotent).
+    const rerouted = await rerouteCaseRetrievals(tx, { caseRecord: record, actorUserId: auth.user.id, reason: "OVERRIDE_REDERIVE",
+      preserveEligibleManualOwner: true, ...(input.lineId ? { lineIds: [input.lineId] } : {}) });
+    const before = input.lineId ? scopeBefore : { phase: record.phase, lines: rerouted.map((result) => ({ lineId: result.lineId, retrievalResponsibleUserId: result.previousOwnerId })) };
+    const routingChanged = rerouted.some((result) => result.changed);
+    if (routingChanged) {
+      await tx.update(orderCases).set({ updatedAt: now, version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
     }
     await tx.insert(caseEvents).values({ caseId, actorUserId: auth.user.id, eventType: "CASE_REPAIRED",
-      details: { command: input.command, reason: input.reason, before, after: { phase: record.phase } } });
+      details: { command: input.command, reason: input.reason, before, after: { phase: record.phase }, ...(input.lineId ? { lineId: input.lineId } : {}) } });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CASE_REPAIRED",
-      details: { caseId, command: input.command, reason: input.reason, before, after: { phase: record.phase } } });
-    return { caseId, command: input.command, rederived: targets.map((item) => item.id) };
+      details: { caseId, command: input.command, reason: input.reason, before, after: { phase: record.phase }, ...(input.lineId ? { lineId: input.lineId } : {}) } });
+    return { caseId, command: input.command, rederived: rerouted.filter((result) => result.changed).map((result) => result.lineId) };
   });
 }
 
@@ -418,10 +452,35 @@ export async function repairCase(auth: AuthContext, caseId: string, input: z.inf
     };
     if (input.command === "CORRECT_PHASE") {
       if (!input.phase) throw new CaseApiError("CASE_NOT_FOUND", "A target phase is required", 400);
-      if (input.phase !== "CLOSED") await assertNoOpenCaseConflict(tx, record.orderNumber, caseId);
+      // Phase-only correction must never bypass closure/reopen invariants: closing needs
+      // reasoned CLOSE_CASE terminalization; reopening needs REOPEN_CASE. Both stay PICKING<->STAGED only here.
+      if (input.phase === "CLOSED") throw new CaseApiError("REPAIR_INVARIANT_VIOLATION", "Closing a case requires the explicit CLOSE_CASE command with a reason", 409, { command: input.command });
+      if (record.phase === "CLOSED") throw new CaseApiError("REPAIR_INVARIANT_VIOLATION", "Reopening a closed case requires the explicit REOPEN_CASE command", 409, { command: input.command });
+      await assertNoOpenCaseConflict(tx, record.orderNumber, caseId);
+      const phaseChanged = input.phase !== record.phase;
       const before = { phase: record.phase, physicalState: record.physicalState, physicalLocation: record.physicalLocation };
-      const after = { phase: input.phase, physicalState: input.physicalState ?? record.physicalState, physicalLocation: input.physicalLocation ?? record.physicalLocation };
-      await tx.update(orderCases).set({ phase: input.phase, physicalState: after.physicalState, physicalLocation: after.physicalLocation, updatedAt: now, version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
+      // Only a real phase change resets the physical defaults; an explicit nonclosed
+      // repair override for physicalState/physicalLocation is honored, and a
+      // same-phase repair retains fields only when omitted.
+      const configuration = await getConfigurationVersion(tx, record.configurationVersionId);
+      if (!configuration) throw new Error("Case configuration version is missing");
+      const after = phaseChanged
+        ? { phase: input.phase,
+            physicalState: input.physicalState ?? (input.phase === "PICKING" ? "WITH_PICKER" : "SHORT_PICK_HOLD"),
+            physicalLocation: input.physicalLocation !== undefined
+              ? input.physicalLocation
+              : (input.phase === "PICKING" ? null : configuration.values.SHORT_PICK_HOLD_LOCATION_NAME) }
+        // Same-phase repair keeps persisted physical fields only when omitted;
+        // explicitly supplied fields are honored (null location clears).
+        : { phase: record.phase,
+            physicalState: input.physicalState ?? record.physicalState,
+            physicalLocation: input.physicalLocation !== undefined ? input.physicalLocation : record.physicalLocation };
+      const persisted = { ...record, phase: after.phase, physicalState: after.physicalState, physicalLocation: after.physicalLocation, updatedAt: now };
+      await tx.update(orderCases).set({ phase: persisted.phase, physicalState: persisted.physicalState, physicalLocation: persisted.physicalLocation, updatedAt: now, version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
+      // Phase correction re-derives pending/failed retrievals under the persisted phase
+      // in the same transaction: a real phase change drops stale manual pins, while a
+      // same-phase STAGED correction preserves still-eligible manual owners.
+      await rerouteCaseRetrievals(tx, { caseRecord: persisted, actorUserId: auth.user.id, reason: "CORRECT_PHASE", preserveEligibleManualOwner: !phaseChanged });
       await recordEvent({ command: input.command, reason: input.reason, before, after });
       return { caseId, command: input.command, before, after };
     }

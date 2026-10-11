@@ -12,6 +12,7 @@ import { GET as notificationsGet } from "../src/app/api/notifications/push-subsc
 import { DELETE as notificationsDelete } from "../src/app/api/notifications/push-subscriptions/[id]/route";
 import { insertNotification } from "../src/server/notifications";
 import { deliverPushBatch } from "../src/server/push";
+import { getMessages, translate } from "../src/i18n/messages";
 
 const describeDatabase = process.env.DATABASE_URL ? describe : describe.skip;
 const request = (path: string, method: string, body?: unknown, cookie?: string) => new Request(`http://localhost${path}`, {
@@ -120,6 +121,31 @@ describeDatabase("Web Push subscriptions and durable outbox", () => {
     const [sent] = await getDb().select().from(pushOutbox).where(eq(pushOutbox.id, retryRow.id));
     expect(sent?.status).toBe("SENT");
     send.mockRestore();
+  });
+
+  it("delivers using the recipient's saved language at claim time", async () => {
+    const db = getDb();
+    const notification = await db.transaction((tx) => insertNotification(tx, {
+      recipientUserId: userId, type: "RESPONSIBILITY_CHECK_ASSIGNED", payload: {},
+    }));
+    expect(notification).toBeTruthy();
+    await db.update(users).set({ preferredLanguage: "pl" }).where(eq(users.id, userId));
+    const send = vi.spyOn(webpush, "sendNotification").mockResolvedValue({ statusCode: 201 } as never);
+    try {
+      await deliverPushBatch(100);
+      const payloads = send.mock.calls.map((call) => JSON.parse(String(call[1])) as Record<string, unknown>)
+        .filter((payload) => payload.notificationId === notification!.id);
+      const { messages } = getMessages("pl");
+      expect(payloads.length).toBeGreaterThan(0);
+      for (const payload of payloads) {
+        expect(payload).toEqual({ notificationId: notification!.id,
+          title: translate(messages, "notificationCheckAssigned"),
+          body: translate(messages, "pushNotificationBody") });
+      }
+    } finally {
+      send.mockRestore();
+      await db.update(users).set({ preferredLanguage: "en" }).where(eq(users.id, userId));
+    }
   });
 
   it("returns zeros without throwing when PUSH_ENABLED=false", async () => {

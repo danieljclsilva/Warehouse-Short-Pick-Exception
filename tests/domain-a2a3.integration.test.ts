@@ -158,7 +158,7 @@ describeDatabase("Wave 1 A2/A3 domain slice against PostgreSQL", () => {
     expect((await messageRoute(request(`/api/cases/${item.caseId}/messages`, "POST", { message: "Outsider note" }, otherPickerCookie), { params: Promise.resolve({ id: item.caseId }) })).status).toBe(403);
   });
 
-  it("runs state-only replenishment transitions and stays visible without a notification read", async () => {
+  it("records WAITING notes without ownership transfer, then completes with an obligation and unchanged main state", async () => {
     const item = await makeCase("03");
     // Picker without the grant is forbidden.
     const forbidden = await replenishmentRoute(request(`/api/cases/${item.caseId}/lines/${item.lineId}/replenishment`, "POST",
@@ -174,11 +174,12 @@ describeDatabase("Wave 1 A2/A3 domain slice against PostgreSQL", () => {
     expect(troubleshooterDenied.status).toBe(403);
 
     const waiting = await replenishmentRoute(request(`/api/cases/${item.caseId}/lines/${item.lineId}/replenishment`, "POST",
-      { state: "WAITING" }, assistantCookie),
+      { state: "WAITING", note: "Awaiting inbound" }, assistantCookie),
       { params: Promise.resolve({ id: item.caseId, lineId: item.lineId }) });
     expect(waiting.status).toBe(201);
     const [waitingLine] = await getDb().select().from(shortPickLines).where(eq(shortPickLines.id, item.lineId));
-    expect(waitingLine).toMatchObject({ replenishmentState: "WAITING", state: "OPEN", replenishmentNote: null, replenishmentRetrieverUserId: null });
+    expect(waitingLine).toMatchObject({ replenishmentState: "WAITING", state: "OPEN", replenishmentNote: "Awaiting inbound",
+      replenishmentRetrieverUserId: pickerId, retrievalResponsibleUserId: null, retrievalState: "NOT_REQUIRED" });
 
     // Invalid repeat of WAITING is rejected.
     const repeat = await replenishmentRoute(request(`/api/cases/${item.caseId}/lines/${item.lineId}/replenishment`, "POST",
@@ -191,9 +192,11 @@ describeDatabase("Wave 1 A2/A3 domain slice against PostgreSQL", () => {
       { params: Promise.resolve({ id: item.caseId, lineId: item.lineId }) });
     expect(completed.status).toBe(201);
     const [doneLine] = await getDb().select().from(shortPickLines).where(eq(shortPickLines.id, item.lineId));
-    expect(doneLine).toMatchObject({ replenishmentState: "COMPLETED", state: "OPEN" });
+    // COMPLETED materializes the pending retrieval obligation for the eligible picker; main line state is unchanged.
+    expect(doneLine).toMatchObject({ replenishmentState: "COMPLETED", state: "OPEN", retrievalState: "PENDING",
+      retrievalResponsibleUserId: pickerId });
 
-    // State transitions persist without assignment; main line state is unchanged.
+    // Transitions persist with the materialized obligation; main line state is unchanged.
     const notes = await getDb().select().from(caseEvents).where(eq(caseEvents.caseId, item.caseId));
     expect(notes.map((event) => event.eventType)).toEqual(expect.arrayContaining(["REPLENISHMENT_WAITING", "REPLENISHMENT_COMPLETED"]));
 

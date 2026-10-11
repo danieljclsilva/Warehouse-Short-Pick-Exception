@@ -4,7 +4,8 @@ import { and, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
 import webpush from "web-push";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { notifications, pushOutbox, pushSubscriptions } from "@/db/schema";
+import { notifications, pushOutbox, pushSubscriptions, users } from "@/db/schema";
+import { getMessages, translate, type MessageKey } from "@/i18n/messages";
 import type { AuthContext } from "@/server/auth";
 import { CaseApiError } from "@/server/cases";
 import { getCurrentConfiguration } from "@/server/configuration";
@@ -129,19 +130,30 @@ export async function removePushSubscription(auth: AuthContext, subscriptionId: 
   return { ok: true };
 }
 
-function safePushPayload(notification: typeof notifications.$inferSelect) {
-  const messages: Record<string, [string, string]> = {
-    RESPONSIBILITY_CASE_ASSIGNED: ["Case assigned", "A case needs your attention."],
-    RESPONSIBILITY_CHECK_ASSIGNED: ["Check assigned", "A stock check needs your attention."],
-    RESPONSIBILITY_RETRIEVAL_ASSIGNED: ["Retrieval assigned", "A retrieval task needs your attention."],
-    RESPONSIBILITY_NEW_LOCATION: ["New location found", "A found item needs retrieval."],
-    RESPONSIBILITY_CASE_REOPENED: ["Case reopened", "A case needs your attention again."],
-    NEW_SHORT_PICK: ["New short pick", "A new short pick needs review."], CHECK_CLAIMED: ["Check claimed", "A stock check was claimed."],
-    NEW_LOCATION: ["New location", "A new item location was reported."], TROUBLESHOOTER_MESSAGE: ["Case message", "A case has a new message."],
-    UNRESOLVED_OVER_THRESHOLD: ["Case needs attention", "An unresolved case passed its attention threshold."], CASE_RESOLVED: ["Case resolved", "A case was resolved."],
-    PROFILE_PHOTO_APPROVAL_REQUIRED: ["Photo approval", "A profile photo needs your review."],
-  };
-  const [title, body] = messages[notification.type] ?? ["Warehouse update", "A warehouse case needs attention."];
+const pushTitleKeys: Record<string, MessageKey> = {
+  RESPONSIBILITY_CASE_ASSIGNED: "notificationResponsibilityChanged",
+  RESPONSIBILITY_CHECK_ASSIGNED: "notificationCheckAssigned",
+  RESPONSIBILITY_RETRIEVAL_ASSIGNED: "notificationRetrievalAssigned",
+  RESPONSIBILITY_NEW_LOCATION: "notificationNewLocationFound",
+  RESPONSIBILITY_CASE_REOPENED: "notificationCaseReopened",
+  NEW_SHORT_PICK: "notificationNewShortPick",
+  CHECK_CLAIMED: "notificationCheckClaimed",
+  NEW_LOCATION: "notificationNewLocationFound",
+  TROUBLESHOOTER_MESSAGE: "notificationCaseMessage",
+  UNRESOLVED_OVER_THRESHOLD: "notificationCaseUnresolved",
+  CASE_RESOLVED: "notificationCaseResolved",
+  CHECK_RESOLVED_EXTERNALLY: "notificationCheckResolvedExternally",
+  ORDER_STAGED: "notificationOrderStaged",
+  PROFILE_PHOTO_APPROVAL_REQUIRED: "notificationPhotoApprovalRequired",
+};
+
+export function buildLocalizedPushPayload(
+  notification: { id: string; type: string },
+  language: string | null | undefined,
+) {
+  const { messages } = getMessages(language);
+  const title = translate(messages, pushTitleKeys[notification.type] ?? "notificationUpdate");
+  const body = translate(messages, "pushNotificationBody");
   return { title, body, notificationId: notification.id };
 }
 
@@ -149,14 +161,16 @@ type DeliveryRow = {
   outbox: typeof pushOutbox.$inferSelect;
   subscription: typeof pushSubscriptions.$inferSelect;
   notification: typeof notifications.$inferSelect;
+  language: string;
 };
 
 async function claimOutbox(limit: number): Promise<DeliveryRow[]> {
   const now = new Date();
   const leaseUntil = new Date(now.getTime() + LEASE_MS);
   return getDb().transaction(async (tx) => {
-    const rows = await tx.select({ outbox: pushOutbox, subscription: pushSubscriptions, notification: notifications })
+    const rows = await tx.select({ outbox: pushOutbox, subscription: pushSubscriptions, notification: notifications, language: users.preferredLanguage })
       .from(pushOutbox).innerJoin(pushSubscriptions, eq(pushOutbox.subscriptionId, pushSubscriptions.id)).innerJoin(notifications, eq(pushOutbox.notificationId, notifications.id))
+      .innerJoin(users, eq(notifications.recipientUserId, users.id))
       .where(and(sql`${pushOutbox.attempts} < ${MAX_ATTEMPTS}`, or(
         and(or(eq(pushOutbox.status, "QUEUED"), eq(pushOutbox.status, "RETRY")), lte(pushOutbox.availableAt, now)),
         and(eq(pushOutbox.status, "PROCESSING"), lt(pushOutbox.leaseUntil, now)),
@@ -212,7 +226,7 @@ export async function deliverPushBatch(limit = 25) {
     let error: unknown;
     try {
       await validatePushEndpoint(row.subscription.endpoint);
-      await webpush.sendNotification({ endpoint: row.subscription.endpoint, keys: { p256dh: row.subscription.p256dh, auth: row.subscription.auth } }, JSON.stringify(safePushPayload(row.notification)), { TTL: 60 });
+      await webpush.sendNotification({ endpoint: row.subscription.endpoint, keys: { p256dh: row.subscription.p256dh, auth: row.subscription.auth } }, JSON.stringify(buildLocalizedPushPayload(row.notification, row.language)), { TTL: 60 });
     } catch (caught) { error = caught; }
     await finishDelivery(row, error);
     if (!error) result.sent += 1;

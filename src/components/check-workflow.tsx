@@ -10,6 +10,7 @@ import type { CaseTimelineEvent, CaseTimelineMessage } from "@/components/case-t
 import { CaseDetailView, CaseSummaryCard, formatCaseElapsedTime } from "@/components/case-detail-view";
 import { SharedCaseLineCard, SharedInlineLocationForm } from "@/components/case-line-card";
 import { CaseStatusBadge } from "@/components/case-status-badge";
+import { aggregateCaseDisplayStatus } from "@/domain/case-display-status";
 
 type Check = {
   id: string;
@@ -44,7 +45,7 @@ type Worker = { id: string; displayName: string; status: string; permissions: st
 type CaseDetail = {
   id: string; orderNumber: string; phase: string; physicalState: string; physicalLocation: string | null;
   createdAt?: string; responsibleName?: string | null; responsibleIdentifier?: string | null; source?: string; missingCount?: number;
-  lines: Array<{ id: string; location: string; sku: string; quantity: number; state: string; displayStatus?: string | null; discoveredLocation: string | null; retrievalState?: string | null; retrievalResponsibleUserId?: string | null; replenishmentState?: string | null; responsibleName: string | null; reporterName?: string | null; reporterIdentifier?: string | null }>;
+  lines: Array<{ id: string; location: string; sku: string; quantity: number; state: string; displayStatus?: string | null; discoveredLocation: string | null; retrievalState?: string | null; retrievalResponsibleUserId?: string | null; retrievalResponsibleName?: string | null; replenishmentState?: string | null; replenishmentNote?: string | null; replenishmentActorName?: string | null; responsibleName: string | null; reporterName?: string | null; reporterIdentifier?: string | null }>;
   checks: Array<{ id: string; shortPickLineId: string; status: string; completionCode: string | null; completedAt: string | null; assigneeName: string | null }>;
   events: Array<{ id: string; eventType: string; actorName: string | null; createdAt: string; completionCode?: string | null; discoveredLocation?: string | null; originalLocation?: string | null; taskId?: string | null; resultMessage?: string | null }>;
   eventsPagination?: { total: number; page: number; pageSize: number; totalPages: number } | null;
@@ -64,6 +65,7 @@ type Props = {
   canReportLocation?: boolean;
   canViewAllOpenCases?: boolean;
   focusedCaseId?: string | null;
+  focusedLineId?: string | null;
   focusedNonce?: number;
   onFocusConsumed?: () => void;
   onFocusedClose?: () => void;
@@ -77,17 +79,23 @@ async function readJson(response: Response) {
 }
 
 function withReplenishmentProjection(caseDetail: CaseDetail): CaseDetail {
-  const raw = caseDetail as CaseDetail & { lineProjections?: Array<{ lineId: string; displayStatus?: string; replenishment?: { state?: string } }> };
+  const raw = caseDetail as CaseDetail & { lineProjections?: Array<{ lineId: string; displayStatus?: string; replenishment?: { state?: string; note?: string | null; actorName?: string | null }; nextActionCode?: string; actionOwnerName?: string | null; blockingReasonCode?: string | null }> };
   if (!raw.lineProjections) return caseDetail;
-  const projectedByLineId: Record<string, { displayStatus?: string; replenishmentState?: string }> = {};
+  const projectedByLineId: Record<string, { displayStatus?: string; replenishmentState?: string; replenishmentNote?: string | null; replenishmentActorName?: string | null; nextActionCode?: string; actionOwnerName?: string | null; blockingReasonCode?: string | null }> = {};
   for (const entry of raw.lineProjections) {
-    if (entry && typeof entry.lineId === "string") projectedByLineId[entry.lineId] = { displayStatus: entry.displayStatus, replenishmentState: entry.replenishment?.state };
+    if (entry && typeof entry.lineId === "string") projectedByLineId[entry.lineId] = { displayStatus: entry.displayStatus, replenishmentState: entry.replenishment?.state, replenishmentNote: entry.replenishment?.note ?? null, replenishmentActorName: entry.replenishment?.actorName ?? null, nextActionCode: entry.nextActionCode, actionOwnerName: entry.actionOwnerName ?? null, blockingReasonCode: entry.blockingReasonCode ?? null };
   }
   return { ...raw, lines: raw.lines.map((line) => {
     const projected = projectedByLineId[line.id];
     if (!projected) return line;
-    return { ...line, displayStatus: projected.displayStatus ?? line.displayStatus, replenishmentState: projected.replenishmentState ?? line.replenishmentState };
+    return { ...line, displayStatus: projected.displayStatus ?? line.displayStatus, replenishmentState: projected.replenishmentState ?? line.replenishmentState, replenishmentNote: projected.replenishmentNote ?? line.replenishmentNote, replenishmentActorName: projected.replenishmentActorName ?? line.replenishmentActorName, nextActionCode: projected.nextActionCode, actionOwnerName: projected.actionOwnerName, blockingReasonCode: projected.blockingReasonCode } as CaseDetail["lines"][number] & { nextActionCode?: string; actionOwnerName?: string | null; blockingReasonCode?: string | null };
   }) };
+}
+type DetailProjection = { lineId: string; displayStatus?: string; replenishment?: { state?: string; note?: string | null; actorName?: string | null } | null; nextActionCode?: string; actionOwnerName?: string | null; blockingReasonCode?: string | null };
+
+function rawProjections(caseDetail: CaseDetail): DetailProjection[] | null {
+  const raw = caseDetail as CaseDetail & { lineProjections?: DetailProjection[] };
+  return Array.isArray(raw.lineProjections) ? raw.lineProjections : null;
 }
 function formatCheckAge(iso: string): string {
   const elapsedMs = Date.now() - Date.parse(iso);
@@ -121,7 +129,7 @@ function CheckSectionPager({ tr, page, meta, onPage }: {
   );
 }
 
-export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canComplete, canAssign, canReassign, canRetrieve, canMessage, canRecordReplenishment = false, canReportLocation = false, canViewAllOpenCases = false, focusedCaseId, focusedNonce, onFocusConsumed, onFocusedClose }: Props) {
+export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canComplete, canAssign, canReassign, canRetrieve, canMessage, canRecordReplenishment = false, canReportLocation = false, canViewAllOpenCases = false, focusedCaseId, focusedLineId = null, focusedNonce, onFocusConsumed, onFocusedClose }: Props) {
   const [available, setAvailable] = useState<Check[]>([]);
   const [mine, setMine] = useState<Check[]>([]);
   const [active, setActive] = useState<Check[]>([]);
@@ -243,6 +251,7 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
     } catch { setError(tr("caseLoadError")); }
   }, [tr]);
   const focusConsumedRef = useRef(0);
+  const focusedLineRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (!focusedCaseId || !focusedNonce || focusConsumedRef.current === focusedNonce) return;
     focusConsumedRef.current = focusedNonce;
@@ -251,10 +260,17 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
   useEffect(() => {
     if (!detail || scrolledDetailId.current === detail.id) return;
     scrolledDetailId.current = detail.id;
+    const lineTarget = focusedLineId && detail.id === focusedCaseId
+      ? detailRef.current?.querySelector(`[data-line-id="${CSS.escape(focusedLineId)}"]`)
+      : null;
+    if (lineTarget instanceof HTMLElement) {
+      lineTarget.scrollIntoView({ block: "start" });
+      return;
+    }
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     detailRef.current?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
     detailRef.current?.focus({ preventScroll: true });
-  }, [detail]);
+  }, [detail, focusedCaseId, focusedLineId]);
   useEffect(() => { if (!detail) scrolledDetailId.current = null; }, [detail]);
   const closeDetail = () => { setDetail(null); setReportLocationLineId(null); setReportLocationValue(""); onFocusedClose?.(); };
 
@@ -327,7 +343,7 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       tr={tr}
       orderNumber={detail.orderNumber}
       phaseLabel={detail.phase === "CLOSED" ? tr("caseClosed") : detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}
-      headingActions={<span className="case-badges"><CaseStatusBadge status={detail.lines[0]?.displayStatus ?? detail.lines[0]?.state ?? detail.phase} tr={tr} /><span className="case-phase">{detail.phase === "CLOSED" ? tr("caseClosed") : detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span></span>}
+      headingActions={<span className="case-badges"><CaseStatusBadge status={aggregateCaseDisplayStatus(detail.phase, detail.lines)} tr={tr} /><span className="case-phase">{detail.phase === "CLOSED" ? tr("caseClosed") : detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span></span>}
       summary={<>
         {detail.physicalLocation ? <p className="case-physical-state">{detail.physicalLocation}</p> : null}
         <CaseSummaryCard tr={tr} responsibleName={detail.responsibleName} responsibleIdentifier={detail.responsibleIdentifier} source={detail.source} missingCount={detail.missingCount} elapsedTime={formatCaseElapsedTime(detail.createdAt)} />
@@ -337,11 +353,12 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       lines={detail.lines.map((line) => {
         const reportable = canReportLocation && detail.phase !== "CLOSED" && !["RESOLVED", "CANCELLED"].includes(line.state);
         const submitReportLocation = (lineId: string) => { void (async () => { setBusyId(lineId); setError(""); setNotice(""); try { const response = await fetch(`/api/cases/${encodeURIComponent(detail.id)}/lines/${encodeURIComponent(lineId)}/discovered-location`, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ location: reportLocationValue.trim().toUpperCase() }), cache: "no-store" }); if (!response.ok) throw new Error(tr("reportLocationFailed")); setReportLocationLineId(null); setReportLocationValue(""); await load(); await openDetails(detail.id, detailTimelineRef.current[detail.id] ?? 1); setNotice(tr("reportLocationSaved")); } catch { setError(tr("reportLocationFailed")); } finally { setBusyId(""); } })(); };
-        return <SharedCaseLineCard key={line.id} tr={tr} caseId={detail.id} casePhase={detail.phase} line={line} projections={new Map()}
-          actions={{ canRecordReplenishment, canRetrieve, canReportLocation, busyId,
+        return <span key={line.id} data-line-id={line.id} ref={focusedLineId === line.id ? focusedLineRef : undefined} className="check-detail-line-anchor"><SharedCaseLineCard tr={tr} caseId={detail.id} casePhase={detail.phase} line={line} projections={new Map((rawProjections(detail) ?? []).map((entry) => [entry.lineId, { lineId: entry.lineId, displayStatus: entry.displayStatus ?? line.displayStatus ?? line.state, replenishment: (entry.replenishment ?? null) as { state: string; note: string | null; actorName: string | null } | null, nextActionCode: entry.nextActionCode ?? null, actionOwnerName: entry.actionOwnerName ?? null, blockingReasonCode: entry.blockingReasonCode ?? null }]))}
+          actions={{ canRecordReplenishment, canRetrieve, canReportLocation, canRequestCheck: canAssign, busyId,
             onSaved: async () => { await openDetails(detail.id, detailTimelineRef.current[detail.id] ?? 1); setNotice(tr("replenishmentSaved")); },
             onRetrieve: (lineId, result) => { void mutate(lineId, `/api/cases/${detail.id}/lines/${lineId}/retrieve`, "POST", { result }); },
-            reportForm: (lineId) => (reportable ? (reportLocationLineId === line.id ? <SharedInlineLocationForm tr={tr} placeholder={tr("reportLocationPlaceholder")} value={reportLocationValue} onChange={setReportLocationValue} onSubmit={() => submitReportLocation(lineId)} /> : <button type="button" className="secondary-button" onClick={() => { setReportLocationLineId(line.id); setReportLocationValue(""); }}>{tr("reportLocationAction")}</button>) : null) }} />;
+            onRequestCheck: (lineId) => { void mutate(lineId, `/api/cases/${detail.id}/lines/${lineId}/checks`, "POST", {}).then((saved) => { if (saved) setNotice(tr("requestCheckSaved")); }); },
+            reportForm: (lineId) => (reportable ? (reportLocationLineId === line.id ? <SharedInlineLocationForm tr={tr} placeholder={tr("reportLocationPlaceholder")} value={reportLocationValue} onChange={setReportLocationValue} onSubmit={() => submitReportLocation(lineId)} /> : <button type="button" className="secondary-button" onClick={() => { setReportLocationLineId(line.id); setReportLocationValue(""); }}>{tr("reportLocationAction")}</button>) : null) }} /></span>;
       })}
       events={detail.events as CaseTimelineEvent[]}
       messages={detail.messages}

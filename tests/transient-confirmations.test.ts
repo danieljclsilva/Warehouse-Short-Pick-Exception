@@ -6,10 +6,12 @@ const read = (relative: string) =>
   readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
 
 describe("transient action confirmations", () => {
-  it("closes the replenishment form on save so the parent notice is the confirmation", () => {
+  it("retains replenishment success until dismissed, including across parent reload", () => {
     const form = read("../src/components/replenishment-form.tsx");
     expect(form).not.toContain("setOpen(compact)");
-    expect(form).toContain("setOpen(false);\n      await onSaved()");
+    expect(form).toContain('if (normalized === "COMPLETED" && !success) return null');
+    expect(form).toContain("await onSaved()");
+    expect(form).toContain('setSuccess(');
   });
 
   it("auto-dismisses success notices while keeping errors sticky", () => {

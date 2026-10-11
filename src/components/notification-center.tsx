@@ -5,6 +5,15 @@ import type { MessageKey } from "@/i18n/messages";
 import { PaginationControls } from "@/components/pagination-controls";
 import { PushSettings } from "@/components/push-settings";
 import { useVisibilityPolling } from "@/components/use-visibility-polling";
+import {
+  createFocusedTargetTracker,
+  createGenerationGuard,
+  createMutationQueue,
+  createPendingReadTracker,
+  type MutationQueue,
+  type NotificationReadResult,
+  type PendingReadTracker,
+} from "@/components/notification-read-coordination";
 import styles from "./notification-center.module.css";
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
@@ -41,6 +50,9 @@ type Props = {
   onOpenCase?: (caseId: string, lineId?: string | null, notification?: NotificationOpenTarget) => void;
   onReviewPhotos?: () => void;
   onUnreadChange?: (unreadCount: number) => void;
+  focusedNotificationId?: string | null;
+  onNotificationConsumed?: () => void;
+  recipientScope?: string | null;
 };
 
 
@@ -119,6 +131,8 @@ function notificationTitleKey(type: string): MessageKey {
     CASE_UNRESOLVED_THRESHOLD: "notificationCaseUnresolved",
     UNRESOLVED_OVER_THRESHOLD: "notificationCaseUnresolved",
     CASE_RESOLVED: "notificationCaseResolved",
+    CHECK_RESOLVED_EXTERNALLY: "notificationCheckResolvedExternally",
+    ORDER_STAGED: "notificationOrderStaged",
     PROFILE_PHOTO_APPROVAL_REQUIRED: "notificationPhotoApprovalRequired",
     PHOTO_APPROVAL_REQUIRED: "notificationPhotoApprovalRequired",
   };
@@ -149,7 +163,7 @@ function normalizeThresholds(raw: Record<string, unknown> | undefined): Threshol
 async function readBody<T>(response: Response): Promise<T> {
   return (await response.json().catch(() => ({}))) as T;
 }
-export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCase, onReviewPhotos, onUnreadChange }: Props) {
+export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCase, onReviewPhotos, onUnreadChange, focusedNotificationId, onNotificationConsumed, recipientScope = null }: Props) {
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [page, setPage] = useState(1);
@@ -158,21 +172,73 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
   const [thresholds, setThresholds] = useState<ThresholdState>(defaultThresholds);
   const [loading, setLoading] = useState(true);
   const [preferencesLoading, setPreferencesLoading] = useState(canManagePreferences);
-  const [busyId, setBusyId] = useState("");
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
   const [markAllBusy, setMarkAllBusy] = useState(false);
   const [savingPreferences, setSavingPreferences] = useState(false);
   const [error, setError] = useState("");
+  const [focusedError, setFocusedError] = useState("");
   const [markAllError, setMarkAllError] = useState("");
   const [preferencesError, setPreferencesError] = useState("");
   const [saved, setSaved] = useState(false);
   const [pushEnabledHere, setPushEnabledHere] = useState<boolean | null>(null);
 
+  const generationRef = useRef(createGenerationGuard());
+  const [mutationQueue] = useState<MutationQueue>(() => createMutationQueue());
+  const trRef = useRef(tr);
+  useEffect(() => { trRef.current = tr; }, [tr]);
+  const [pendingReads] = useState<PendingReadTracker<NotificationReadResult>>(() => createPendingReadTracker<NotificationReadResult>((id) => mutationQueue(async () => {
+    const response = await fetch(`/api/notifications/${encodeURIComponent(id)}/read`, { method: "POST", credentials: "same-origin" });
+    const body = await readBody<{ id?: string; readAt?: string | null; unreadCount?: number; error?: string }>(response);
+    if (!response.ok) throw new Error("NOTIFICATION_READ_FAILED");
+    if (typeof body.unreadCount !== "number") throw new Error("NOTIFICATION_READ_FAILED");
+    return { readAt: typeof body.readAt === "string" ? body.readAt : new Date().toISOString(), unreadCount: body.unreadCount };
+  })));
+  const pendingReadsRef = useRef(pendingReads);
+  useEffect(() => { pendingReadsRef.current = pendingReads; }, [pendingReads]);
+  const focusedTrackerRef = useRef(createFocusedTargetTracker());
+  const unreadRef = useRef(0);
+  useEffect(() => { unreadRef.current = unreadCount; }, [unreadCount]);
+
+  const recipientScopeRef = useRef(recipientScope);
+  useEffect(() => { recipientScopeRef.current = recipientScope; }, [recipientScope]);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const onUnreadChangeRef = useRef(onUnreadChange);
+  useEffect(() => { onUnreadChangeRef.current = onUnreadChange; }, [onUnreadChange]);
+  const onOpenCaseRef = useRef(onOpenCase);
+  useEffect(() => { onOpenCaseRef.current = onOpenCase; }, [onOpenCase]);
+  const onReviewPhotosRef = useRef(onReviewPhotos);
+  useEffect(() => { onReviewPhotosRef.current = onReviewPhotos; }, [onReviewPhotos]);
+  const onNotificationConsumedRef = useRef(onNotificationConsumed);
+  useEffect(() => { onNotificationConsumedRef.current = onNotificationConsumed; }, [onNotificationConsumed]);
+
+  const applyServerCount = useCallback((nextUnread: number, scope: string | null) => {
+    if (!mountedRef.current || recipientScopeRef.current !== scope) return;
+    setUnreadCount(nextUnread);
+    onUnreadChangeRef.current?.(nextUnread);
+  }, []);
+
   const loadNotifications = useCallback(async (silent = false, nextPage = 1) => {
-    if (!silent) setLoading(true);
+    const guard = generationRef.current;
+    const generation = guard.next();
+    const scope = recipientScopeRef.current;
+    if (!silent) {
+      if (!mountedRef.current || recipientScopeRef.current !== scope) return;
+      setLoading(true);
+    }
     try {
       const response = await fetch(`/api/notifications?page=${nextPage}&pageSize=50`, { credentials: "same-origin", cache: "no-store" });
       const body = await readBody<NotificationsResponse & { total?: number; page?: number; pageSize?: number; totalPages?: number }>(response);
       if (!response.ok) throw new Error(body.error || tr("notificationsLoadError"));
+      if (!mountedRef.current || recipientScopeRef.current !== scope) return;
+      if (!guard.isCurrent(generation)) {
+        if (!silent) setLoading(false);
+        return;
+      }
       setNotifications(body.notifications || []);
       setPage(typeof body.page === "number" && body.page >= 1 ? body.page : nextPage);
       setPageMeta({
@@ -181,16 +247,19 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
         pageSize: typeof body.pageSize === "number" && body.pageSize >= 1 ? body.pageSize : 50,
         totalPages: typeof body.totalPages === "number" && body.totalPages >= 1 ? body.totalPages : 1,
       });
-      const nextUnread = typeof body.unreadCount === "number" ? body.unreadCount : (body.notifications || []).filter((notification) => !notification.readAt).length;
-      setUnreadCount(nextUnread);
-      onUnreadChange?.(nextUnread);
+      if (typeof body.unreadCount === "number") applyServerCount(body.unreadCount, scope);
       setError("");
+      if (!silent) setLoading(false);
     } catch (cause) {
+      if (!mountedRef.current || recipientScopeRef.current !== scope) return;
+      if (!guard.isCurrent(generation)) {
+        if (!silent) setLoading(false);
+        return;
+      }
       setError(cause instanceof Error ? cause.message : tr("notificationsLoadError"));
-    } finally {
       if (!silent) setLoading(false);
     }
-  }, [tr, onUnreadChange]);
+  }, [tr, applyServerCount]);
 
   const loadPreferences = useCallback(async () => {
     if (!canManagePreferences) return;
@@ -221,75 +290,169 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
     return () => { window.clearTimeout(initialTimer); };
   }, [canManagePreferences, loadNotifications, loadPreferences]);
 
-  const markRead = async (notification: NotificationRecord) => {
-    if (notification.readAt || busyId === notification.id) return;
-    setBusyId(notification.id);
-    try {
-      const response = await fetch(`/api/notifications/${encodeURIComponent(notification.id)}/read`, { method: "POST", credentials: "same-origin" });
-      const body = await readBody<{ error?: string }>(response);
-      if (!response.ok) throw new Error(body.error || tr("notificationReadError"));
-      const readAt = new Date().toISOString();
-      const nextItems = notifications.map((item) => item.id === notification.id ? { ...item, readAt } : item);
-      const nextUnread = nextItems.filter((item) => !item.readAt).length;
-      setNotifications(nextItems);
-      setUnreadCount(nextUnread);
-      onUnreadChange?.(nextUnread);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : tr("notificationReadError"));
-    } finally {
-      setBusyId("");
-    }
-  };
+  const readNotificationOnServer = useCallback((id: string) => pendingReads.read(id), [pendingReads]);
 
-  const markAllRead = async () => {
-    if (markAllBusy || unreadCount === 0) return;
-    setMarkAllBusy(true);
-    setMarkAllError("");
-    try {
-      const response = await fetch("/api/notifications/read-all", { method: "POST", credentials: "same-origin" });
-      const body = await readBody<{ updated?: number; unreadCount?: number; error?: string }>(response);
-      if (!response.ok) throw new Error(body.error || tr("markAllNotificationsReadError"));
-      const readAt = new Date().toISOString();
-      setNotifications((current) => current.map((item) => item.readAt ? item : { ...item, readAt }));
-      const nextUnread = typeof body.unreadCount === "number" ? body.unreadCount : 0;
-      setUnreadCount(nextUnread);
-      onUnreadChange?.(nextUnread);
-    } catch (cause) {
-      setMarkAllError(cause instanceof Error ? cause.message : tr("markAllNotificationsReadError"));
-    } finally {
-      setMarkAllBusy(false);
-    }
-  };
-
-  const openNotificationCase = (notification: NotificationRecord) => {
-    if (!notification.caseId || !onOpenCase) return;
-    if (!notification.readAt && busyId !== notification.id) {
-      setBusyId(notification.id);
-      void (async () => {
-        try {
-          const response = await fetch(`/api/notifications/${encodeURIComponent(notification.id)}/read`, { method: "POST", credentials: "same-origin" });
-          const body = await readBody<{ error?: string }>(response);
-          if (!response.ok) throw new Error(body.error || tr("notificationReadError"));
-          const readAt = new Date().toISOString();
-          const nextItems = notifications.map((item) => item.id === notification.id ? { ...item, readAt } : item);
-          const nextUnread = nextItems.filter((item) => !item.readAt).length;
-          setNotifications(nextItems);
-          setUnreadCount(nextUnread);
-          onUnreadChange?.(nextUnread);
-        } catch (cause) {
-          setError(cause instanceof Error ? cause.message : tr("notificationReadError"));
-        } finally {
-          setBusyId("");
-        }
-      })();
-    }
+  const resolveTarget = useCallback((notification: NotificationRecord) => {
     const lineId = notification.shortPickLineId ?? null;
     const payload = asPayload(notification.payload);
     const payloadLineId = typeof payload.shortPickLineId === "string" ? payload.shortPickLineId
       : typeof payload.lineId === "string" ? payload.lineId : null;
-    onOpenCase(notification.caseId, lineId ?? payloadLineId, { caseId: notification.caseId, lineId: lineId ?? payloadLineId, notification });
-  };
+    const targetLine = lineId ?? payloadLineId;
+    return { targetLine, openTarget: { caseId: notification.caseId ?? "", lineId: targetLine, notification } satisfies NotificationOpenTarget };
+  }, []);
 
+  const markRead = useCallback(async (notification: NotificationRecord) => {
+    const pending = pendingReadsRef.current;
+    if (!pending || notification.readAt || pending.has(notification.id)) return;
+    const guard = generationRef.current;
+    const scope = recipientScopeRef.current;
+    guard.invalidate();
+    setBusyIds((current) => new Set(current).add(notification.id));
+    try {
+      const result = await readNotificationOnServer(notification.id);
+      if (!mountedRef.current || recipientScopeRef.current !== scope) return;
+      setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, readAt: result.readAt } : item));
+      applyServerCount(result.unreadCount, scope);
+    } catch {
+      if (!mountedRef.current || recipientScopeRef.current !== scope) return;
+      setError(tr("notificationReadError"));
+    } finally {
+      if (mountedRef.current && recipientScopeRef.current === scope) {
+        setBusyIds((current) => {
+          const next = new Set(current);
+          next.delete(notification.id);
+          return next;
+        });
+      }
+      guard.invalidate();
+    }
+  }, [applyServerCount, readNotificationOnServer, tr]);
+
+  const markAllRead = useCallback(async () => {
+    if (markAllBusy || unreadRef.current === 0) return;
+    const guard = generationRef.current;
+    const scope = recipientScopeRef.current;
+    setMarkAllBusy(true);
+    setMarkAllError("");
+    guard.invalidate();
+    const run = mutationQueue(async () => {
+      const response = await fetch("/api/notifications/read-all", { method: "POST", credentials: "same-origin" });
+      const body = await readBody<{ updated?: number; unreadCount?: number; error?: string }>(response);
+      if (!response.ok) throw new Error(body.error || tr("markAllNotificationsReadError"));
+      return typeof body.unreadCount === "number" ? body.unreadCount : 0;
+    });
+    try {
+      const nextUnread = await run;
+      if (!mountedRef.current || recipientScopeRef.current !== scope) return;
+      const readAt = new Date().toISOString();
+      setNotifications((current) => current.map((item) => item.readAt ? item : { ...item, readAt }));
+      applyServerCount(nextUnread, scope);
+    } catch (cause) {
+      if (!mountedRef.current || recipientScopeRef.current !== scope) return;
+      setMarkAllError(cause instanceof Error ? cause.message : tr("markAllNotificationsReadError"));
+    } finally {
+      if (mountedRef.current && recipientScopeRef.current === scope) setMarkAllBusy(false);
+      guard.invalidate();
+    }
+  }, [applyServerCount, markAllBusy, mutationQueue, tr]);
+
+  const openNotificationCase = useCallback(async (
+    notification: NotificationRecord,
+    options?: { beforeNavigate?: () => void; shouldNavigate?: () => boolean },
+  ): Promise<boolean> => {
+    const openCase = onOpenCaseRef.current;
+    const reviewPhotos = onReviewPhotosRef.current;
+    const scope = recipientScopeRef.current;
+    if (!openCase && !(notification.type === "PROFILE_PHOTO_APPROVAL_REQUIRED" && reviewPhotos)) return false;
+    const navigate = (record: NotificationRecord) => {
+      if (options?.shouldNavigate && !options.shouldNavigate()) return false;
+      if (!mountedRef.current || recipientScopeRef.current !== scope) return false;
+      options?.beforeNavigate?.();
+      const { targetLine, openTarget } = resolveTarget(record);
+      if (record.caseId && openCase) {
+        openCase(record.caseId, targetLine, openTarget);
+      } else if (record.type === "PROFILE_PHOTO_APPROVAL_REQUIRED" && reviewPhotos) {
+        reviewPhotos();
+      }
+      return true;
+    };
+    if (notification.readAt) return navigate(notification);
+    generationRef.current.invalidate();
+    setBusyIds((current) => new Set(current).add(notification.id));
+    try {
+      // Unread, even with an in-flight deduped read: await the shared request
+      // (no new fetch) so the global count applies before routing.
+      const result = await readNotificationOnServer(notification.id);
+      if (!mountedRef.current || recipientScopeRef.current !== scope) return false;
+      setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, readAt: result.readAt } : item));
+      applyServerCount(result.unreadCount, scope);
+      return navigate({ ...notification, readAt: result.readAt });
+    } catch {
+      if (!mountedRef.current || recipientScopeRef.current !== scope) return false;
+      setError(tr("notificationReadError"));
+      return false;
+    } finally {
+      if (mountedRef.current && recipientScopeRef.current === scope) {
+        setBusyIds((current) => {
+          const next = new Set(current);
+          next.delete(notification.id);
+          return next;
+        });
+      }
+      generationRef.current.invalidate();
+    }
+  }, [applyServerCount, readNotificationOnServer, resolveTarget, tr]);
+
+  const openNotificationCaseRef = useRef(openNotificationCase);
+  useEffect(() => { openNotificationCaseRef.current = openNotificationCase; }, [openNotificationCase]);
+
+  useEffect(() => {
+    const targetId = focusedNotificationId ?? null;
+    const tracker = focusedTrackerRef.current;
+    if (!tracker.shouldFetch(targetId)) return;
+    let cancelled = false;
+    const scope = recipientScopeRef.current;
+    const consumeFocused = () => {
+      if (!cancelled && mountedRef.current && recipientScopeRef.current === scope) {
+        tracker.markHandled(targetId);
+        onNotificationConsumedRef.current?.();
+      }
+    };
+    (async () => {
+      try {
+        const response = await fetch(`/api/notifications/${encodeURIComponent(targetId)}`, { credentials: "same-origin", cache: "no-store" });
+        const body = await readBody<{ notification?: NotificationRecord; error?: string; code?: string }>(response);
+        if (!response.ok || !body.notification) {
+          if (!cancelled && mountedRef.current && recipientScopeRef.current === scope) {
+            setFocusedError(tr("notificationReadError"));
+            tracker.markHandled(targetId);
+            onNotificationConsumedRef.current?.();
+          }
+          return;
+        }
+        if (cancelled || !mountedRef.current || recipientScopeRef.current !== scope) return;
+        const notification = body.notification;
+        setNotifications((current) => current.some((item) => item.id === notification.id) ? current.map((item) => item.id === notification.id ? { ...item, ...notification } : item) : [notification, ...current]);
+        // Consume before navigating: routing unmounts this center, so a
+        // post-navigate consume would never run and the id would reopen.
+        const opened = await openNotificationCaseRef.current(notification, {
+          beforeNavigate: consumeFocused,
+          shouldNavigate: () => !cancelled && mountedRef.current && recipientScopeRef.current === scope,
+        });
+        if (!opened && !cancelled && mountedRef.current && recipientScopeRef.current === scope) {
+          setError("");
+          setFocusedError(tr("notificationReadError"));
+        }
+      } catch {
+        if (!cancelled && mountedRef.current && recipientScopeRef.current === scope) {
+          setFocusedError(tr("notificationReadError"));
+          tracker.markHandled(targetId);
+          onNotificationConsumedRef.current?.();
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [focusedNotificationId, tr]);
   const savePreferences = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSavingPreferences(true);
@@ -345,6 +508,7 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
           </div>
         </div>
         {markAllError && <p className={styles.preferenceError} role="alert">{markAllError}</p>}
+        {focusedError && <div className={styles.error} role="alert"><span>{focusedError}</span></div>}
         {loading ? <p className={styles.loading} aria-live="polite">{tr("notificationsLoading")}</p> : error ? (
           <div className={styles.error} role="alert"><span>{error}</span><div className={styles.errorActions}><button type="button" className={styles.refreshButton} onClick={() => void loadNotifications(false, pageRef.current)}>{tr("tryAgain")}</button></div></div>
         ) : notificationRows.length === 0 ? <p className={styles.empty}>{tr("notificationsEmpty")}</p> : (
@@ -360,8 +524,8 @@ export function NotificationCenter({ tr, locale, canManagePreferences, onOpenCas
                 </div>
                 <div className={styles.rowActions}>
                   {isPhotoApproval && onReviewPhotos && <button type="button" className={styles.caseButton} onClick={onReviewPhotos}>{tr("reviewPhoto")}</button>}
-                  {notification.caseId && onOpenCase && <button type="button" className={styles.caseButton} onClick={() => void openNotificationCase(notification)} disabled={busyId === notification.id}>{tr("openCase")}</button>}
-                  {!notification.readAt && <button type="button" className={styles.readButton} onClick={() => void markRead(notification)} disabled={busyId === notification.id}>{busyId === notification.id ? tr("saving") : tr("markNotificationRead")}</button>}
+                  {notification.caseId && onOpenCase && <button type="button" className={styles.caseButton} onClick={() => void openNotificationCase(notification)} disabled={busyIds.has(notification.id)}>{tr("openCase")}</button>}
+                  {!notification.readAt && <button type="button" className={styles.readButton} onClick={() => void markRead(notification)} disabled={busyIds.has(notification.id)}>{busyIds.has(notification.id) ? tr("saving") : tr("markNotificationRead")}</button>}
                 </div>
               </article>
             ))}

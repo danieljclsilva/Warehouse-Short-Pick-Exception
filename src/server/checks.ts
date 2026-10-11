@@ -5,8 +5,9 @@ import { auditLog, caseEvents, checkTasks, configurationAudits, configurationVer
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/cases";
-import { insertMonitoringNotifications, insertResponsibilityNotification } from "@/server/notifications";
+import { insertInformationalNotification, insertMonitoringNotifications, insertResponsibilityNotification } from "@/server/notifications";
 import { assertConfigurationPermission, getConfigurationVersion, getCurrentConfiguration, normalizeConfigurationValues } from "@/server/configuration";
+import { loadExplicitPickerOverride, loadRoutingConfig, resolveRetrievalOwner } from "@/server/retrieval-routing";
 
 export const assignCheckSchema = z.object({ userId: z.string().uuid(), pickerRetrieval: z.boolean().default(false) });
 export const completeCheckSchema = z.object({
@@ -78,11 +79,15 @@ export async function listChecks(auth: AuthContext, scope: "available" | "mine" 
   const parsed = checkListQuerySchema.parse({ scope, cursor: options.cursor, limit: options.limit ?? 50 });
   const cursorValue = parseCheckCursor(parsed.cursor);
   if (parsed.cursor && !cursorValue) throw new CaseApiError("CASE_NOT_FOUND", "Invalid pagination cursor", 400);
+  // A pending/failed replenishment obligation protects its line from stale
+  // check mutations: excluded from every work queue until retrieval.
+  const obligationGuard = sql`NOT (${shortPickLines.replenishmentState} = 'COMPLETED'
+    AND (${shortPickLines.retrievalState} = 'PENDING' OR ${shortPickLines.retrievalState} = 'IN_PROGRESS' OR ${shortPickLines.retrievalState} = 'FAILED'))`;
   const scopePredicate = scope === "available"
-    ? and(eq(checkTasks.status, "AVAILABLE"), eq(shortPickLines.state, "OPEN"))
+    ? and(eq(checkTasks.status, "AVAILABLE"), eq(shortPickLines.state, "OPEN"), obligationGuard)
     : scope === "mine"
-      ? and(inArray(checkTasks.status, ["CLAIMED", "ASSIGNED"]), sql`(${checkTasks.claimedByUserId} = ${auth.user.id} OR ${checkTasks.assignedToUserId} = ${auth.user.id})`)
-      : inArray(checkTasks.status, ["CLAIMED", "ASSIGNED"]);
+      ? and(inArray(checkTasks.status, ["CLAIMED", "ASSIGNED"]), sql`(${checkTasks.claimedByUserId} = ${auth.user.id} OR ${checkTasks.assignedToUserId} = ${auth.user.id})`, obligationGuard)
+      : and(inArray(checkTasks.status, ["CLAIMED", "ASSIGNED"]), obligationGuard);
   // Keyset on millisecond-truncated timestamps: cursors encode millisecond ISO strings, so the
   // ordering key MUST apply the same truncation on both sides. Comparing full-precision
   // created_at against a millisecond cursor skips same-millisecond rows that sort after the
@@ -143,6 +148,20 @@ async function taskCaseId(taskId: string) {
   return link.caseId;
 }
 
+type CheckLine = typeof shortPickLines.$inferSelect;
+
+/**
+ * Narrow stale-check guard: while a replenishment-COMPLETED physical-retrieval
+ * obligation is PENDING/FAILED, stale check claim/assign/complete mutations
+ * cannot erase or re-derive the obligation. Failed and completed stock-finding
+ * history is left untouched.
+ */
+function assertNoPendingReplenishmentObligation(line: CheckLine) {
+  if (line.replenishmentState === "COMPLETED" && (line.retrievalState === "PENDING" || line.retrievalState === "IN_PROGRESS" || line.retrievalState === "FAILED")) {
+    throw new CaseApiError("CHECK_NOT_AVAILABLE", "A pending replenishment retrieval protects this line from check changes", 409, { lineId: line.id });
+  }
+}
+
 export async function claimCheck(auth: AuthContext, taskId: string) {
   if (!hasAuthPermission(auth, "CLAIM_CHECK")) throw new CaseApiError("CASE_ACCESS_DENIED", "Cannot claim checks", 403);
   const caseId = await taskCaseId(taskId);
@@ -155,6 +174,7 @@ export async function claimCheck(auth: AuthContext, taskId: string) {
     if (!task || task.status !== "AVAILABLE") throw new CaseApiError("CHECK_NOT_AVAILABLE", "Check is already claimed or assigned", 409);
     const [line] = await tx.select().from(shortPickLines).where(eq(shortPickLines.id, task.shortPickLineId)).limit(1);
     if (!line || line.state !== "OPEN") throw new CaseApiError("CHECK_NOT_AVAILABLE", "Line is not available for checking", 409);
+    assertNoPendingReplenishmentObligation(line);
     const limit = configuration ? configuration.values.MAX_SIMULTANEOUS_CHECKS_PER_CASE : 1;
     const [active] = await tx.select({ count: sql<number>`count(*)::int` }).from(checkTasks)
       .innerJoin(shortPickLines, eq(checkTasks.shortPickLineId, shortPickLines.id))
@@ -187,6 +207,7 @@ export async function assignCheck(auth: AuthContext, taskId: string, userId: str
     if (!target || !target.permissions.includes("COMPLETE_CHECK")) throw new CaseApiError("CASE_ACCESS_DENIED", "Assignee cannot complete checks", 400);
     const [line] = await tx.select().from(shortPickLines).where(eq(shortPickLines.id, task.shortPickLineId)).limit(1);
     if (!line) throw new CaseApiError("CASE_NOT_FOUND", "Line not found", 404);
+    assertNoPendingReplenishmentObligation(line);
     if (!isReassignment && line.state !== "OPEN") throw new CaseApiError("CHECK_NOT_AVAILABLE", "Line is not available for checking", 409);
     if (!isReassignment) {
       const limit = configuration ? configuration.values.MAX_SIMULTANEOUS_CHECKS_PER_CASE : 1;
@@ -229,23 +250,43 @@ export async function reportDiscoveredLocation(auth: AuthContext, caseId: string
       reconciledTaskId = activeCheck.id;
       await tx.update(checkTasks).set({ status: "COMPLETED", completionCode: "FOUND", completedAt: now, updatedAt: now, version: sql`${checkTasks.version} + 1` }).where(eq(checkTasks.id, activeCheck.id));
     }
-    const [stagedResponsible] = record.phase === "STAGED" && record.currentCaseResponsibleUserId
-      ? await tx.select({ id: users.id, role: users.role, permissions: users.permissions }).from(users).where(and(eq(users.id, record.currentCaseResponsibleUserId), eq(users.status, "ACTIVE"))).limit(1)
-      : [];
-    const ownerFromPhase = record.phase === "PICKING" ? record.pickingUserId
-      : stagedResponsible?.role === "TROUBLESHOOTER" && stagedResponsible.permissions.includes("CONFIRM_RETRIEVAL") ? stagedResponsible.id : null;
+    // External discovery: reconciled active checker if present, else the finding
+    // actor only when eligible and config permits. No silent case-picker transfer.
+    const config = await loadRoutingConfig(tx, record.configurationVersionId);
+    const reconciledCheckerId = activeCheck ? (activeCheck.assignedToUserId ?? activeCheck.claimedByUserId ?? null) : null;
+    const ownerFromPhase = await resolveRetrievalOwner(tx, {
+      caseRecord: record, lineId, config,
+      originTaskId: reconciledTaskId,
+      originCheckerId: reconciledCheckerId,
+      fallbackCheckerId: auth.user.id,
+    });
     await tx.update(shortPickLines).set({
       state: "FOUND", currentResponsibleUserId: ownerFromPhase,
       discoveredLocation: input.location, discoveredByUserId: auth.user.id, discoveredAt: now,
       retrievalState: "PENDING", retrievalResponsibleUserId: ownerFromPhase, updatedAt: now, version: sql`${shortPickLines.version} + 1`,
     }).where(eq(shortPickLines.id, lineId));
-    await tx.update(orderCases).set({ updatedAt: now, version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
+    if (reconciledTaskId) {
+      await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CHECK_COMPLETED",
+        details: { caseId, lineId, taskId: reconciledTaskId, code: "FOUND", externalResolution: true,
+          source: "EXTERNAL_DISCOVERY", previousCheckerUserId: reconciledCheckerId, location: input.location } });
+      await tx.insert(caseEvents).values({ caseId, shortPickLineId: lineId, actorUserId: auth.user.id, eventType: "CHECK_COMPLETED",
+        details: { taskId: reconciledTaskId, code: "FOUND", externalResolution: true, source: "EXTERNAL_DISCOVERY",
+          finderUserId: auth.user.id, previousCheckerUserId: reconciledCheckerId, location: input.location, casePhase: record.phase } });
+    }
     await tx.insert(caseEvents).values({ caseId, shortPickLineId: lineId, actorUserId: auth.user.id, eventType: "NEW_LOCATION_REPORTED",
       details: { location: input.location, note: input.note || null, reconciledTaskId, externalResolution: true, casePhase: record.phase } });
     await tx.insert(caseEvents).values({ caseId, shortPickLineId: lineId, actorUserId: auth.user.id, eventType: "RETRIEVAL_ASSIGNED",
       details: { responsibleUserId: ownerFromPhase, casePhase: record.phase, source: "DISCOVERED_LOCATION" } });
     await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "DISCOVERED_LOCATION_REPORTED",
-      details: { caseId, lineId, location: input.location, reconciledTaskId, responsibleUserId: ownerFromPhase } });
+      details: { caseId, lineId, location: input.location, reconciledTaskId, responsibleUserId: ownerFromPhase,
+        ...(reconciledTaskId ? { taskId: reconciledTaskId, code: "FOUND", externalResolution: true, source: "EXTERNAL_DISCOVERY",
+          finderUserId: auth.user.id, previousCheckerUserId: reconciledCheckerId } : {}) } });
+    await tx.update(orderCases).set({ updatedAt: now, version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, caseId));
+    if (reconciledTaskId && reconciledCheckerId && reconciledCheckerId !== auth.user.id) {
+      await insertInformationalNotification(tx, { recipientUserId: reconciledCheckerId, type: "CHECK_RESOLVED_EXTERNALLY",
+        caseId, shortPickLineId: lineId, excludeActorId: auth.user.id, dedupeKey: `CHECK_RESOLVED_EXTERNALLY:${reconciledTaskId}:${reconciledCheckerId}`,
+        payload: { orderNumber: record.orderNumber, taskId: reconciledTaskId, code: "FOUND", location: input.location, finderUserId: auth.user.id } });
+    }
     if (ownerFromPhase) {
       await insertResponsibilityNotification(tx, { recipientUserId: ownerFromPhase, type: "RESPONSIBILITY_NEW_LOCATION",
         caseId, shortPickLineId: lineId, payload: { orderNumber: record.orderNumber, discoveredLocation: input.location, finderUserId: auth.user.id } });
@@ -271,6 +312,7 @@ export async function completeCheck(auth: AuthContext, taskId: string, input: z.
     if ((task.assignedToUserId ?? task.claimedByUserId) !== auth.user.id) throw new CaseApiError("CASE_ACCESS_DENIED", "This check belongs to another worker", 403);
     const [line] = await tx.select().from(shortPickLines).where(eq(shortPickLines.id, task.shortPickLineId)).limit(1);
     if (!line || line.state !== "CHECKING") throw new CaseApiError("CHECK_NOT_AVAILABLE", "Line is not being checked", 409);
+    assertNoPendingReplenishmentObligation(line);
     if (input.code === "FOUND" && input.discoveredLocation === line.originalLocation) {
       throw new CaseApiError("CASE_ACCESS_DENIED", "A new location must differ from the original location; use FOUND_AT_ORIGINAL instead", 400);
     }
@@ -278,28 +320,18 @@ export async function completeCheck(auth: AuthContext, taskId: string, input: z.
     await tx.update(checkTasks).set({ status: "COMPLETED", completionCode: input.code, completedAt: now, updatedAt: now, version: sql`${checkTasks.version} + 1` }).where(eq(checkTasks.id, taskId));
     const found = input.code === "FOUND" || input.code === "FOUND_AT_ORIGINAL";
     const foundAtOriginal = input.code === "FOUND_AT_ORIGINAL";
-    const [stagedCaseResponsible] = record.phase === "STAGED" && record.currentCaseResponsibleUserId
-      ? await tx.select({ id: users.id, role: users.role, permissions: users.permissions }).from(users).where(and(eq(users.id, record.currentCaseResponsibleUserId), eq(users.status, "ACTIVE"))).limit(1)
-      : [];
-    const [stagedChecker] = record.phase === "STAGED" && (task.assignedToUserId ?? task.claimedByUserId)
-      ? await tx.select({ id: users.id, permissions: users.permissions }).from(users).where(eq(users.id, task.assignedToUserId ?? task.claimedByUserId!)).limit(1)
-      : [];
-    const stagedResponsible = stagedCaseResponsible?.role === "TROUBLESHOOTER" && stagedCaseResponsible.permissions.includes("CONFIRM_RETRIEVAL") ? stagedCaseResponsible.id
-      : stagedChecker?.permissions.includes("CONFIRM_RETRIEVAL") ? stagedChecker.id : null;
-    // Assign-time picker-retrieval choice (additive event-details flag): when the latest
-    // CHECK_ASSIGNED/CHECK_REASSIGNED for this task requested picker retrieval, route the
-    // resulting retrieval ownership to the case picker. Absence of the flag keeps current behavior.
-    const [assignChoice] = await tx.select({ details: caseEvents.details }).from(caseEvents)
-      .where(and(eq(caseEvents.caseId, caseId), eq(caseEvents.shortPickLineId, line.id), inArray(caseEvents.eventType, ["CHECK_ASSIGNED", "CHECK_REASSIGNED"])))
-      .orderBy(sql`${caseEvents.createdAt} DESC`);
-    const assignDetails = assignChoice?.details && typeof assignChoice.details === "object" && !Array.isArray(assignChoice.details) ? assignChoice.details as Record<string, unknown> : {};
-    const pickerRetrieval = assignDetails.pickerRetrieval === true && (assignDetails.taskId === undefined || assignDetails.taskId === taskId);
+    // In-flight completion: pass the current task/checker context so the shared
+    // selector sees the just-completed check, still inside this transaction.
     const checkerUserId = task.assignedToUserId ?? task.claimedByUserId;
-    const [pickingChecker] = record.phase === "PICKING" && snapshot?.values.CHECKER_RETRIEVAL_DURING_PICKING_ENABLED && checkerUserId
-      ? await tx.select({ id: users.id, permissions: users.permissions }).from(users).where(and(eq(users.id, checkerUserId), eq(users.status, "ACTIVE"))).limit(1)
-      : [];
-    const pickingResponsible = pickingChecker?.permissions.includes("CONFIRM_RETRIEVAL") ? pickingChecker.id : record.pickingUserId;
-    const retrievalUserId = found ? (pickerRetrieval ? record.pickingUserId : record.phase === "PICKING" ? pickingResponsible : snapshot?.values.CHECKER_RETRIEVAL_WHEN_STAGED_ENABLED ? stagedResponsible : null) : null;
+    const config = await loadRoutingConfig(tx, record.configurationVersionId);
+    const pickerRetrieval = found
+      ? await loadExplicitPickerOverride(tx, caseId, line.id, taskId)
+      : false;
+    const retrievalUserId = found ? await resolveRetrievalOwner(tx, {
+      caseRecord: record, lineId: line.id, config,
+      originTaskId: taskId, originCheckerId: checkerUserId ?? null,
+      explicitPickerOverride: pickerRetrieval,
+    }) : null;
     await tx.update(shortPickLines).set({
       state: found ? "FOUND" : "OPEN", currentResponsibleUserId: retrievalUserId,
       discoveredLocation: input.code === "FOUND" ? input.discoveredLocation ?? null : null,
@@ -335,11 +367,15 @@ export async function requestAnotherCheck(auth: AuthContext, caseId: string, lin
     const [record] = await tx.select().from(orderCases).where(eq(orderCases.id, link.caseId)).for("update").limit(1);
     if (!record || record.phase === "CLOSED") throw new CaseApiError("CASE_NOT_OPEN", "Case is closed", 409);
     const [line] = await tx.select().from(shortPickLines).where(eq(shortPickLines.id, lineId)).limit(1);
-    if (!line || line.state !== "OPEN") throw new CaseApiError("CHECK_NOT_AVAILABLE", "Line cannot be checked", 409);
+    if (!line) throw new CaseApiError("CASE_NOT_FOUND", "Line not found", 404);
+    assertNoPendingReplenishmentObligation(line);
+    if (line.state !== "OPEN") throw new CaseApiError("CHECK_NOT_AVAILABLE", "Line cannot be checked", 409);
     const [existing] = await tx.select({ id: checkTasks.id }).from(checkTasks).where(and(eq(checkTasks.shortPickLineId, lineId), ne(checkTasks.status, "COMPLETED"))).limit(1);
     if (existing) throw new CaseApiError("CHECK_NOT_AVAILABLE", "An active check already exists", 409);
     const [task] = await tx.insert(checkTasks).values({ shortPickLineId: lineId }).returning({ id: checkTasks.id });
+    await tx.update(orderCases).set({ updatedAt: new Date(), version: sql`${orderCases.version} + 1` }).where(eq(orderCases.id, record.id));
     await tx.insert(caseEvents).values({ caseId: record.id, shortPickLineId: lineId, actorUserId: auth.user.id, eventType: "CHECK_REQUESTED", details: { taskId: task!.id } });
+    await tx.insert(auditLog).values({ actorUserId: auth.user.id, action: "CHECK_REQUESTED", details: { caseId: record.id, lineId, taskId: task!.id } });
     return { taskId: task!.id, lineId, caseId: record.id };
   });
 }

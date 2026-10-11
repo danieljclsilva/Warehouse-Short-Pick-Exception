@@ -17,6 +17,9 @@ export type SharedCaseLine = {
   discoveredLocation?: string | null;
   retrievalState?: string | null;
   replenishmentState?: string | null;
+  replenishmentNote?: string | null;
+  replenishmentActorName?: string | null;
+  retrievalResponsibleName?: string | null;
   responsibleName?: string | null;
   reporterName?: string | null;
   reporterIdentifier?: string | null;
@@ -26,16 +29,21 @@ export type SharedCaseLine = {
 export type SharedLineProjection = {
   lineId: string;
   displayStatus: string;
-  replenishment?: { state: string; note: string | null; actorName: string | null; at: string | null } | null;
+  replenishment?: { state: string; note?: string | null; actorName?: string | null; at?: string | null } | null;
+  nextActionCode?: string | null;
+  actionOwnerName?: string | null;
+  blockingReasonCode?: string | null;
 };
 
 export type SharedLineActions = {
   canRecordReplenishment: boolean;
   canRetrieve: boolean;
   canReportLocation: boolean;
+  canRequestCheck?: boolean;
   busyId: string;
   onSaved: () => void | Promise<void>;
   onRetrieve: (lineId: string, result: "RETRIEVED" | "FAILED") => void;
+  onRequestCheck?: (lineId: string) => void | Promise<void>;
   reportForm: (lineId: string) => React.ReactNode;
 };
 
@@ -65,12 +73,21 @@ export function SharedCaseLineCard({
   additionalDetails?: React.ReactNode;
 }) {
   const status = lineStatus(line, projections);
-  const replenishment = (projections.get(line.id)?.replenishment?.state ?? line.replenishmentState ?? "NONE").toUpperCase();
+  const projection = projections.get(line.id);
+  const replenishment = (projection?.replenishment?.state ?? line.replenishmentState ?? "NONE").toUpperCase();
+  const replenishmentNote = projection?.replenishment?.note ?? line.replenishmentNote ?? null;
+  const replenishmentActor = projection?.replenishment?.actorName ?? line.replenishmentActorName ?? null;
   const retrieval = (line.retrievalState ?? "NOT_REQUIRED").toUpperCase();
   const isClosed = casePhase === "CLOSED";
-  const retrievalPending = !isClosed && actions.canRetrieve && line.state === "FOUND" && (retrieval === "PENDING" || retrieval === "FAILED");
-  const showWriter = actions.canRecordReplenishment && replenishment !== "COMPLETED"
-    && !["RESOLVED", "CANCELLED"].includes(line.state) && casePhase !== "CLOSED";
+  const isTerminal = line.state === "RESOLVED" || line.state === "CANCELLED" || isClosed;
+  // Completed replenishment materializes a pending physical-retrieval obligation
+  // even when the main line state is not FOUND (checked by actual metadata).
+  const retrievalPending = !isTerminal && actions.canRetrieve
+    && (retrieval === "PENDING" || retrieval === "FAILED")
+    && (line.state === "FOUND" || replenishment === "COMPLETED");
+  const showWriter = actions.canRecordReplenishment && !isTerminal;
+  const requestCheck = !isTerminal && (actions.canRequestCheck ?? false) && projection?.nextActionCode === "REQUEST_CHECK"
+    && line.state === "OPEN" && replenishment !== "COMPLETED";
   return (
     <div>
       <div className="shared-case-line-heading">
@@ -82,11 +99,17 @@ export function SharedCaseLineCard({
       </div>
       {line.discoveredLocation ? <p className="case-discovered-location">{tr("newLocation" as MessageKey)}: <strong>{line.discoveredLocation}</strong></p> : null}
       {line.responsibleName ? <p><span className="responsible-badge">{tr("checkResponsibleBadge", { name: line.responsibleName })}</span></p> : null}
+      {line.retrievalResponsibleName ? <p><span className="responsible-badge">{tr("checkResponsibleBadge", { name: line.retrievalResponsibleName })}</span></p> : null}
       {additionalDetails}
-      {replenishment !== "NONE" ? <p className="replenishment-badge" data-state={replenishment}>{tr(`replenishmentState${replenishment}` as MessageKey)}</p> : null}
+      {replenishment !== "NONE" ? <p className="replenishment-badge" data-state={replenishment}>{tr(`replenishmentState${replenishment}` as MessageKey)}{replenishmentNote ? ` · ${replenishmentNote}` : ""}{replenishmentActor ? ` · ${replenishmentActor}` : ""}</p> : null}
       {showRetrievalNotRequired && retrieval === "NOT_REQUIRED" && casePhase !== "STAGED" ? <p className="retrieval-badge" data-state="NOT_REQUIRED">{tr("retrievalNotRequired")}</p> : null}
       {showWriter ? (
-        <ReplenishmentForm tr={tr} caseId={caseId} lineId={line.id} currentState={replenishment} compact onSaved={actions.onSaved} />
+        <ReplenishmentForm tr={tr} caseId={caseId} lineId={line.id} location={line.discoveredLocation ?? line.location} currentState={replenishment} compact onSaved={actions.onSaved} />
+      ) : null}
+      {requestCheck && actions.onRequestCheck ? (
+        <div className="check-card-actions">
+          <button className="secondary-button" type="button" disabled={Boolean(actions.busyId)} onClick={() => void actions.onRequestCheck?.(line.id)}>{tr("requestAnotherCheck")}</button>
+        </div>
       ) : null}
       {retrievalPending ? retrievalPrompt : null}
       {retrievalPending ? (

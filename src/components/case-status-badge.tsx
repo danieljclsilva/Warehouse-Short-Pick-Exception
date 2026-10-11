@@ -54,9 +54,13 @@ const STATUS_LABEL_KEYS: Record<string, MessageKey> = {
  */
 export function statusGroupFor(status: string | null | undefined, retrievalState?: string | null): CaseStatusGroup {
   const code = (status || "").toUpperCase();
+  // Terminal codes keep their done group even when a retrieval failed.
+  if (DONE_STATUSES[code]) return "done";
+  // A failed retrieval is waiting/error work, never ready — including the
+  // original-location code whose display status names the found location.
+  if ((retrievalState || "").toUpperCase() === "FAILED") return "waiting";
   if (code === "FOUND" && (retrievalState || "").toUpperCase() === "PENDING") return "ready";
   if (READY_STATUSES[code]) return "ready";
-  if (DONE_STATUSES[code]) return "done";
   return "waiting";
 }
 
@@ -74,7 +78,10 @@ export function CaseStatusBadge({
   const group = statusGroupFor(status, retrievalState);
   const code = (status || "").toUpperCase();
   const retrievalFailed = (retrievalState || "").toUpperCase() === "FAILED";
-  const labelKey = retrievalFailed && ["FOUND", "WAITING_RETRIEVAL", "RETRIEVAL_PENDING"].includes(code)
+  // FAILED dominates retrieved-location display codes; terminal codes keep
+  // their own resolved/cancelled label via the status lookup below.
+  const retryable = ["FOUND", "FOUND_AT_ORIGINAL", "WAITING_RETRIEVAL", "RETRIEVAL_PENDING"].includes(code);
+  const labelKey = retrievalFailed && retryable && !DONE_STATUSES[code]
     ? "badgeRetryRetrieval"
     : STATUS_LABEL_KEYS[code] ?? GROUP_LABEL_KEYS[group];
   const label = tr(labelKey);

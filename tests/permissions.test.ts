@@ -13,6 +13,14 @@ describe("role and permission hierarchy", () => {
     expect(defaultPermissions("TROUBLESHOOTER")).toEqual(expect.arrayContaining(["REPORT_SHORT_PICK", "VIEW_OWN_CASES", "MARK_ORDER_STAGED"]));
     expect(defaultPermissions("ASSISTANT")).toContain("MARK_ORDER_STAGED");
   });
+  it("grants every picker default plus replenishment and location reporting to troubleshooters", () => {
+    const picker = defaultPermissions("PICKER");
+    const troubleshooter = defaultPermissions("TROUBLESHOOTER");
+    expect(troubleshooter).toEqual(expect.arrayContaining(picker));
+    expect(troubleshooter).toEqual(expect.arrayContaining(["REPORT_NEW_LOCATION", "RECORD_REPLENISHMENT"]));
+    for (const permission of ["VIEW_ALL_OPEN_CASES", "VIEW_USERS", "ASSIGN_CHECK", "REOPEN_CASE", "REPAIR_CASE_DATA", "RETRIEVE_FOR_OTHER_PICKER"]) expect(troubleshooter).not.toContain(permission);
+  });
+
 
   it("enforces grant bounds for override and repair permissions", () => {
     expect(permissionsAllowedForRole("TEAM_LEADER", ["OVERRIDE_CASE_STATE"])).toBe(true);

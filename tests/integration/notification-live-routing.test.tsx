@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { liveSectionForUser } from "@/components/auth-app";
+import { defaultPermissions } from "@/domain/permissions";
 
 const pickerChecks = [
   "REPORT_SHORT_PICK",
@@ -10,6 +11,11 @@ const pickerChecks = [
 ];
 
 describe("Notification open routes to the native case surface", () => {
+  it("routes Troubleshooter check alerts to Assignments and case/retrieval handoffs to shared My Work", () => {
+    const worker = { role: "TROUBLESHOOTER", permissions: defaultPermissions("TROUBLESHOOTER") };
+    for (const type of ["RESPONSIBILITY_CHECK_ASSIGNED", "CHECK_RESOLVED_EXTERNALLY"]) expect(liveSectionForUser(worker, type)).toBe("assignments");
+    for (const type of ["RESPONSIBILITY_CASE_ASSIGNED", "RESPONSIBILITY_RETRIEVAL_ASSIGNED", "RESPONSIBILITY_NEW_LOCATION", "ORDER_STAGED"]) expect(liveSectionForUser(worker, type)).toBe("myWork");
+  });
   it("sends dashboard-access users to the dashboard drawer surface", () => {
     expect(
       liveSectionForUser({ role: "PICKER", permissions: [...pickerChecks, "VIEW_ALL_OPEN_CASES"] }, "CHECK_CLAIMED"),

@@ -1,4 +1,31 @@
+## Troubleshooter workflow follow-up — 2026-10-11
+
+- OMP implemented Picker parity plus default REPORT_NEW_LOCATION and RECORD_REPLENISHMENT. Active My Work includes original-picker or current-resolver cases once; server visibility and message permissions remain separate. Existing custom grants/revocations are preserved; managers should review existing Troubleshooter replenishment grants.
+- Assignment internal notifications and enabled-device push queues verified. Independent review corrected Completed replenishment responsibility and shared retrieval controls, covering failure/retry/retrieval/closure while preserving original Picker identity and shortage ownership.
+- Five Troubleshooter paths added to the map. Implementation details and role/permission instructions: [WORKFLOW_CORRECTIONS_IMPLEMENTATION.md](./WORKFLOW_CORRECTIONS_IMPLEMENTATION.md).
+- Verification: 406 tests / 57 files pass on a freshly migrated disposable database, plus typecheck, lint, production build, schema consistency, critical HTTP A–F and security acceptance. Desktop/mobile workflow QA and all 33 map actions / 19 paths / 20 findings at two widths pass without runtime errors or overflow. No new schema migration required.
+- Phase 8 remains open: physical push receipt, scanner and operational acceptance remain unverified. No commit, push or deployment performed.
+
 # Development plan
+
+## OMP workflow corrections — 2026-10-11 (implemented and independently verified)
+
+- Final acceptance supersedes the interim notes below: 56 test files / 402 tests pass in a freshly migrated disposable local database; typecheck, lint, production build, Drizzle check, fresh/0019 migration proofs and critical/security HTTP E2E pass. Browser checks cover notifications and replenishment/follow-up at desktop/mobile; the before/after workflow map covers all 30 actions. F1–F14 implemented, D1–D4 applied. Physical-phone push/scanner and Phase 8 operational acceptance remain open. Backup tests pass; optional Railway lifecycle stubs encounter local `.env.test` upload-refusal fixture conflicts (infrastructure unchanged). No commit/push/deploy/live push.
+- Per-finding mapping, exact API behavior and migration/release instructions are recorded in WORKFLOW_CORRECTIONS_IMPLEMENTATION.md. Browser review also moved replenishment consequence feedback inline to prevent generic toast overlap.
+- Interim implementation evidence (retained for traceability):
+- Detailed implementation and acceptance instructions: [WORKFLOW_CORRECTIONS_IMPLEMENTATION.md](./WORKFLOW_CORRECTIONS_IMPLEMENTATION.md). Codex owns decisions and independent verification; OMP implements bounded packages with explicit file ownership. No commit, push, deployment, or production mutation is requested.
+- Case badges now aggregate all lines on Dashboard cards/details and Checks detail. Closed cases retain Closed; failed original-location retrieval displays Retry retrieval. Independent review requested and verified repairs for stale terminal projections, pending replenishment retrieval without projections, and line-ID pairing. Focused badge suite: 29 tests passed independently. Full integration and browser gates remain pending.
+- Push payloads now use the recipient's saved language at delivery claim, with generic EN/NL/PL/ES text and English fallback. Informational alert labels are prepared for the backend migration. Independent validation: nine localization/mock-delivery tests passed, including changing a recipient's language after queuing a check assignment and asserting the actual delivered payload is Polish. Physical-device receipt remains unverified.
+- Dashboard header metrics and summary now use global aggregates, with open shortage-line counts separate from missing-piece quantities and critical thresholds taken from each case's pinned configuration. Independent validation: seven dashboard/operations tests passed, including page-size invariance and exclusion of legacy nonterminal rows on closed cases.
+- Line projections now distinguish available checks from manager-requested follow-up, prioritize completed replenishment retrieval obligations, and show original-location retrieval failures. Each added line emits preference-aware monitoring in its originating transaction. Admin phase correction rejects closing/reopening bypasses. Independent validation: 28 projection/monitoring/domain/case tests passed. New frontend action-code wording and manager controls remain pending.
+- Shared retrieval routing now covers both found codes, external discoveries, staging and return to picking. Review repairs cover more than 100 unrelated assignment events, external finder persistence and eligible explicit staged assignments. Independent validation: 38 routing/check/notification tests passed. Resolver-transfer/override integration and informational staging/external alerts remain pending.
+- Backend routing, replenishment obligations, informational alerts, unread counts, exact push navigation, localization, and global totals remain in progress. The initial broad backend OMP runs were stopped without backend edits; smaller implementation packages replaced them. Phase 8 remains open, including physical-device acceptance.
+
+## Workflow visualization review — 2026-10-11 (`b966294`)
+
+- Reviewed workflow branches, badges, notifications, and picker assignment delivery against the current PRD. [WORKFLOW_REVIEW_2026-10-11.md](./WORKFLOW_REVIEW_2026-10-11.md) records 14 source-confirmed gaps and four workflow decisions; an interactive scenario map accompanies the chat. No application workflow or deployment changed; Phase 8 remains open.
+- Added a PostgreSQL integration test proving a Picker check assignee receives a mandatory unread in-app notification and push outbox rows for each enabled subscribed device. Disabled devices are excluded; an unsubscribed Picker still receives the in-app alert. Existing push delivery tests use a mocked provider; real production-device receipt remains unverified.
+- Validation: 37 focused badge/polling/UI-routing tests and 17 PostgreSQL notification/push tests passed, plus type checking, linting, and guarded migration consistency check. No schema change or migration required.
 
 ## Independent verification — 2026-10-03 (`main` @ `f4fd2f8`)
 

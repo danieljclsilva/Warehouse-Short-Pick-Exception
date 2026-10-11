@@ -7,6 +7,7 @@ import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import styles from "./operations-dashboard.module.css";
 import { CaseStatusBadge } from "@/components/case-status-badge";
+import { aggregateCaseDisplayStatus } from "@/domain/case-display-status";
 import type { CaseTimelineEvent } from "@/components/case-timeline";
 import { PaginationControls } from "@/components/pagination-controls";
 import { SharedCaseLineCard } from "@/components/case-line-card";
@@ -28,6 +29,7 @@ type CaseLine = {
   quantity: number;
   state: string;
   retrievalState?: string;
+  retrievalResponsibleName?: string | null;
   discoveredLocation?: string | null;
   replenishmentState?: string | null;
   replenishmentNote?: string | null;
@@ -86,8 +88,11 @@ type Props = {
   canReopen: boolean;
   canChangePhase: boolean;
   canRecordReplenishment?: boolean;
+  /** Explicit ASSIGN_CHECK grant for manager REQUEST_CHECK; distinct from ASSIGN_TROUBLESHOOTER. Root passes from authApp. */
+  canRequestCheck?: boolean;
   canReportLocation?: boolean;
   focusedCaseId?: string | null;
+  focusedLineId?: string | null;
   focusedNonce?: number;
   focusFromNotification?: boolean;
   onFocusConsumed?: () => void;
@@ -181,7 +186,7 @@ function LocationReporter({ tr, caseId, lineId, onReported }: { tr: Translator; 
   );
 }
 
-export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, canAssign, canClose, canReopen, canChangePhase, canRecordReplenishment = false, canReportLocation = false, focusedCaseId, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: Props) {
+export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, canAssign, canClose, canReopen, canChangePhase, canRecordReplenishment = false, canRequestCheck = false, canReportLocation = false, focusedCaseId, focusedLineId = null, focusedNonce, focusFromNotification, onFocusConsumed, onFocusedClose }: Props) {
   const dashboardRequestInFlight = useRef(false);
   const [metrics, setMetrics] = useState<Metrics>(EMPTY_METRICS);
   const [attentionThresholdMinutes, setAttentionThresholdMinutes] = useState(15);
@@ -328,12 +333,17 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
   }, [tr]);
   const focusConsumedRef = useRef(0);
   const [focusOverlayNonce, setFocusOverlayNonce] = useState(0);
+  const focusedLineRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (!focusedCaseId || !focusedNonce || focusConsumedRef.current === focusedNonce) return;
     focusConsumedRef.current = focusedNonce;
     queueMicrotask(() => { if (focusFromNotification) setFocusOverlayNonce(focusedNonce); });
     void loadCase(focusedCaseId).finally(() => { onFocusConsumed?.(); });
   }, [focusedCaseId, focusedNonce, focusFromNotification, loadCase, onFocusConsumed]);
+  useEffect(() => {
+    if (!focusedLineId || !selected || selected.id !== focusedCaseId) return;
+    focusedLineRef.current?.scrollIntoView({ block: "nearest" });
+  }, [focusedLineId, focusedCaseId, selected]);
   const focusOverlay = focusOverlayNonce !== 0;
   const reloadDashboardCurrentPage = useCallback(async () => fetchDashboardPage(1, dashboardClosedPage), [dashboardClosedPage, fetchDashboardPage]);
   const reloadCaseTimelinePage = useCallback(async (caseId: string) => loadCase(caseId, timelinePages[caseId] ?? 1), [loadCase, timelinePages]);
@@ -469,7 +479,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
           const attentionClass = level === "CRITICAL" ? styles.critical : level === "ATTENTION" ? styles.attention : level === "WARNING" ? styles.warning : "";
           const badgeClass = level === "CRITICAL" ? styles.attentionBadgeCritical : level === "ATTENTION" ? styles.attentionBadgeAttention : level === "WARNING" ? styles.attentionBadgeWarning : styles.attentionBadgeNormal;
           return <button type="button" className={`${styles.caseCard} ${attentionClass}`} key={item.id} onClick={() => void loadCase(item.id)}>
-            <div className={styles.caseTop}><strong>{tr("orderLabel")} {item.orderNumber}</strong><span className={styles.caseBadges}><span className={styles.caseStatusBadge}><CaseStatusBadge status={item.lineProjections?.[0]?.displayStatus ?? item.projection?.lines?.[0]?.displayStatus ?? item.lines?.[0]?.state ?? item.currentIssue ?? item.phase} retrievalState={item.lines?.[0]?.retrievalState ?? null} tr={tr} /></span><span className={`${styles.attentionBadge} ${badgeClass}`} aria-label={`${tr("attentionLevelLabel")}: ${attentionLabel(level, tr)}`}>{attentionLabel(level, tr)}</span><span className={`${styles.phase} ${item.phase === "STAGED" ? styles.phaseStaged : ""}`}>{item.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span></span></div>
+            <div className={styles.caseTop}><strong>{tr("orderLabel")} {item.orderNumber}</strong><span className={styles.caseBadges}><span className={styles.caseStatusBadge}><CaseStatusBadge status={aggregateCaseDisplayStatus(item.phase, item.lines, item.lineProjections)} tr={tr} /></span><span className={`${styles.attentionBadge} ${badgeClass}`} aria-label={`${tr("attentionLevelLabel")}: ${attentionLabel(level, tr)}`}>{attentionLabel(level, tr)}</span><span className={`${styles.phase} ${item.phase === "STAGED" ? styles.phaseStaged : ""}`}>{item.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span></span></div>
             <div className={styles.caseData}><span><b>{item.missingCount}</b> {tr("missingItemsLabel")}</span><span>{item.checkingCount} {tr("checkingLabel")}</span><span className={styles.age}>{formatAge(item.createdAt)}</span></div>
             <div className={styles.caseFoot}><span>{item.pickerName || tr("unknownPicker")}</span><span>{item.currentIssue ? tr(`issue_${item.currentIssue}` as MessageKey) : tr("caseNoCurrentIssue")}</span><span>{item.responsibleName || "—"}</span></div>
           </button>;
@@ -496,7 +506,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
           orderNumber={selected.orderNumber}
           phaseLabel={selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}
           headingActions={<span className={`case-badges ${styles.caseStatusBadge}`}>
-            <CaseStatusBadge status={selected.phase === "CLOSED" ? "CLOSED" : (selected.lineProjections?.[0]?.displayStatus ?? selected.lines?.[0]?.state ?? selected.phase)} tr={tr} />
+            <CaseStatusBadge status={aggregateCaseDisplayStatus(selected.phase, selected.lines, selected.lineProjections)} tr={tr} />
             {selected.phase === "CLOSED" ? null : <span className={`${styles.phase} ${selected.phase === "STAGED" ? styles.phaseStaged : ""}`}>{selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span>}
             <button className={styles.iconButton} type="button" aria-label={tr("closePanel")} onClick={() => { setSelected(null); setFocusOverlayNonce(0); onFocusedClose?.(); }}>×</button>
           </span>}
@@ -507,12 +517,27 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
           showLinesHeading
           linesClassName={styles.lineList}
           lines={selected.lines?.length ? (() => {
-          const projections = new Map((selected.lineProjections ?? []).map((entry) => [entry.lineId, { lineId: entry.lineId, displayStatus: entry.displayStatus, replenishment: entry.replenishment ?? null }]));
+          const projections = new Map((selected.lineProjections ?? []).map((entry) => [entry.lineId, { lineId: entry.lineId, displayStatus: entry.displayStatus, replenishment: entry.replenishment ?? null, nextActionCode: entry.nextActionCode ?? null, actionOwnerName: entry.actionOwnerName ?? null, blockingReasonCode: entry.blockingReasonCode ?? null }]));
+          const requestCheck = async (lineId: string) => {
+            setBusy(true); setError(""); setNotice("");
+            try {
+              const response = await fetch(`/api/cases/${selected.id}/lines/${lineId}/checks`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+              const body = await readBody<{ code?: string }>(response);
+              if (!response.ok) throw new Error(body.code ? tr("requestCheckFailed") : tr("requestCheckFailed"));
+              setNotice(tr("requestCheckSaved"));
+              await reloadDashboardCurrentPage(); await reloadCaseTimelinePage(selected.id);
+            } catch (cause) {
+              setError(cause instanceof Error ? cause.message : tr("requestCheckFailed"));
+            } finally {
+              setBusy(false);
+            }
+          };
           return selected.lines.map((line) => (
-            <article className={styles.line} key={line.id}><SharedCaseLineCard tr={tr} caseId={selected.id} casePhase={selected.phase} line={line} projections={projections}
-              actions={{ canRecordReplenishment, canRetrieve: false, canReportLocation, busyId: busy ? selected.id : "",
+            <article className={styles.line} key={line.id} data-line-id={line.id} ref={focusedLineId === line.id ? focusedLineRef : undefined}><SharedCaseLineCard tr={tr} caseId={selected.id} casePhase={selected.phase} line={line} projections={projections}
+              actions={{ canRecordReplenishment, canRetrieve: false, canReportLocation, canRequestCheck, busyId: busy ? selected.id : "",
                 onSaved: async () => { setNotice(tr("replenishmentSaved")); await reloadDashboardCurrentPage(); await reloadCaseTimelinePage(selected.id); },
                 onRetrieve: () => {},
+                onRequestCheck: (lineId) => void requestCheck(lineId),
                 reportForm: () => (<LocationReporter tr={tr} caseId={selected.id} lineId={line.id} onReported={async () => { setNotice(tr("reportLocationSaved")); await reloadDashboardCurrentPage(); await reloadCaseTimelinePage(selected.id); }} />) }} /></article>
           ));
           })() : <p>{tr("noItemsYet")}</p>}
