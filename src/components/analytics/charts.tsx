@@ -216,32 +216,3 @@ export function AgingChart({ buckets, tr, emptyLabel, sliceNote }: {
     </figure>
   );
 }
-
-export function ReporterBarsChart({ data, tr, emptyLabel, sliceNote }: {
-  data: Array<{ userId: string; label: string; count: number }>;
-  tr: Translate;
-  emptyLabel: string;
-  sliceNote: string;
-}) {
-  void tr;
-  const shown = data.slice(0, 8);
-  if (!shown.length) return <NoData message={emptyLabel} />;
-  const chartData = shown.map((entry) => ({ name: entry.label, value: entry.count }));
-  return (
-    <figure className={styles.chartFigure}>
-      <ResponsiveContainer width="100%" height={Math.max(200, shown.length * 32)}>
-        <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 12, bottom: 0, left: 8 }}>
-          <CartesianGrid stroke="var(--line)" strokeDasharray="3 3" horizontal={false} />
-          <XAxis type="number" tick={TICK_STYLE} allowDecimals={false} />
-          <YAxis type="category" dataKey="name" tick={TICK_STYLE} width={104} tickFormatter={(value: string) => (value.length > 14 ? `${value.slice(0, 13)}…` : value)} />
-          <Tooltip
-            contentStyle={{ background: "var(--surface)", border: "1px solid var(--line-strong)", borderRadius: 8, color: "var(--ink)", fontSize: 12 }}
-            labelStyle={{ color: "var(--ink)" }}
-          />
-          <Bar dataKey="value" name="count" fill={ANALYTICS_CHART_COLORS[0]} radius={[0, 6, 6, 0]} />
-        </BarChart>
-      </ResponsiveContainer>
-      <figcaption className={styles.chartNote}>{sliceNote}</figcaption>
-    </figure>
-  );
-}

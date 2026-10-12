@@ -152,6 +152,8 @@ export const orderCases = pgTable("order_cases", {
 }, (table) => [
   index("order_cases_order_created_idx").on(table.orderNumber, table.createdAt),
   index("order_cases_created_at_idx").on(table.createdAt),
+  index("order_cases_resolved_analytics_idx").on(table.resolvedAt).where(sql`${table.resolvedAt} is not null`),
+  index("order_cases_open_age_analytics_idx").on(table.createdAt, table.id).where(sql`${table.phase} in ('PICKING', 'STAGED') and ${table.resolvedAt} is null`),
   index("order_cases_phase_idx").on(table.phase),
   index("order_cases_configuration_version_idx").on(table.configurationVersionId),
   index("order_cases_responsible_user_idx").on(table.currentCaseResponsibleUserId),

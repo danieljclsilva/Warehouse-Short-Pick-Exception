@@ -1,0 +1,2 @@
+CREATE INDEX "order_cases_resolved_analytics_idx" ON "order_cases" USING btree ("resolved_at") WHERE "order_cases"."resolved_at" is not null;--> statement-breakpoint
+CREATE INDEX "order_cases_open_age_analytics_idx" ON "order_cases" USING btree ("created_at","id") WHERE "order_cases"."phase" in ('PICKING', 'STAGED') and "order_cases"."resolved_at" is null;

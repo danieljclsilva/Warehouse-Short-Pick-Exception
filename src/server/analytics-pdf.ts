@@ -1,6 +1,7 @@
+import type { AnalyticsManagement, PeriodTotals } from "@/domain/analytics-management";
 import PDFDocument from "pdfkit";
 import { join } from "node:path";
-import { getMessages, type Locale } from "@/i18n/messages";
+import { getMessages, translate, type MessageKey, type Locale } from "@/i18n/messages";
 
 /**
  * The PDF deliberately consumes the analytics response shape rather than
@@ -23,6 +24,7 @@ export type AnalyticsFilters = {
 };
 
 export type AnalyticsReportData = {
+  management?: AnalyticsManagement;
   filters?: AnalyticsFilters;
   kpis?: Record<string, unknown>;
   duplicates?: { repeatedOrderCount?: number; orders?: Array<Record<string, unknown>> };
@@ -380,15 +382,19 @@ function drawSameLocationGrid(doc: PDFKit.PDFDocument, value: unknown, users: un
 
 function drawTable(doc: PDFKit.PDFDocument, columns: Array<{ key: string; label: string; width: number }>, rows: Array<Record<string, unknown>>) {
   const drawHeader = () => {
+    doc.font(REPORT_BOLD).fontSize(7);
+    const headerHeight = Math.max(20, ...columns.map((column) => doc.heightOfString(column.label, { width: column.width - 12 }) + 12));
+    if (doc.y + headerHeight > PAGE_HEIGHT - MARGIN - FOOTER_HEIGHT) doc.addPage();
     const y = doc.y;
-    doc.fillColor(BRAND).rect(MARGIN, y, CONTENT_WIDTH, 20).fill();
+    doc.fillColor(BRAND).rect(MARGIN, y, CONTENT_WIDTH, headerHeight).fill();
     let x = MARGIN;
     columns.forEach((column) => {
       doc.fillColor("#ffffff").font(REPORT_BOLD).fontSize(7).text(column.label, x + 6, y + 6, { width: column.width - 12, ellipsis: true });
       x += column.width;
     });
-    doc.y = y + 20;
+    doc.y = y + headerHeight;
   };
+  if (doc.y > PAGE_HEIGHT - MARGIN - FOOTER_HEIGHT - 80) doc.addPage();
   drawHeader();
   rows.slice(0, MAX_RENDER_ROWS).forEach((row, rowIndex) => {
     const values = columns.map((column) => asString(row[column.key]));
@@ -460,6 +466,69 @@ function duplicateRows(orders: Array<Record<string, unknown>>, locale: Locale, l
 }
 
 /** Create a bounded, deliberate report layout and resolve it to a PDF byte array. */
+function drawManagement(doc: PDFKit.PDFDocument, data: AnalyticsManagement, locale: Locale) {
+  const messages = getMessages(locale).messages;
+  const tr = (key: MessageKey, values?: Record<string, string>) => translate(messages, key, values);
+  const count = (value: number) => value.toLocaleString(intlLocales[locale]);
+  const { comparison, backlog, lifetimeRecurrence } = data;
+  const range = (period: PeriodTotals) => `${shortDate(period.from, locale)} – ${shortDate(new Date(new Date(period.toExclusive).valueOf() - 1).toISOString(), locale)}`;
+  if (doc.y > PAGE_HEIGHT - MARGIN - FOOTER_HEIGHT - 240) doc.addPage();
+  drawSection(doc, tr("managementComparisonTitle"), tr("managementComparisonNote"));
+  doc.fillColor(MUTED).font(REPORT_REGULAR).fontSize(8).text(tr("managementCurrentPeriod", { range: range(comparison.current) }));
+  doc.text(tr("managementPreviousPeriod", { range: range(comparison.previous) }));
+  doc.moveDown(.8);
+  const comparisonRows = (["cases", "lines", "resolvedCases"] as const).map((metric) => {
+    const change = comparison.changes[metric];
+    const label: MessageKey = metric === "cases" ? "managementReportedCases" : metric === "lines" ? "managementCohortLines" : "managementCasesResolved";
+    const percentage = change.delta === 0 ? tr("managementChangeNoChange") : change.percentage === null ? tr("managementChangeNoBaseline")
+      : new Intl.NumberFormat(intlLocales[locale], { style: "percent", maximumFractionDigits: 1, signDisplay: "exceptZero" }).format(change.percentage / 100);
+    return { metric: tr(label), current: count(change.current), previous: count(change.previous), change: `${new Intl.NumberFormat(intlLocales[locale], { signDisplay: "exceptZero" }).format(change.delta)} / ${percentage}` };
+  });
+  drawTable(doc, [{ key: "metric", label: tr("managementMeasure"), width: 170 }, { key: "current", label: tr("managementCurrentValue"), width: 65 },
+    { key: "previous", label: tr("managementPreviousValue"), width: 80 }, { key: "change", label: tr("managementChangeValue"), width: CONTENT_WIDTH - 315 }], comparisonRows);
+  if (doc.y > PAGE_HEIGHT - MARGIN - FOOTER_HEIGHT - 340) doc.addPage();
+  drawSection(doc, tr("managementBacklogTitle"), `${tr("managementBacklogNote")} ${tr("managementSnapshot", { at: dateLabel(backlog.asOf, locale) })}`);
+  const backlogRows: Array<Record<string, unknown>> = [
+    { metric: tr("managementTotalOpen"), value: count(backlog.totalOpen) },
+    { metric: tr("managementPicking"), value: count(backlog.picking) },
+    { metric: tr("managementStaged"), value: count(backlog.staged) },
+    { metric: tr("managementUnassignedStaged"), value: count(backlog.unassignedStaged) },
+    { metric: tr("managementOldestReported"), value: shortDate(backlog.oldestCreatedAt, locale) },
+  ];
+  if (backlog.truncated) {
+    backlogRows.push({ metric: tr("managementAgingTitle"), value: tr("managementAgingTruncated", { evaluated: count(backlog.evaluatedCases), total: count(backlog.totalOpen) }) });
+  } else {
+    for (const [key, value] of [
+      ["managementAgingUnder24", backlog.aging.under24h], ["managementAging24to72", backlog.aging.h24to72],
+      ["managementAging72to168", backlog.aging.h72to168], ["managementAgingOver168", backlog.aging.over168h], ["managementOverThreshold", backlog.overThreshold],
+    ] as const) backlogRows.push({ metric: tr(key), value: count(value) });
+  }
+  drawTable(doc, [{ key: "metric", label: tr("managementMeasure"), width: 250 }, { key: "value", label: tr("managementValue"), width: CONTENT_WIDTH - 250 }], backlogRows);
+  if (doc.y > PAGE_HEIGHT - MARGIN - FOOTER_HEIGHT - 240) doc.addPage();
+  drawSection(doc, tr("managementRecurrenceTitle"), `${tr("managementRecurrenceSummary", { count: count(lifetimeRecurrence.repeatedOrderCount) })}. ${tr("managementRecurrenceNote")}`);
+  if (lifetimeRecurrence.groupsTruncated || lifetimeRecurrence.datesTruncated) {
+    doc.fillColor(MUTED).font(REPORT_REGULAR).fontSize(8).text([
+      lifetimeRecurrence.groupsTruncated ? tr("managementRecurrenceGroupsTruncated") : "",
+      lifetimeRecurrence.datesTruncated ? tr("managementRecurrenceDatesTruncated") : "",
+    ].filter(Boolean).join(" "));
+    doc.moveDown(.8);
+  }
+  if (!lifetimeRecurrence.orders.length) {
+    doc.fillColor(MUTED).font(REPORT_REGULAR).fontSize(9).text(tr("managementRecurrenceEmpty"));
+    return;
+  }
+  drawTable(doc, [
+    { key: "orderNumber", label: tr("managementColumnOrder"), width: 105 },
+    { key: "occurrences", label: tr("managementColumnOccurrences"), width: 80 },
+    { key: "selected", label: tr("managementColumnSelectedPeriod"), width: 95 },
+    { key: "first", label: tr("managementColumnFirstSeen"), width: 115 },
+    { key: "last", label: tr("managementColumnLastSeen"), width: CONTENT_WIDTH - 395 },
+  ], lifetimeRecurrence.orders.map((order) => ({ orderNumber: order.orderNumber, occurrences: count(order.occurrences), selected: count(order.selectedPeriodOccurrences), first: shortDate(order.firstSeenAt, locale), last: shortDate(order.lastSeenAt, locale) })));
+  drawSection(doc, tr("managementColumnDates"));
+  drawTable(doc, [{ key: "orderNumber", label: tr("managementColumnOrder"), width: 180 }, { key: "createdAt", label: tr("managementColumnDates"), width: CONTENT_WIDTH - 180 }],
+    lifetimeRecurrence.orders.flatMap((order) => order.cases.map((entry) => ({ orderNumber: order.orderNumber, createdAt: dateLabel(entry.createdAt, locale) }))));
+}
+
 export async function renderAnalyticsPdf(data: AnalyticsReportData, options: PdfReportOptions = {}): Promise<Uint8Array> {
   const generatedAt = options.generatedAt ?? new Date();
   const locale = normalizePdfLocale(options.language);
@@ -498,6 +567,8 @@ export async function renderAnalyticsPdf(data: AnalyticsReportData, options: Pdf
   drawBarChart(document, labels.lineOutcomes, outcomePairs, locale);
   drawSameLocationGrid(document, kpis.sameLocationFound, kpis.sameLocationFoundByUser, labels, locale);
 
+  if (data.management) drawManagement(document, data.management, locale);
+  else {
   const duplicates = data.duplicates?.orders ?? [];
   const repeatedOrderCount = asNumber(data.duplicates?.repeatedOrderCount ?? kpis.repeatedOrderNumbers);
   const duplicateNote = repeatedOrderCount > duplicates.length ? ` ${labels.duplicateLimit(duplicates.length.toLocaleString(intlLocales[locale]), repeatedOrderCount.toLocaleString(intlLocales[locale]))}` : "";
@@ -505,6 +576,8 @@ export async function renderAnalyticsPdf(data: AnalyticsReportData, options: Pdf
   if (duplicates.length) {
     drawTable(document, [{ key: "orderNumber", label: labels.order, width: 150 }, { key: "occurrences", label: labels.occurrence, width: 80 }, { key: "dates", label: labels.caseDates, width: CONTENT_WIDTH - 230 }], duplicateRows(duplicates, locale, labels));
   } else document.fillColor(MUTED).font(REPORT_REGULAR).fontSize(9).text(labels.noDuplicates);
+
+  }
 
   const cases = normalizeCaseRows(data.rows?.cases ?? [], locale, labels);
   if (document.y > PAGE_HEIGHT - MARGIN - FOOTER_HEIGHT - 210) document.addPage();

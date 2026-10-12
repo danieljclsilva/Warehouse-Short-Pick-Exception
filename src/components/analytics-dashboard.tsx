@@ -7,7 +7,6 @@ import {
   AgingChart,
   OutcomeBarsChart,
   PhaseDonutChart,
-  ReporterBarsChart,
   TopBarsChart,
   VolumeChart,
 } from "./analytics/charts";
@@ -16,7 +15,8 @@ import {
   buildVolumeSeries,
   periodKindForRange,
   phaseMix,
-  reporterVolume,
+  hotspotConcentration,
+  reportingRangeDays,
   topN,
 } from "./analytics/derive";
 import {
@@ -26,6 +26,9 @@ import {
   type ActiveFilterChip,
   type AnalyticsFilterState,
 } from "./analytics/filters";
+
+import { normalizeManagement, type AnalyticsManagement } from "@/domain/analytics-management";
+import { ManagementSummary } from "./analytics/management-summary";
 
 type Translate = (key: MessageKey, values?: Record<string, string>) => string;
 
@@ -67,6 +70,7 @@ export type RetainedAnalyticsReport = {
 };
 
 export type AnalyticsResponse = {
+  management?: AnalyticsManagement;
   filters?: AnalyticsFilterOptions;
   kpis: {
     totalCases: number;
@@ -246,6 +250,7 @@ function normalizeResponse(value: unknown): AnalyticsResponse {
     return { orderNumber: String(row.orderNumber ?? ""), occurrences: number(row.occurrences, cases.length), cases };
   }).filter((row) => row.orderNumber) : [];
   return {
+    management: normalizeManagement(root.management),
     filters: (root.filters && typeof root.filters === "object" ? root.filters : {}) as AnalyticsFilterOptions,
     kpis,
     duplicates: { repeatedOrderCount: number(rawDuplicates.repeatedOrderCount, orders.length), orders },
@@ -265,7 +270,12 @@ function formatDuration(seconds: number | null, tr: Translate) {
 function dateLabel(value: string, locale: Locale) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.valueOf())) return value;
-  return new Intl.DateTimeFormat({ en: "en-GB", nl: "nl-NL", pl: "pl-PL", es: "es-ES" }[locale], { dateStyle: "medium" }).format(parsed);
+  return new Intl.DateTimeFormat({ en: "en-GB", nl: "nl-NL", pl: "pl-PL", es: "es-ES" }[locale], { dateStyle: "medium", ...(/^\d{4}-\d{2}-\d{2}$/.test(value) ? { timeZone: "UTC" } : {}) }).format(parsed);
+}
+
+function rangeLabel(from: string, to: string, locale: Locale, tr: Translate) {
+  const days = reportingRangeDays(from, to);
+  return days ? tr("analyticsSameLocationDateRangeValue", { from: dateLabel(days.from, locale), to: dateLabel(days.to, locale) }) : "—";
 }
 
 function formatBytes(bytes: number) {
@@ -299,35 +309,6 @@ function participantOptions(data: AnalyticsResponse | null) {
 
 const ROLE_OPTIONS = ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "MANAGER", "ADMIN"];
 
-function RepeatTable({ title, note, items, nameLabel, tr }: {
-  title: string;
-  note: string;
-  items: Array<{ label: string; count: number }>;
-  nameLabel: string;
-  tr: Translate;
-}) {
-  return (
-    <section className={styles.card} aria-label={title}>
-      <div className={styles.sectionHeading}><h3>{title}</h3></div>
-      <p className={styles.subtle}>{note}</p>
-      {items.length ? (
-        <div className={styles.tableWrap}>
-          <table>
-            <thead><tr><th scope="col">{nameLabel}</th><th scope="col">{tr("analyticsOccurrences")}</th></tr></thead>
-            <tbody>
-              {items.slice(0, 10).map((item) => (
-                <tr key={item.label}><th scope="row">{item.label}</th><td>{item.count}</td></tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p className={styles.empty}>{tr("analyticsNoData")}</p>
-      )}
-    </section>
-  );
-}
-
 function SameLocationFoundSection({ summary, byUser, tr, locale, canExport, downloading, onDownload, roleLabel }: {
   summary: SameLocationFoundSummary | null | undefined;
   byUser: SameLocationFoundUser[];
@@ -339,7 +320,9 @@ function SameLocationFoundSection({ summary, byUser, tr, locale, canExport, down
   roleLabel: (role: string) => string;
 }) {
   if (!summary && !byUser.length) return null;
-  const range = summary && summary.from && summary.to ? tr("analyticsSameLocationDateRangeValue", { from: dateLabel(summary.from, locale), to: dateLabel(summary.to, locale) }) : "";
+  const range = summary && summary.from && summary.to ? rangeLabel(summary.from, summary.to, locale, tr) : "";
+  // Alphabetical by display name: operational signal only, never a ranking by score.
+  const sortedByUser = [...byUser].sort((a, b) => a.displayName.localeCompare(b.displayName));
   return <section className={styles.card} aria-labelledby="analytics-same-location-title">
     <div className={styles.sameLocationHead}>
       <div className={styles.sameLocationTitleRow}>
@@ -354,8 +337,8 @@ function SameLocationFoundSection({ summary, byUser, tr, locale, canExport, down
       <div className={styles.timing}><span>{tr("analyticsSameLocationDateRange")}</span><strong>{range || "—"}</strong></div>
       <div className={styles.timing}><span>{tr("analyticsSameLocationOutcomes")}</span><strong>{summary.counts.FOUND_AT_ORIGINAL} / {summary.counts.FOUND} / {summary.counts.NOT_FOUND} / {summary.counts.WRONG_LOCATION}</strong></div>
     </div>}
-    {byUser.length ? <div className={`${styles.tableWrap} ${styles.sameLocationTable}`}><table><thead><tr><th scope="col">{tr("analyticsSameLocationReporter")}</th><th scope="col">{tr("analyticsRoleFilter")}</th><th scope="col">{tr("analyticsSameLocationEligible")}</th><th scope="col">{tr("analyticsSameLocationRate")}</th><th scope="col">{tr("analyticsSameLocationOutcomeCounts")}</th></tr></thead><tbody>
-      {byUser.map((row) => <tr key={row.userId}><th scope="row">{row.displayName}</th><td>{roleLabel(row.role)}</td><td>{row.numerator} / {row.denominator}</td><td>{row.percentage === null ? tr("analyticsSameLocationCountsOnly") : `${row.percentage}%`}</td><td>{row.counts.FOUND_AT_ORIGINAL} / {row.counts.FOUND} / {row.counts.NOT_FOUND} / {row.counts.WRONG_LOCATION}</td></tr>)}
+    {sortedByUser.length ? <div className={`${styles.tableWrap} ${styles.sameLocationTable}`}><table><thead><tr><th scope="col">{tr("analyticsSameLocationReporter")}</th><th scope="col">{tr("analyticsRoleFilter")}</th><th scope="col">{tr("analyticsSameLocationEligible")}</th><th scope="col">{tr("analyticsSameLocationRate")}</th><th scope="col">{tr("analyticsSameLocationDateRange")}</th><th scope="col">{tr("analyticsSameLocationOutcomeCounts")}</th></tr></thead><tbody>
+      {sortedByUser.map((row) => <tr key={row.userId}><th scope="row">{row.displayName}</th><td>{roleLabel(row.role)}</td><td>{row.numerator} / {row.denominator}</td><td>{row.percentage === null ? tr("analyticsSameLocationCountsOnly") : `${row.percentage}%`}</td><td>{row.from && row.to ? rangeLabel(row.from, row.to, locale, tr) : "—"}</td><td>{row.counts.FOUND_AT_ORIGINAL} / {row.counts.FOUND} / {row.counts.NOT_FOUND} / {row.counts.WRONG_LOCATION}</td></tr>)}
     </tbody></table></div> : <p className={styles.empty}>{tr("analyticsNoData")}</p>}
   </section>;
 }
@@ -373,6 +356,7 @@ export function AnalyticsDashboard({ tr, locale, canExport }: Props) {
   });
   const [data, setData] = useState<AnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadedQuery, setLoadedQuery] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [exporting, setExporting] = useState("");
   const [retainedReports, setRetainedReports] = useState<RetainedAnalyticsReport[]>([]);
@@ -429,6 +413,7 @@ export function AnalyticsDashboard({ tr, locale, canExport }: Props) {
       const body: unknown = await response.json();
       if (!response.ok) throw new Error((body as { error?: string }).error || tr("analyticsLoadError"));
       setData(normalizeResponse(body));
+      setLoadedQuery(query);
       setError("");
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === "AbortError") return;
@@ -489,7 +474,7 @@ export function AnalyticsDashboard({ tr, locale, canExport }: Props) {
     return () => controller.abort();
   }, [loadRetainedReports]);
 
-  const download = useCallback(async (dataset: "case" | "line" | "event" | "same-location-found" | "same-location-found-overall") => {
+  const download = useCallback(async (dataset: "case" | "line" | "event" | "same-location-found" | "same-location-found-overall" | "management") => {
     if (exporting) return;
     setExporting(dataset);
     try {
@@ -499,13 +484,14 @@ export function AnalyticsDashboard({ tr, locale, canExport }: Props) {
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `short-pick-${dataset}-analytics.csv`;
+      anchor.download = `short-pick-${dataset === "management" ? "summary" : dataset}-analytics.csv`;
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (cause) { setError(cause instanceof Error ? cause.message : tr("analyticsExportError")); }
     finally { setExporting(""); }
   }, [exporting, query, tr]);
 
+  const currentData = Boolean(data) && loadedQuery === query && !loading;
   const options = data?.filters;
   const kpis = data?.kpis ?? EMPTY_KPIS;
   const phases = options?.phases ?? ["PICKING", "STAGED", "CLOSED"];
@@ -547,25 +533,20 @@ export function AnalyticsDashboard({ tr, locale, canExport }: Props) {
   const fromMs = new Date(`${filters.from}T00:00:00.000Z`).valueOf();
   const toMs = new Date(`${filters.to}T00:00:00.000Z`).valueOf();
   const periodKind = Number.isFinite(fromMs) && Number.isFinite(toMs) && toMs > fromMs ? periodKindForRange(fromMs, toMs) : "day";
-  const sliceNote = data ? tr("analyticsSliceBasedNote", { cases: String(data.rows.cases.length), lines: String(data.rows.lines.length) }) : "";
+  const sliceNote = data ? tr("analyticsSliceBasedNote", { cases: String(data?.rows.cases.length ?? 0), lines: String(data?.rows.lines.length ?? 0) }) : "";
   const topNote = tr("analyticsTopNNote", { count: "10" });
-  // created(lines) are full-period server totals; resolved is counted from loaded rows.
+  // All chart series use the server's bounded cohort; partial data is flagged above.
   const volumeSeries = buildVolumeSeries(kpis.casesByPeriod, data?.rows.cases ?? [], periodKind);
   const phaseData = phaseMix(data?.rows.cases ?? []);
   const buckets = agingBuckets(data?.rows.cases ?? [], nowMs);
-  const nameOf = (userId: string) => directoryLabel.get(userId) ?? null;
-  const reporters = reporterVolume(data?.rows.lines ?? [], nameOf, 8);
-  const repeatCount = (key: "originalLocation" | "sku") => {
-    const grouped = new Map<string, number>();
-    for (const row of data?.rows.lines ?? []) {
-      const value = typeof row[key] === "string" ? String(row[key]) : "";
-      if (value) grouped.set(value, (grouped.get(value) ?? 0) + 1);
-    }
-    return [...grouped.entries()]
-      .filter(([, count]) => count > 1)
-      .map(([label, count]) => ({ label, count }))
-      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  const duplicateOrders = data?.duplicates.orders ?? [];
+  const percentFormat = useMemo(() => new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }), [locale]);
+  const hotspotNote = (items: AnalyticsDimension[]) => {
+    const share = hotspotConcentration(items, kpis.totalLines, data?.limits.linesTruncated ?? true);
+    return share === null ? "" : tr("analyticsTopThreeShare", { share: percentFormat.format(share) });
   };
+  const hotspotLocations = hotspotNote(kpis.linesByLocation);
+  const hotspotSkus = hotspotNote(kpis.linesBySku);
   return <div className={styles.dashboard}>
     <div className={styles.heading}><div><p className={styles.eyebrow}>{tr("analyticsEyebrow")}</p><h1>{tr("analyticsTitle")}</h1><p className={styles.description}>{tr("analyticsDescription")}</p></div><div className={styles.actions}>{canExport && <><button className={styles.exportButton} type="button" onClick={() => void download("case")} disabled={Boolean(exporting)}>{exporting === "case" ? tr("analyticsExporting") : tr("analyticsExportCases")}</button><button className={styles.exportButton} type="button" onClick={() => void download("line")} disabled={Boolean(exporting)}>{exporting === "line" ? tr("analyticsExporting") : tr("analyticsExportLines")}</button><button className={styles.exportButton} type="button" onClick={() => void download("event")} disabled={Boolean(exporting)}>{exporting === "event" ? tr("analyticsExporting") : tr("analyticsExportEvents")}</button><button className={styles.exportButton} type="button" onClick={() => void downloadPdf()} disabled={Boolean(exporting)}>{exporting === "pdf" ? tr("analyticsExporting") : tr("analyticsExportPdf")}</button></>}</div></div>
     <AnalyticsFilters
@@ -584,30 +565,50 @@ export function AnalyticsDashboard({ tr, locale, canExport }: Props) {
       chips={chips}
       removeChip={(key) => update(key, "")}
       onReset={() => setFilters(defaultFilters())}
-      resultSummary={data ? tr("analyticsDataNote", { cases: String(data.rows.cases.length), lines: String(data.rows.lines.length) }) : ""}
+      resultSummary={currentData ? tr("analyticsDataNote", { cases: String(data?.rows.cases.length ?? 0), lines: String(data?.rows.lines.length ?? 0) }) : ""}
     />
     {error && <div className={styles.alert} role="alert">{error}<button type="button" onClick={() => void load()}>{tr("tryAgain")}</button></div>}
     {retentionWarning && <div className={styles.retentionWarning} role="status">{tr("analyticsRetentionUnavailable")}</div>}
-    {partialDataMessages.length > 0 && <div className={styles.partialNotice} role="status"><strong>{tr("analyticsPartialData")}</strong><ul>{partialDataMessages.map((message) => <li key={message}>{message}</li>)}</ul></div>}
-    {canExport && <section className={styles.card} aria-labelledby="analytics-retained-reports-title"><div className={styles.sectionHeading}><h2 id="analytics-retained-reports-title">{tr("analyticsRetainedReports")}</h2></div>{retainedReportsLoading && !retainedReports.length ? <p className={styles.loading}>{tr("analyticsLoading")}</p> : retainedReports.length ? <><ul className={styles.reportList}>{retainedReports.map((report) => <li className={styles.reportItem} key={report.id}><div className={styles.reportDetails}><strong className={styles.reportFilename}>{report.filename}</strong><span className={styles.reportMeta}>{report.createdAt ? dateLabel(report.createdAt, locale) : ""}{report.byteSize ? ` · ${formatBytes(report.byteSize)}` : ""}</span></div><div className={styles.reportActions}><a className={`${styles.exportButton} ${exporting ? styles.disabledLink : ""}`} href={`/api/analytics/reports/${report.id}`} download={report.filename} aria-disabled={Boolean(exporting)} tabIndex={exporting ? -1 : 0} onClick={(event) => { if (exporting) event.preventDefault(); }}>{tr("analyticsRetainedReport", { filename: report.filename })}</a><button className={styles.exportButton} type="button" onClick={() => void removeRetainedReport(report.id)} disabled={Boolean(exporting) || retainedReportsLoading}>{exporting === "retained-delete" ? tr("analyticsExporting") : tr("analyticsDeleteRetainedReport")}</button></div></li>)}</ul>{retainedReportsNextCursor && <button className={styles.clearButton} type="button" onClick={() => void loadRetainedReports(undefined, retainedReportsNextCursor, true)} disabled={Boolean(exporting) || retainedReportsLoading}>{retainedReportsLoading ? tr("analyticsLoading") : tr("analyticsLoadMoreRetainedReports")}</button>}</> : <p className={styles.empty}>{tr("analyticsNoRetainedReports")}</p>}</section>}
-    {loading && !data ? <p className={styles.loading} aria-live="polite">{tr("analyticsLoading")}</p> : <>
-      <section aria-labelledby="analytics-kpis-title"><h2 className={styles.srOnly} id="analytics-kpis-title">{tr("analyticsKpis")}</h2><div className={styles.kpiGrid}>{[["analyticsTotalCases", kpis.totalCases], ["analyticsTotalLines", kpis.totalLines], ["analyticsFound", kpis.foundDuringCheck], ["analyticsNotFound", kpis.notFound], ["analyticsWrongLocation", kpis.wrongLocation], ["analyticsRetrieved", kpis.retrieved], ["analyticsOverThreshold", kpis.casesOverThreshold], ["analyticsManualCases", kpis.manualCases], ["analyticsReopenedCases", kpis.reopenedCases], ["analyticsRepeatedOrders", kpis.repeatedOrderNumbers]].map(([label, value]) => <article className={styles.kpi} key={String(label)}><span>{tr(label as MessageKey)}</span><strong>{value}</strong></article>)}</div></section>
-      <section className={styles.card} aria-labelledby="analytics-volume-section-title">
-        <div className={styles.sectionHeading}><div><h2 id="analytics-volume-section-title">{tr("analyticsVolumeTitle")}</h2><p className={styles.subtle}>{tr("analyticsVolumeNote")}</p></div></div>
-        {error ? <p className={styles.empty} role="alert">{error}</p> : <VolumeChart data={volumeSeries} tr={tr} locale={locale} sliceNote={tr("analyticsVolumeNote")} />}
-      </section>
-      <div className={styles.chartGrid}>
-        <section className={styles.card} aria-labelledby="analytics-outcome-title"><div className={styles.sectionHeading}><div><h2 id="analytics-outcome-title">{tr("analyticsOutcomeTitle")}</h2><p className={styles.subtle}>{tr("analyticsOutcomeNote")}</p></div></div><OutcomeBarsChart found={kpis.foundDuringCheck} notFound={kpis.notFound} wrongLocation={kpis.wrongLocation} tr={tr} emptyLabel={tr("analyticsNoData")} /></section>
-        <section className={styles.card} aria-labelledby="analytics-phase-mix-title"><div className={styles.sectionHeading}><div><h2 id="analytics-phase-mix-title">{tr("analyticsPhaseMixTitle")}</h2><p className={styles.subtle}>{tr("analyticsPhaseNote")}</p></div><span className={styles.cardMeta}>{sliceNote}</span></div><PhaseDonutChart data={phaseData} tr={tr} emptyLabel={tr("analyticsNoData")} labelFor={(phase) => enumLabel(phase, phaseLabelKeys, tr)} /></section>
-        <section className={styles.card} aria-labelledby="analytics-aging-title"><div className={styles.sectionHeading}><div><h2 id="analytics-aging-title">{tr("analyticsAgingTitle")}</h2><p className={styles.subtle}>{tr("analyticsAgingNote")}</p></div><span className={styles.cardMeta}>{sliceNote}</span></div><AgingChart buckets={buckets} tr={tr} emptyLabel={tr("analyticsNoData")} sliceNote={sliceNote} /></section>
-        <section className={styles.card} aria-labelledby="analytics-reporters-title"><div className={styles.sectionHeading}><div><h2 id="analytics-reporters-title">{tr("analyticsTopReportersTitle")}</h2><p className={styles.subtle}>{tr("analyticsReportersNote")}</p></div><span className={styles.cardMeta}>{sliceNote}</span></div><ReporterBarsChart data={reporters} tr={tr} emptyLabel={tr("analyticsNoData")} sliceNote={sliceNote} /></section>
-        <section className={styles.card} aria-labelledby="analytics-top-locations-title"><div className={styles.sectionHeading}><h2 id="analytics-top-locations-title">{tr("analyticsTopLocationsTitle")}</h2><span className={styles.cardMeta}>{topNote}</span></div><TopBarsChart data={topN(kpis.linesByLocation, 10)} tr={tr} topNote={topNote} emptyLabel={tr("analyticsNoData")} /></section>
-        <section className={styles.card} aria-labelledby="analytics-top-skus-title"><div className={styles.sectionHeading}><h2 id="analytics-top-skus-title">{tr("analyticsTopSkusTitle")}</h2><span className={styles.cardMeta}>{topNote}</span></div><TopBarsChart data={topN(kpis.linesBySku, 10)} tr={tr} topNote={topNote} emptyLabel={tr("analyticsNoData")} /></section>
-      </div>
-      <section className={styles.card} aria-labelledby="analytics-timing-title"><div className={styles.sectionHeading}><div><h2 id="analytics-timing-title">{tr("analyticsMedianTiming")}</h2><p className={styles.subtle}>{tr("analyticsTimingNote")}</p></div></div><div className={styles.timingGrid}>{[["analyticsReportToClaim", kpis.medianReportToCheckClaimedSeconds], ["analyticsReportToFound", kpis.medianReportToLocationFoundSeconds], ["analyticsReportToRetrieval", kpis.medianReportToRetrievalSeconds], ["analyticsReportToResolution", kpis.medianReportToResolutionSeconds]].map(([label, value]) => <div className={styles.timing} key={String(label)}><span>{tr(label as MessageKey)}</span><strong>{formatDuration(value as number | null, tr)}</strong></div>)}</div></section>
-      <section className={styles.card} aria-labelledby="analytics-repeat-title"><div className={styles.sectionHeading}><div><h2 id="analytics-repeat-title">{tr("analyticsRepeatTitle")}</h2><p className={styles.subtle}>{tr("analyticsRepeatNote")}</p></div></div><div className={styles.chartGrid}><RepeatTable title={tr("analyticsRepeatLocations")} note={topNote} items={repeatCount("originalLocation")} nameLabel={tr("location")} tr={tr} /><RepeatTable title={tr("analyticsRepeatSkus")} note={topNote} items={repeatCount("sku")} nameLabel={tr("sku")} tr={tr} /></div></section>
-      <SameLocationFoundSection summary={kpis.sameLocationFound} byUser={kpis.sameLocationFoundByUser ?? []} tr={tr} locale={locale} canExport={canExport} downloading={exporting} onDownload={(dataset) => void download(dataset)} roleLabel={roleLabel} />
-      <p className={styles.dataNote}>{tr("analyticsDataNote", { cases: String(data?.rows.cases.length ?? 0), lines: String(data?.rows.lines.length ?? 0) })}</p>
-    </>}
+    {currentData && partialDataMessages.length > 0 && <div className={styles.partialNotice} role="status"><strong>{tr("analyticsPartialData")}</strong><ul>{partialDataMessages.map((message) => <li key={message}>{message}</li>)}</ul></div>}
+    {loading && <p className={styles.loading} role="status" aria-live="polite">{tr(data ? "analyticsUpdating" : "analyticsLoading")}</p>}
+    <div aria-busy={loading}>
+    {currentData && <div className={styles.analysis}>
+        {data?.management && <ManagementSummary data={data.management} tr={tr} locale={locale} canExport={canExport} exporting={Boolean(exporting)} onExport={() => void download("management")} />}
+        <section aria-labelledby="analytics-kpis-title">
+          <h2 className={styles.srOnly} id="analytics-kpis-title">{tr("analyticsKpis")}</h2>
+          {!data?.management && <div className={styles.kpiGrid}>
+            {[["analyticsTotalCases", kpis.totalCases], ["analyticsTotalLines", kpis.totalLines]].map(([label, value]) => <article className={styles.kpi} key={String(label)}><span>{tr(label as MessageKey)}</span><strong>{value}</strong></article>)}
+            <article className={styles.kpi}><span>{tr("analyticsOpenCohort")}</span><strong>{buckets.open}</strong><small>{tr("analyticsOpenCohortNote")}</small></article>
+            <article className={styles.kpi}><span>{tr("analyticsOverThreshold")}</span><strong>{kpis.casesOverThreshold}</strong><small>{tr("analyticsThresholdNote")}</small></article>
+          </div>}
+          <dl className={styles.factStrip}>
+            {[["analyticsCohortOverThreshold", kpis.casesOverThreshold], ["analyticsRetrieved", kpis.retrieved], ["analyticsManualCases", kpis.manualCases], ["analyticsReopenedCases", kpis.reopenedCases], ["analyticsRepeatedOrders", kpis.repeatedOrderNumbers]].map(([label, value]) => <div className={styles.fact} key={String(label)}><dt>{tr(label as MessageKey)}</dt><dd>{value}</dd></div>)}
+          </dl>
+        </section>
+        <section className={styles.card} aria-labelledby="analytics-volume-section-title">
+          <div className={styles.sectionHeading}><h2 id="analytics-volume-section-title">{tr("analyticsVolumeTitle")}</h2></div>
+          <VolumeChart data={volumeSeries} tr={tr} locale={locale} sliceNote={tr("analyticsVolumeNote")} />
+        </section>
+        <div className={styles.chartGrid}>
+          <section className={styles.card} aria-labelledby="analytics-outcome-title"><div className={styles.sectionHeading}><div><h2 id="analytics-outcome-title">{tr("analyticsOutcomeTitle")}</h2><p className={styles.subtle}>{tr("analyticsOutcomeNote")}</p></div></div><OutcomeBarsChart found={kpis.foundDuringCheck} notFound={kpis.notFound} wrongLocation={kpis.wrongLocation} tr={tr} emptyLabel={tr("analyticsNoData")} /></section>
+        <section className={styles.card} aria-labelledby="analytics-timing-title"><div className={styles.sectionHeading}><div><h2 id="analytics-timing-title">{tr("analyticsMedianTiming")}</h2><p className={styles.subtle}>{tr("analyticsTimingNote")}</p></div></div><div className={styles.timingGrid}>{[["analyticsReportToClaim", kpis.medianReportToCheckClaimedSeconds], ["analyticsReportToFound", kpis.medianReportToLocationFoundSeconds], ["analyticsReportToRetrieval", kpis.medianReportToRetrievalSeconds], ["analyticsReportToResolution", kpis.medianReportToResolutionSeconds]].map(([label, value]) => <div className={styles.timing} key={String(label)}><span>{tr(label as MessageKey)}</span><strong>{formatDuration(value as number | null, tr)}</strong></div>)}</div></section>
+          <section className={styles.card} aria-labelledby="analytics-phase-mix-title"><div className={styles.sectionHeading}><div><h2 id="analytics-phase-mix-title">{tr("analyticsPhaseMixTitle")}</h2><p className={styles.subtle}>{tr("analyticsPhaseNote")}</p></div><span className={styles.cardMeta}>{sliceNote}</span></div><PhaseDonutChart data={phaseData} tr={tr} emptyLabel={tr("analyticsNoData")} labelFor={(phase) => enumLabel(phase, phaseLabelKeys, tr)} /></section>
+          <section className={styles.card} aria-labelledby="analytics-aging-title"><div className={styles.sectionHeading}><div><h2 id="analytics-aging-title">{tr("analyticsAgingTitle")}</h2><p className={styles.subtle}>{tr("analyticsAgingNote")}</p></div></div><AgingChart buckets={buckets} tr={tr} emptyLabel={tr("analyticsNoData")} sliceNote={sliceNote} /></section>
+          <section className={styles.card} aria-labelledby="analytics-top-locations-title"><div className={styles.sectionHeading}><h2 id="analytics-top-locations-title">{tr("analyticsTopLocationsTitle")}</h2></div><TopBarsChart data={topN(kpis.linesByLocation, 10)} tr={tr} topNote={topNote} emptyLabel={tr("analyticsNoData")} />{hotspotLocations && <p className={styles.subtle}>{hotspotLocations}</p>}</section>
+          <section className={styles.card} aria-labelledby="analytics-top-skus-title"><div className={styles.sectionHeading}><h2 id="analytics-top-skus-title">{tr("analyticsTopSkusTitle")}</h2></div><TopBarsChart data={topN(kpis.linesBySku, 10)} tr={tr} topNote={topNote} emptyLabel={tr("analyticsNoData")} />{hotspotSkus && <p className={styles.subtle}>{hotspotSkus}</p>}</section>
+        </div>
+
+        {!data?.management && <details className={`${styles.card} ${styles.details}`}>
+          <summary className={styles.detailsSummary}>{tr("analyticsDuplicateOrders")}</summary>
+          <p className={styles.subtle}>{tr("analyticsRecurringOrdersNote")}</p>
+          {duplicateOrders.length ? <ul className={styles.duplicateList}>{duplicateOrders.map((order) => <li className={styles.duplicateItem} key={order.orderNumber}><div className={styles.duplicateHead}><strong>{order.orderNumber}</strong><span className={styles.cardMeta}>{tr("analyticsOccurrences")}: {order.occurrences}</span></div><p className={styles.duplicateDates}>{order.cases.map((entry) => <time key={entry.caseId} dateTime={entry.createdAt || undefined}>{dateLabel(entry.createdAt, locale)}</time>)}</p></li>)}</ul> : <p className={styles.empty}>{tr("analyticsNoDuplicates")}</p>}
+        </details>}
+        <SameLocationFoundSection summary={kpis.sameLocationFound} byUser={kpis.sameLocationFoundByUser ?? []} tr={tr} locale={locale} canExport={canExport} downloading={exporting} onDownload={(dataset) => void download(dataset)} roleLabel={roleLabel} />
+    </div>}
+    </div>
+    {canExport && <details className={`${styles.card} ${styles.details}`}>
+      <summary className={styles.detailsSummary}>{tr("analyticsRetainedReportsSummary", { count: String(retainedReports.length) })}</summary>
+      {retainedReportsLoading && !retainedReports.length ? <p className={styles.loading}>{tr("analyticsLoading")}</p> : retainedReports.length ? <><ul className={styles.reportList}>{retainedReports.map((report) => <li className={styles.reportItem} key={report.id}><div className={styles.reportDetails}><strong className={styles.reportFilename}>{report.filename}</strong><span className={styles.reportMeta}>{report.createdAt ? dateLabel(report.createdAt, locale) : ""}{report.byteSize ? ` · ${formatBytes(report.byteSize)}` : ""}</span></div><div className={styles.reportActions}><a className={`${styles.exportButton} ${exporting ? styles.disabledLink : ""}`} href={`/api/analytics/reports/${report.id}`} download={report.filename} aria-disabled={Boolean(exporting)} tabIndex={exporting ? -1 : 0} onClick={(event) => { if (exporting) event.preventDefault(); }}>{tr("analyticsRetainedReport", { filename: report.filename })}</a><button className={styles.exportButton} type="button" onClick={() => void removeRetainedReport(report.id)} disabled={Boolean(exporting) || retainedReportsLoading}>{exporting === "retained-delete" ? tr("analyticsExporting") : tr("analyticsDeleteRetainedReport")}</button></div></li>)}</ul>{retainedReportsNextCursor && <button className={styles.clearButton} type="button" onClick={() => void loadRetainedReports(undefined, retainedReportsNextCursor, true)} disabled={Boolean(exporting) || retainedReportsLoading}>{retainedReportsLoading ? tr("analyticsLoading") : tr("analyticsLoadMoreRetainedReports")}</button>}</> : <p className={styles.empty}>{tr("analyticsNoRetainedReports")}</p>}
+    </details>}
   </div>;
 }

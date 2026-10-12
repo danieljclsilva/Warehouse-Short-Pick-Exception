@@ -2,12 +2,13 @@ import { and, asc, desc, eq, exists, gte, inArray, isNull, lt, or, sql } from "d
 import type { SQL } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { caseEvents, checkTasks, configurationVersions, orderCases, shortPickLines, users } from "@/db/schema";
+import { caseEvents, casePhaseEnum, checkTasks, configurationVersions, orderCases, shortPickLines, users } from "@/db/schema";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/case-errors";
 import { normalizeConfigurationValues } from "@/server/configuration";
 import { workingElapsedMilliseconds, workingHoursFromConfiguration } from "@/domain/working-hours";
+import { periodChange, previousReportingPeriod, type AnalyticsManagement, type PeriodTotals } from "@/domain/analytics-management";
 import type { WorkingHours } from "@/domain/working-hours";
 
 /** Dashboard and export limits. They protect the transactional database from unbounded analytical reads. */
@@ -25,7 +26,8 @@ export type ConclusiveCheckOutcome = (typeof CONCLUSIVE_CHECK_OUTCOMES)[number];
 /** Minimum eligible lines before a same-location-found percentage may be shown. */
 export const SAME_LOCATION_FOUND_MIN_DENOMINATOR = 20;
 
-const phaseSchema = z.enum(["PICKING", "STAGED", "CLOSED"]);
+const phaseSchema = z.enum(casePhaseEnum.enumValues);
+const [PICKING_PHASE, STAGED_PHASE] = casePhaseEnum.enumValues;
 const sourceSchema = z.enum(["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "MANAGER_MANUAL", "ADMIN_MANUAL"]);
 const uuidParam = z.string().uuid();
 
@@ -90,6 +92,7 @@ export function parseAnalyticsFilters(params: URLSearchParams, now = new Date())
 }
 
 type Db = ReturnType<typeof getDb>;
+type QueryDb = Pick<Db, "select">;
 type CaseRow = typeof orderCases.$inferSelect;
 type LineRow = typeof shortPickLines.$inferSelect;
 type EventRow = typeof caseEvents.$inferSelect;
@@ -176,6 +179,7 @@ export type SameLocationFoundUser = SameLocationFoundSummary & {
 export type AnalyticsUserDirectoryEntry = { id: string; displayName: string; role: string };
 
 export type AnalyticsData = {
+  management?: AnalyticsManagement;
   filters: AnalyticsResponseFilters;
   kpis: {
     totalCases: number;
@@ -239,7 +243,7 @@ function periodKey(date: Date, kind: "day" | "week" | "month") {
   return value.toISOString().slice(0, 10);
 }
 
-function resolutionPredicate(db: Db, code: string) {
+function resolutionPredicate(db: QueryDb, code: string) {
   // completionCode is a DB enum; unknown values (e.g. FOUND_AT_ORIGINAL before the
   // migration lands) are matched as text so the query never fails on a cast.
   const matchingTask = db.select({ id: checkTasks.id }).from(checkTasks).where(and(
@@ -248,7 +252,7 @@ function resolutionPredicate(db: Db, code: string) {
   return or(eq(shortPickLines.resolutionCode, code), exists(matchingTask)) ?? sql`false`;
 }
 
-function linePredicate(db: Db, filters: AnalyticsFilters, caseIds?: string[]) {
+function linePredicate(db: QueryDb, filters: AnalyticsFilters, caseIds?: string[]) {
   const predicates: SQL<unknown>[] = [];
   if (caseIds) predicates.push(inArray(shortPickLines.caseId, caseIds));
   if (filters.location) predicates.push(eq(shortPickLines.originalLocation, filters.location.trim().toUpperCase()));
@@ -257,7 +261,7 @@ function linePredicate(db: Db, filters: AnalyticsFilters, caseIds?: string[]) {
   return and(...predicates) ?? sql`true`;
 }
 
-function buildCasePredicates(db: Db, filters: AnalyticsFilters, includeCreatedDate = true) {
+function buildCasePredicates(db: QueryDb, filters: AnalyticsFilters, includeCreatedDate = true) {
   const predicates = [] as SQL<unknown>[];
   if (includeCreatedDate) predicates.push(gte(orderCases.createdAt, filters.from), lt(orderCases.createdAt, filters.toExclusive ?? filters.to));
   if (filters.orderNumber) predicates.push(eq(orderCases.orderNumber, filters.orderNumber.trim()));
@@ -348,6 +352,103 @@ export function computeSameLocationFound(
 
 function ensurePermission(auth: AuthContext, permission: "VIEW_ANALYTICS" | "EXPORT_ANALYTICS") {
   if (!hasAuthPermission(auth, permission)) throw new CaseApiError("CASE_ACCESS_DENIED", `${permission} permission required`, 403);
+}
+
+/** Exact aggregate counts and bounded details, read from one database snapshot. */
+async function queryManagementAnalytics(db: Db, filters: AnalyticsFilters): Promise<AnalyticsManagement> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`set local statement_timeout = '15s'`);
+    const asOf = new Date();
+    const currentEnd = filters.toExclusive ?? filters.to;
+    const previous = previousReportingPeriod(filters.from, currentEnd);
+    const count = sql<number>`count(*)::int`;
+    const totals = async (from: Date, toExclusive: Date): Promise<PeriodTotals> => {
+      const selection = { ...filters, from, to: toExclusive, toExclusive };
+      const predicate = buildCasePredicates(tx, selection);
+      const [cases] = await tx.select({ count }).from(orderCases)
+        .innerJoin(configurationVersions, eq(orderCases.configurationVersionId, configurationVersions.id)).where(predicate);
+      const [lines] = await tx.select({ count }).from(shortPickLines)
+        .innerJoin(orderCases, eq(shortPickLines.caseId, orderCases.id))
+        .innerJoin(configurationVersions, eq(orderCases.configurationVersionId, configurationVersions.id))
+        .where(and(predicate, linePredicate(tx, selection)));
+      const [resolved] = await tx.select({ count }).from(orderCases)
+        .innerJoin(configurationVersions, eq(orderCases.configurationVersionId, configurationVersions.id))
+        .where(and(buildCasePredicates(tx, selection, false), gte(orderCases.resolvedAt, from), lt(orderCases.resolvedAt, toExclusive)));
+      return { from: from.toISOString(), toExclusive: toExclusive.toISOString(), cases: Number(cases?.count ?? 0), lines: Number(lines?.count ?? 0), resolvedCases: Number(resolved?.count ?? 0) };
+    };
+    // Serial queries share this transaction's connection and repeatable snapshot.
+    const currentTotals = await totals(filters.from, currentEnd);
+    const previousTotals = await totals(previous.from, previous.toExclusive);
+    const open = and(inArray(orderCases.phase, [PICKING_PHASE, STAGED_PHASE]), isNull(orderCases.resolvedAt), lt(orderCases.createdAt, asOf));
+    const [backlogCounts] = await tx.select({
+      totalOpen: count,
+      picking: sql<number>`count(*) filter (where ${orderCases.phase} = ${PICKING_PHASE})::int`,
+      staged: sql<number>`count(*) filter (where ${orderCases.phase} = ${STAGED_PHASE})::int`,
+      unassignedStaged: sql<number>`count(*) filter (where ${orderCases.phase} = ${STAGED_PHASE} and ${orderCases.currentCaseResponsibleUserId} is null)::int`,
+      oldestCreatedAt: sql<Date | string | null>`min(${orderCases.createdAt})`,
+    }).from(orderCases).where(open);
+    const backlogRows = await tx.select({ createdAt: orderCases.createdAt, values: configurationVersions.values })
+      .from(orderCases).innerJoin(configurationVersions, eq(orderCases.configurationVersionId, configurationVersions.id))
+      .where(open).orderBy(asc(orderCases.createdAt), asc(orderCases.id)).limit(ANALYTICS_LIMITS.maxCases);
+    const aging = { under24h: 0, h24to72: 0, h72to168: 0, over168h: 0 };
+    let overThreshold = 0;
+    for (const row of backlogRows) {
+      const config = normalizeConfigurationValues(row.values);
+      const seconds = workingElapsedMilliseconds(row.createdAt, asOf, workingHoursFromConfiguration(config)) / 1_000;
+      if (config.CRITICAL_THRESHOLD_MINUTES > 0 && seconds > config.CRITICAL_THRESHOLD_MINUTES * 60) overThreshold += 1;
+      if (seconds < 24 * 3_600) aging.under24h += 1;
+      else if (seconds < 72 * 3_600) aging.h24to72 += 1;
+      else if (seconds < 168 * 3_600) aging.h72to168 += 1;
+      else aging.over168h += 1;
+    }
+    const totalOpen = Number(backlogCounts?.totalOpen ?? 0);
+    const oldest = backlogCounts?.oldestCreatedAt;
+    // Only the selected cohort uses dashboard filters. History includes every
+    // retained case for those order numbers, even under other configurations/users.
+    const cohort = tx.select({ orderNumber: orderCases.orderNumber, selectedCount: sql<number>`count(*)::int`.as("selected_count") }).from(orderCases)
+      .innerJoin(configurationVersions, eq(orderCases.configurationVersionId, configurationVersions.id))
+      .where(and(buildCasePredicates(tx, filters), lt(orderCases.createdAt, asOf))).groupBy(orderCases.orderNumber);
+    const groupsCte = sql`with cohort as (${cohort}), lifetime as (
+      select h.order_number, count(*)::int as occurrences, c.selected_count,
+        min(h.created_at) as first_seen_at, max(h.created_at) as last_seen_at
+      from order_cases h inner join cohort c on c.order_number = h.order_number
+      where h.created_at < ${asOf.toISOString()}::timestamptz
+      group by h.order_number, c.selected_count having count(*) > 1
+    )`;
+    const groupCountRows = await tx.execute<{ count: number }>(sql`${groupsCte} select count(*)::int as count from lifetime`);
+    const groups = await tx.execute<{ order_number: string; occurrences: number; selected_count: number; first_seen_at: string | Date; last_seen_at: string | Date }>(
+      sql`${groupsCte} select * from lifetime order by occurrences desc, order_number asc limit ${ANALYTICS_LIMITS.maxDuplicateOrders}`,
+    );
+    const orderNumbers = groups.map((group) => group.order_number);
+    const historyRows = orderNumbers.length ? await tx.select({ caseId: orderCases.id, orderNumber: orderCases.orderNumber, createdAt: orderCases.createdAt }).from(orderCases)
+      .where(and(inArray(orderCases.orderNumber, orderNumbers), lt(orderCases.createdAt, asOf)))
+      .orderBy(asc(orderCases.orderNumber), asc(orderCases.createdAt), asc(orderCases.id)).limit(ANALYTICS_LIMITS.maxCases) : [];
+    const histories = new Map<string, Array<{ caseId: string; createdAt: string }>>();
+    for (const row of historyRows) {
+      const dates = histories.get(row.orderNumber) ?? [];
+      dates.push({ caseId: row.caseId, createdAt: row.createdAt.toISOString() });
+      histories.set(row.orderNumber, dates);
+    }
+    const orders = groups.map((group) => {
+      const cases = histories.get(group.order_number) ?? [];
+      return { orderNumber: group.order_number, occurrences: Number(group.occurrences), selectedPeriodOccurrences: Number(group.selected_count),
+        firstSeenAt: new Date(group.first_seen_at).toISOString(), lastSeenAt: new Date(group.last_seen_at).toISOString(),
+        datesTruncated: cases.length < Number(group.occurrences), cases };
+    });
+    const repeatedOrderCount = Number(groupCountRows[0]?.count ?? 0);
+    return {
+      comparison: { current: currentTotals, previous: previousTotals, changes: {
+        cases: periodChange(currentTotals.cases, previousTotals.cases),
+        lines: periodChange(currentTotals.lines, previousTotals.lines),
+        resolvedCases: periodChange(currentTotals.resolvedCases, previousTotals.resolvedCases),
+      } },
+      backlog: { asOf: asOf.toISOString(), totalOpen, picking: Number(backlogCounts?.picking ?? 0), staged: Number(backlogCounts?.staged ?? 0),
+        unassignedStaged: Number(backlogCounts?.unassignedStaged ?? 0), oldestCreatedAt: oldest ? new Date(oldest).toISOString() : null,
+        evaluatedCases: backlogRows.length, truncated: backlogRows.length < totalOpen, overThreshold, aging },
+      lifetimeRecurrence: { asOf: asOf.toISOString(), repeatedOrderCount, groupsTruncated: repeatedOrderCount > groups.length,
+        datesTruncated: orders.some((order) => order.datesTruncated), orders },
+    };
+  }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }
 
 async function queryAnalytics(filters: AnalyticsFilters): Promise<AnalyticsData> {
@@ -513,7 +614,8 @@ async function queryAnalytics(filters: AnalyticsFilters): Promise<AnalyticsData>
   const displayFilters = { ...filters };
   delete displayFilters.toExclusive;
   const responseFilters: AnalyticsResponseFilters = { ...displayFilters, phases: ["PICKING", "STAGED", "CLOSED"], resolutions: ["FOUND", "NOT_FOUND", "WRONG_LOCATION", "OTHER", "FOUND_AT_ORIGINAL"], sources: ["PICKER_REPORT", "TL_MANUAL", "ASSISTANT_MANUAL", "MANAGER_MANUAL", "ADMIN_MANUAL"], configurations: caseRows.map((row) => ({ id: String(row.configurationVersion.version), label: String(row.configurationVersion.version), version: row.configurationVersion.version })).filter((row, index, all) => all.findIndex((item) => item.id === row.id) === index) };
-  return { filters: responseFilters, kpis: { totalCases, totalLines, casesByPeriod: [...groupedPeriods.values()].sort((a, b) => a.period.localeCompare(b.period)), linesByLocation: breakdown((line) => line.originalLocation), linesBySku: breakdown((line) => line.sku),
+  const management = await queryManagementAnalytics(db, filters);
+  return { management, filters: responseFilters, kpis: { totalCases, totalLines, casesByPeriod: [...groupedPeriods.values()].sort((a, b) => a.period.localeCompare(b.period)), linesByLocation: breakdown((line) => line.originalLocation), linesBySku: breakdown((line) => line.sku),
     foundDuringCheck: codeCounts.get("FOUND") ?? 0, notFound: codeCounts.get("NOT_FOUND") ?? 0, wrongLocation: codeCounts.get("WRONG_LOCATION") ?? 0, retrieved: lineRows.filter((line) => line.retrievalState === "RETRIEVED").length,
     medianReportToCheckClaimedSeconds: median(claimedDurations), medianReportToLocationFoundSeconds: median(foundDurations), medianReportToRetrievalSeconds: median(retrievalDurations), medianReportToResolutionSeconds: median(resolutionDurations),
     casesOverThreshold: caseRows.filter((row) => row.overThreshold).length, manualCases: caseRows.filter((row) => row.source !== "PICKER_REPORT").length, reopenedCases, repeatedOrderNumbers, casesByConfigurationVersion, sameLocationFound, sameLocationFoundByUser, userDirectory, metricsArePartial: partialMetrics.size > 0, partialMetrics: [...partialMetrics] },
@@ -557,7 +659,7 @@ export async function getAnalyticsEvents(auth: AuthContext, filters: AnalyticsFi
     actor: row.actorId ? { id: row.actorId, displayName: row.actorName! } : null, details: row.event.details, createdAt: row.event.createdAt })), truncated: casesTruncated || linesTruncated || Number(count[0]?.count ?? 0) > rows.length };
 }
 
-export type AnalyticsCsvDataset = "case" | "line" | "event" | "same-location-found" | "same-location-found-overall";
+export type AnalyticsCsvDataset = "case" | "line" | "event" | "same-location-found" | "same-location-found-overall" | "management";
 
 export function csvCell(value: unknown): string {
   let text = value === null || value === undefined ? "" : value instanceof Date ? value.toISOString() : typeof value === "object" ? JSON.stringify(value) : String(value);

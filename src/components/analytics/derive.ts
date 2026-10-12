@@ -59,6 +59,26 @@ export function topN<T extends { label: string; count: number }>(items: T[], n: 
   return [...items].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label)).slice(0, n);
 }
 
+/** Only present concentration when the breakdown covers all filtered lines. */
+export function hotspotConcentration(
+  items: Array<{ label: string; count: number }>,
+  totalLines: number,
+  linesTruncated: boolean,
+): number | null {
+  if (linesTruncated || !Number.isInteger(totalLines) || totalLines <= 0) return null;
+  if (items.some((item) => !Number.isInteger(item.count) || item.count < 0)) return null;
+  if (items.reduce((sum, item) => sum + item.count, 0) !== totalLines) return null;
+  return topN(items, 3).reduce((sum, item) => sum + item.count, 0) / totalLines;
+}
+
+/** The analytics API returns a half-open range; labels show its included days. */
+export function reportingRangeDays(from: string, toExclusive: string): { from: string; to: string } | null {
+  const start = new Date(from);
+  const end = new Date(toExclusive);
+  if (!Number.isFinite(start.valueOf()) || !Number.isFinite(end.valueOf()) || end <= start) return null;
+  return { from: start.toISOString().slice(0, 10), to: new Date(end.valueOf() - 1).toISOString().slice(0, 10) };
+}
+
 /** Phase mix over the loaded case-row slice (bounded by ANALYTICS_LIMITS). */
 export function phaseMix(caseRows: UnknownRow[]): Array<{ phase: string; count: number }> {
   const grouped = new Map<string, number>();
