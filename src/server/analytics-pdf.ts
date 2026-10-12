@@ -353,7 +353,7 @@ function drawSameLocationGrid(doc: PDFKit.PDFDocument, value: unknown, users: un
   const summary = value as { numerator?: unknown; denominator?: unknown; percentage?: unknown; counts?: Record<string, unknown>; from?: unknown; to?: unknown };
   const counts = summary.counts ?? {};
   const count = (value: unknown) => asNumber(value).toLocaleString(intlLocales[locale]);
-  const rate = (value: unknown) => typeof value === "number" ? new Intl.NumberFormat(intlLocales[locale], { style: "percent", maximumFractionDigits: 1 }).format(value / 100) : tr("analyticsSameLocationCountsOnly");
+  const rate = (value: unknown) => typeof value === "number" ? new Intl.NumberFormat(intlLocales[locale], { style: "percent", maximumFractionDigits: 1 }).format(value / 100) : "—*";
   const range = (from: unknown, to: unknown) => {
     const end = new Date(asString(to));
     return tr("analyticsSameLocationDateRangeValue", { from: shortDate(from, locale), to: shortDate(Number.isFinite(end.valueOf()) ? new Date(end.valueOf() - 1).toISOString() : to, locale) });
@@ -372,7 +372,13 @@ function drawSameLocationGrid(doc: PDFKit.PDFDocument, value: unknown, users: un
   ]);
   const rows = (Array.isArray(users) ? users : []) as Array<SameLocationUserRow>;
   const staff = rows.filter((row) => typeof row.role !== "string" || isSameLocationReporter(row.role));
-  if (!staff.length) return;
+  const drawRateFootnote = () => {
+    if (typeof summary.percentage === "number" && staff.every((row) => typeof row.percentage === "number")) return;
+    if (doc.y > PAGE_HEIGHT - MARGIN - FOOTER_HEIGHT - 35) doc.addPage();
+    doc.fillColor(MUTED).font(REPORT_REGULAR).fontSize(8).text(`* ${tr("analyticsSameLocationCountsOnly")}`);
+    doc.moveDown(.6);
+  };
+  if (!staff.length) { drawRateFootnote(); return; }
   if (doc.y > PAGE_HEIGHT - MARGIN - FOOTER_HEIGHT - 240) doc.addPage();
   drawSection(doc, tr("analyticsSameLocationByReporter"), tr("analyticsSameLocationReporterNote"));
   drawTable(doc, [
@@ -383,9 +389,10 @@ function drawSameLocationGrid(doc: PDFKit.PDFDocument, value: unknown, users: un
     { key: "other", label: tr("analyticsSameLocationOutcomes"), width: CONTENT_WIDTH - 350 },
   ], staff.slice(0, MAX_RENDER_ROWS).map((row) => {
     const rowCounts = row.counts ?? {};
-    return { reporter: `${asString(row.displayName)}\n${range(row.from ?? summary.from, row.to ?? summary.to)}`, checked: count(row.denominator), original: count(row.numerator), rate: rate(row.percentage),
+    return { reporter: asString(row.displayName), checked: count(row.denominator), original: count(row.numerator), rate: rate(row.percentage),
       other: `${tr("analyticsSameLocationElsewhere")}: ${count(rowCounts.FOUND)}\n${labels.analyticsNotFound}: ${count(rowCounts.NOT_FOUND)}\n${labels.analyticsWrongLocation}: ${count(rowCounts.WRONG_LOCATION)}` };
   }));
+  drawRateFootnote();
 }
 
 function drawTable(doc: PDFKit.PDFDocument, columns: Array<{ key: string; label: string; width: number }>, rows: Array<Record<string, unknown>>) {

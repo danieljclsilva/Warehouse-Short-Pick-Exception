@@ -323,8 +323,9 @@ export function SameLocationFoundSection({ summary, byUser, tr, locale, canExpor
   if (!summary && !byUser.length) return null;
   const range = summary?.from && summary.to ? rangeLabel(summary.from, summary.to, locale, tr) : "—";
   const formatCount = (value: number) => new Intl.NumberFormat(locale).format(value);
-  const formatRate = (value: number | null) => value === null ? tr("analyticsSameLocationCountsOnly") : new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 1 }).format(value / 100);
+  const formatRate = (value: number | null) => value === null ? "—*" : new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 1 }).format(value / 100);
   const sortedByUser = byUser.filter((row) => isSameLocationReporter(row.role)).sort((a, b) => a.displayName.localeCompare(b.displayName, locale));
+  const hasHiddenRate = summary?.percentage === null || sortedByUser.some((row) => row.percentage === null);
   const otherOutcomes: Array<{ key: keyof SameLocationFoundCounts; label: MessageKey }> = [
     { key: "FOUND", label: "analyticsSameLocationElsewhere" },
     { key: "NOT_FOUND", label: "analyticsResolutionNotFound" },
@@ -346,7 +347,6 @@ export function SameLocationFoundSection({ summary, byUser, tr, locale, canExpor
         <div className={styles.timing}><span>{tr("analyticsSameLocationEligible")}</span><strong>{formatCount(summary.denominator)}</strong></div>
         <div className={styles.timing}><span>{tr("analyticsSameLocationRate")}</span><strong className={summary.percentage === null ? styles.suppressedRate : undefined}>{formatRate(summary.percentage)}</strong></div>
       </div>
-      <p className={styles.subtle}>{tr("analyticsSameLocationRateNote")}</p>
       <h3 className={styles.sameLocationSubheading}>{tr("analyticsSameLocationOutcomes")}</h3>
       <dl className={styles.sameLocationOtherOutcomes}>{otherOutcomes.map(({ key, label }) => <div key={key}><dt>{tr(label)}</dt><dd>{formatCount(summary.counts[key])}</dd></div>)}</dl>
     </>}
@@ -357,13 +357,12 @@ export function SameLocationFoundSection({ summary, byUser, tr, locale, canExpor
         <th scope="col">{tr("analyticsSameLocationReporter")}</th><th scope="col">{tr("analyticsSameLocationEligible")}</th><th scope="col">{tr("analyticsSameLocationFoundCount")}</th><th scope="col">{tr("analyticsSameLocationRate")}</th>
         {otherOutcomes.map(({ key, label }) => <th scope="col" key={key}>{tr(label)}</th>)}
       </tr></thead><tbody>{sortedByUser.map((row) => <tr key={row.userId}>
-        <th scope="row">{row.displayName}<span className={styles.sameLocationPersonMeta}>{roleLabel(row.role)}</span><span className={styles.sameLocationPersonMeta}>{rangeLabel(row.from, row.to, locale, tr)}</span></th>
+        <th scope="row">{row.displayName}<span className={styles.sameLocationPersonMeta}>{roleLabel(row.role)}</span></th>
         <td>{formatCount(row.denominator)}</td><td>{formatCount(row.numerator)}</td><td>{formatRate(row.percentage)}</td>
         {otherOutcomes.map(({ key }) => <td key={key}>{formatCount(row.counts[key])}</td>)}
       </tr>)}</tbody></table></div>
       <ul className={styles.sameLocationMobileList}>{sortedByUser.map((row) => <li className={styles.sameLocationPersonCard} key={row.userId}>
         <div className={styles.sameLocationPersonHead}><strong>{row.displayName}</strong><span>{roleLabel(row.role)}</span></div>
-        <p className={styles.sameLocationPersonMeta}>{rangeLabel(row.from, row.to, locale, tr)}</p>
         <dl className={styles.sameLocationPersonStats}>
           <div><dt>{tr("analyticsSameLocationEligible")}</dt><dd>{formatCount(row.denominator)}</dd></div>
           <div><dt>{tr("analyticsSameLocationFoundCount")}</dt><dd>{formatCount(row.numerator)}</dd></div>
@@ -372,6 +371,7 @@ export function SameLocationFoundSection({ summary, byUser, tr, locale, canExpor
         <dl className={styles.sameLocationPersonOutcomes}>{otherOutcomes.map(({ key, label }) => <div key={key}><dt>{tr(label)}</dt><dd>{formatCount(row.counts[key])}</dd></div>)}</dl>
       </li>)}</ul>
     </> : <p className={styles.empty}>{tr("analyticsNoData")}</p>}
+    {hasHiddenRate && <p className={styles.subtle}>* {tr("analyticsSameLocationCountsOnly")}</p>}
   </section>;
 }
 
