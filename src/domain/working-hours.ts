@@ -194,6 +194,24 @@ export function isWithinWorkingHours(now: Instant, schedule: WorkingHours = DEFA
   return parts.minutes >= startMinutes && parts.minutes < endMinutes;
 }
 
+/** Beginning of the actual current shift, including DST transition intervals. */
+export function currentWorkingWindowStart(now: Instant, schedule: WorkingHours): Date | null {
+  const time = toTime(now);
+  if (time === null || !isWithinWorkingHours(time, schedule)) return null;
+  const parts = zonedParts(time, schedule.timeZone);
+  const intervals = shiftIntervals(parts.year, parts.month, parts.day,
+    minutesOfDay(schedule.start)!, minutesOfDay(schedule.end)!, schedule.timeZone);
+  const interval = intervals.find(([start, end]) => time >= start && time < end);
+  return interval ? new Date(interval[0]) : null;
+}
+
+/** Workers may run during the shift or up to 15 minutes before opening. */
+export function isWithinPushWorkerHours(now: Instant, schedule: WorkingHours): boolean {
+  const time = toTime(now);
+  return time !== null && (isWithinWorkingHours(time, schedule)
+    || isWithinWorkingHours(time + 15 * 60_000, schedule));
+}
+
 /**
  * Working milliseconds overlapped by `[start, end)` with the schedule.
  * Day-by-day walk over whole calendar dates (never 24h steps, so DST

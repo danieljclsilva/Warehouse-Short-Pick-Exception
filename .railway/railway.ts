@@ -28,14 +28,17 @@ export default defineRailway(() => {
     domains: ["shortpickexception.nl"],
     env: { APP_URL: preserve(), DATABASE_URL: preserve(), PUSH_PRIVATE_KEY: preserve(), PUSH_PUBLIC_KEY: preserve(), PUSH_SUBJECT: preserve(), STORAGE_ACCESS_KEY_ID: preserve(), STORAGE_BUCKET: preserve(), STORAGE_ENDPOINT: preserve(), STORAGE_FORCE_PATH_STYLE: preserve(), STORAGE_REGION: preserve(), STORAGE_SECRET_ACCESS_KEY: preserve() },
   });
-  // Continuous near-immediate push worker (5s poll). Whole-project IaC apply
+  // Cron checks the current Amsterdam schedule, exits outside shift/warm-up,
+  // and polls every 5s during the shift. Railway skips overlapping cron runs.
+  // Whole-project IaC apply
   // deletes live resources this file omits (test env: Postgres-ltHj,
   // push-delivery, web-test) — NEVER apply without first running
   // `railway config pull` to import them, or scope IaC to production resources.
   const pushDelivery = service("push-delivery", {
-    start: "npm run push:worker",
+    build: { builder: "DOCKERFILE", dockerfilePath: "push/Dockerfile" },
+    start: "node build/push-worker.cjs",
     replicas: { "europe-west4-drams3a": 1 },
-    deploy: { restartPolicyType: "ON_FAILURE" },
+    deploy: { cronSchedule: "*/5 * * * *", restartPolicyType: "NEVER" },
     env: { DATABASE_URL: preserve(), PUSH_PRIVATE_KEY: preserve(), PUSH_PUBLIC_KEY: preserve(), PUSH_SUBJECT: preserve() },
   });
   const databaseBackup = service("database-backup", {

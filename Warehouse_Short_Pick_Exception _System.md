@@ -1652,6 +1652,15 @@ push_attempted_at nullable
 
 # 51. Push Subscription Behavior
 
+Production push delivery is limited to the current configured working schedule
+(working weekdays/start/end, Europe/Amsterdam). Warm the push worker approximately
+15 minutes before opening, without sending push during warm-up; stop it outside
+that window to reduce compute billing. In-app responsibility and monitoring
+notifications remain available regardless of worker availability. Suppress push
+alerts created before the current shift rather than replaying them the next
+morning; retain their in-app notification and active device subscription. Web and
+PostgreSQL availability is unchanged by this push-only schedule.
+
 Push should be optional and device-specific.
 
 Users may have multiple devices/subscriptions.

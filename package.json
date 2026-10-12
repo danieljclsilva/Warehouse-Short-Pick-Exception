@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "dev:test": "sh scripts/with-test-env.sh next dev",
-    "build": "next build",
+    "build": "next build && npm run build:workers",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
@@ -21,12 +21,13 @@
     "db:check": "drizzle-kit check",
     "notifications:emit": "tsx scripts/emit-notifications.ts",
     "push:deliver": "tsx scripts/deliver-push.ts",
-    "push:worker": "tsx scripts/push-worker.ts",
+    "push:worker": "node build/push-worker.cjs",
     "test-env:start": "sh scripts/railway-test-env.sh start",
     "test-env:status": "sh scripts/railway-test-env.sh status",
     "test-env:stop": "sh scripts/railway-test-env.sh stop",
     "seed:admin": "tsx scripts/seed-admin.ts",
-    "recover:admin": "tsx scripts/recover-admin.ts"
+    "recover:admin": "tsx scripts/recover-admin.ts",
+    "build:workers": "node scripts/build-workers.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1141.0",
@@ -53,6 +54,7 @@
     "@types/react-dom": "^19",
     "dotenv": "^18.0.4",
     "drizzle-kit": "^0.31.11",
+    "esbuild": "^0.28.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.6",
     "railway": "^3.11.0",

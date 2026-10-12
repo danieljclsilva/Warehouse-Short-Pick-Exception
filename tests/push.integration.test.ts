@@ -32,8 +32,13 @@ describeDatabase("Web Push subscriptions and durable outbox", () => {
   const originalEnv = { publicKey: process.env.PUSH_PUBLIC_KEY, privateKey: process.env.PUSH_PRIVATE_KEY, subject: process.env.PUSH_SUBJECT };
   const endpointOne = `https://fcm.googleapis.com/fcm/send/${suffix}-one`;
   const endpointTwo = `https://updates.push.services.mozilla.com/wpush/v2/${suffix}-two`;
+  let originalConfiguration: Record<string, unknown>;
 
   beforeAll(async () => {
+    const [current] = await getDb().select().from(configurationVersions).orderBy(desc(configurationVersions.version)).limit(1);
+    originalConfiguration = current!.values as Record<string, unknown>;
+    await getDb().insert(configurationVersions).values({ version: current!.version + 1,
+      values: { ...originalConfiguration, WORKING_HOURS_DAYS: [1, 2, 3, 4, 5, 6, 7], WORKING_HOURS_START: "00:00", WORKING_HOURS_END: "23:59" } });
     const keys = webpush.generateVAPIDKeys();
     vapidPublic = keys.publicKey; vapidPrivate = keys.privateKey;
     process.env.PUSH_PUBLIC_KEY = vapidPublic;
@@ -49,7 +54,10 @@ describeDatabase("Web Push subscriptions and durable outbox", () => {
   });
 
   afterAll(async () => {
+    vi.useRealTimers();
     const db = getDb();
+    const [current] = await db.select().from(configurationVersions).orderBy(desc(configurationVersions.version)).limit(1);
+    await db.insert(configurationVersions).values({ version: current!.version + 1, values: originalConfiguration });
     await db.delete(pushOutbox).where(inArray(pushOutbox.subscriptionId, (await db.select({ id: pushSubscriptions.id }).from(pushSubscriptions).where(inArray(pushSubscriptions.userId, userIds))).map((row) => row.id)));
     await db.delete(notifications).where(inArray(notifications.recipientUserId, userIds));
     await db.delete(pushSubscriptions).where(inArray(pushSubscriptions.userId, userIds));
@@ -170,5 +178,44 @@ describeDatabase("Web Push subscriptions and durable outbox", () => {
     expect(result).toMatchObject({ attempted: 0, sent: 0, retried: 0, disabled: 0, failed: 0 });
     const [restored] = await db.select().from(configurationVersions).orderBy(desc(configurationVersions.version)).limit(1);
     expect((restored!.values as Record<string, unknown>).PUSH_ENABLED).toBe(originalValues.PUSH_ENABLED);
+  });
+
+  it("does not deliver during warm-up or after hours, and suppresses earlier-shift alerts without disabling devices", async () => {
+    const db = getDb();
+    const [current] = await db.select().from(configurationVersions).orderBy(desc(configurationVersions.version)).limit(1);
+    const [shift] = await db.insert(configurationVersions).values({ version: current!.version + 1,
+      values: { ...(current!.values as Record<string, unknown>), WORKING_HOURS_DAYS: [1, 2, 3, 4, 5], WORKING_HOURS_START: "08:00", WORKING_HOURS_END: "17:00" } }).returning();
+    const [subscription] = await db.insert(pushSubscriptions).values({ userId, endpoint: `https://fcm.googleapis.com/fcm/send/${suffix}-shift`, p256dh: "C".repeat(87), auth: "D".repeat(22) }).returning();
+    const [notification] = await db.insert(notifications).values({ recipientUserId: userId, type: "NEW_SHORT_PICK", createdAt: new Date("2026-10-11T18:00:00Z") }).returning();
+    const [outbox] = await db.insert(pushOutbox).values({ notificationId: notification!.id, subscriptionId: subscription!.id, availableAt: new Date(0) }).returning();
+    const send = vi.spyOn(webpush, "sendNotification").mockResolvedValue({ statusCode: 201 } as never);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      for (const instant of ["2026-10-12T05:45:00Z", "2026-10-12T15:00:00Z", "2026-10-17T08:00:00Z"]) {
+        vi.setSystemTime(new Date(instant));
+        expect((await deliverPushBatch(100)).attempted).toBe(0);
+      }
+      expect(send).not.toHaveBeenCalled();
+      expect((await db.select().from(pushOutbox).where(eq(pushOutbox.id, outbox!.id)))[0]!.status).toBe("QUEUED");
+      vi.setSystemTime(new Date("2026-10-12T06:00:00Z"));
+      await deliverPushBatch(100);
+      expect(send).not.toHaveBeenCalled();
+      expect((await db.select().from(pushOutbox).where(eq(pushOutbox.id, outbox!.id)))[0]).toMatchObject({ status: "DISABLED", leaseUntil: null });
+      expect((await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.id, subscription!.id)))[0]!.disabledAt).toBeNull();
+      expect((await db.select().from(notifications).where(eq(notifications.id, notification!.id)))[0]!.readAt).toBeNull();
+      const fresh = await db.insert(notifications).values([0, 1].map(() => ({ recipientUserId: userId,
+        type: "NEW_SHORT_PICK" as const, createdAt: new Date("2026-10-12T06:00:00Z") }))).returning();
+      await db.insert(pushOutbox).values(fresh.map((item) => ({ notificationId: item.id, subscriptionId: subscription!.id, availableAt: new Date(0) })));
+      send.mockImplementationOnce(async () => {
+        vi.setSystemTime(new Date("2026-10-12T15:00:00Z"));
+        return { statusCode: 201 } as never;
+      });
+      expect(await deliverPushBatch(100)).toMatchObject({ attempted: 2, sent: 1, disabled: 1 });
+      expect(send).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      send.mockRestore();
+      await db.insert(configurationVersions).values({ version: shift!.version + 1, values: current!.values });
+    }
   });
 });

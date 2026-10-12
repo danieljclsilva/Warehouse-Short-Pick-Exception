@@ -2,6 +2,8 @@ import { closeDb } from "../src/db";
 import { deliverPushBatch } from "../src/server/push";
 import { runPushWorker } from "../src/server/push-worker-loop";
 import { logServerError } from "../src/server/logger";
+import { getCurrentConfiguration } from "../src/server/configuration";
+import { isWithinPushWorkerHours, workingHoursFromConfiguration } from "../src/domain/working-hours";
 
 const stop = new AbortController();
 process.once("SIGTERM", () => stop.abort());
@@ -9,6 +11,10 @@ process.once("SIGINT", () => stop.abort());
 console.log(JSON.stringify({ event: "push.worker.started", intervalMs: 5000 }));
 void runPushWorker(() => deliverPushBatch(25), stop.signal, (counters) => {
   if (counters.attempted) console.log(JSON.stringify({ event: "push.worker.batch", ...counters }));
+}, 5000, async () => {
+  const configuration = await getCurrentConfiguration();
+  return configuration.values.PUSH_ENABLED
+    && isWithinPushWorkerHours(new Date(), workingHoursFromConfiguration(configuration.values));
 }).catch((error) => {
   logServerError("notification.push.worker_failed", error, { area: "notifications" });
   process.exitCode = 1;

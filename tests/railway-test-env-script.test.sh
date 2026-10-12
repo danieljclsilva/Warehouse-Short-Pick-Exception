@@ -1441,7 +1441,9 @@ end_case
 # Client upload timeout preserves124 and uses a separate bounded park budget.
 new_case
 fixtures_parked
-touch "$STUB_STATE_DIR/hang-up"
+# Model a clean checkout with ignored local files, as in other successful
+# upload fixtures. Otherwise a workstation .env.test masks the timeout path.
+touch "$STUB_STATE_DIR/hang-up" "$STUB_STATE_DIR/git-ignore-all"
 run_script start --timeout 30
 check "up-timeout: real timeout recovery reached" "grep -q 'up.*timed out' '$CASE_DIR/err.txt'"
 check "up-timeout: exits nonzero, never started" "[ $RC -ne 0 ] && ! grep -q 'test environment started' '$CASE_DIR/out.txt'"

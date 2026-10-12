@@ -7,9 +7,10 @@ import { getDb } from "@/db";
 import { notifications, pushOutbox, pushSubscriptions, users } from "@/db/schema";
 import { getMessages, translate, type MessageKey } from "@/i18n/messages";
 import type { AuthContext } from "@/server/auth";
-import { CaseApiError } from "@/server/cases";
+import { CaseApiError } from "@/server/case-errors";
 import { getCurrentConfiguration } from "@/server/configuration";
 import { logServerEvent } from "@/server/logger";
+import { currentWorkingWindowStart, workingHoursFromConfiguration } from "@/domain/working-hours";
 
 const MAX_ATTEMPTS = 5;
 const LEASE_MS = 2 * 60_000;
@@ -217,15 +218,32 @@ async function finishDelivery(row: DeliveryRow, error: unknown) {
 export async function deliverPushBatch(limit = 25) {
   const configuration = await getCurrentConfiguration();
   if (!configuration.values.PUSH_ENABLED) return { attempted: 0, sent: 0, retried: 0, disabled: 0, failed: 0 };
+  if (!currentWorkingWindowStart(new Date(), workingHoursFromConfiguration(configuration.values))) {
+    return { attempted: 0, sent: 0, retried: 0, disabled: 0, failed: 0 };
+  }
   const vapid = configuredVapid();
   if (!vapid) return { attempted: 0, sent: 0, retried: 0, disabled: 0, failed: 0 };
   webpush.setVapidDetails(vapid.subject, vapid.publicKey, vapid.privateKey);
   const rows = await claimOutbox(Math.max(1, Math.min(100, limit)));
   const result = { attempted: rows.length, sent: 0, retried: 0, disabled: 0, failed: 0 };
+  const suppressIfOutsideShift = async (row: DeliveryRow) => {
+    const current = await getCurrentConfiguration();
+    const opening = currentWorkingWindowStart(new Date(), workingHoursFromConfiguration(current.values));
+    if (current.values.PUSH_ENABLED && opening && row.notification.createdAt >= opening) return false;
+    await getDb().update(pushOutbox).set({ status: "DISABLED", leaseUntil: null, lastError: "outside current working shift" })
+      .where(and(eq(pushOutbox.id, row.outbox.id), eq(pushOutbox.status, "PROCESSING"), eq(pushOutbox.leaseUntil, row.outbox.leaseUntil!)));
+    result.disabled += 1;
+    return true;
+  };
   for (const row of rows) {
+    // Re-read before each provider request: a batch can straddle closing time
+    // or a live schedule change. Older-shift alerts remain in-app only.
+    if (await suppressIfOutsideShift(row)) continue;
     let error: unknown;
     try {
       await validatePushEndpoint(row.subscription.endpoint);
+      // DNS lookup may run across closing time. Check again immediately before send.
+      if (await suppressIfOutsideShift(row)) continue;
       await webpush.sendNotification({ endpoint: row.subscription.endpoint, keys: { p256dh: row.subscription.p256dh, auth: row.subscription.auth } }, JSON.stringify(buildLocalizedPushPayload(row.notification, row.language)), { TTL: 60 });
     } catch (caught) { error = caught; }
     await finishDelivery(row, error);
