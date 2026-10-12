@@ -67,7 +67,7 @@
 .tableWrap tbody th { min-width: 120px; color: var(--ink); font-weight: 680; }
 .tableWrap td:nth-child(2) { width: 120px; color: var(--ink-soft); }
 .tableWrap td time { display: inline-block; margin: 0 9px 5px 0; color: var(--ink-soft); white-space: nowrap; }
-.sameLocationStats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.sameLocationStats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .sameLocationHead { display: grid; gap: 6px; min-width: 0; }
 .sameLocationTitleRow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 12px; min-width: 0; }
 .sameLocationTitleRow h2 { flex: 1 1 12rem; min-width: 0; margin: 0; color: var(--ink); font-size: 16px; font-weight: 680; letter-spacing: -.025em; overflow-wrap: break-word; hyphens: none; }
@@ -75,7 +75,7 @@
 .sameLocationStats .timing { min-width: 0; }
 .sameLocationStats .timing strong { overflow-wrap: anywhere; }
 .sameLocationTable table { min-width: 760px; }
-.sameLocationTable th, .sameLocationTable td { white-space: nowrap; }
+.sameLocationTable th, .sameLocationTable td { white-space: normal; }
 .sameLocationTable thead th:first-child, .sameLocationTable tbody th:first-child { position: sticky; left: 0; z-index: 1; background: var(--surface); box-shadow: 1px 0 0 var(--line); }
 .reportList { display: grid; gap: 10px; margin: 15px 0 0; padding: 0; list-style: none; }
 .reportItem { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 0; border-top: 1px solid var(--line); }
@@ -128,3 +128,34 @@
   .sameLocationStats { grid-template-columns: 1fr; }
   .tableWrap th, .tableWrap td { padding: 10px 11px; }
 }
+
+.sameLocationRange { margin: 8px 0 0; color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
+.sameLocationRange span { font-weight: 650; margin-right: 6px; }
+.sameLocationSubheading { margin: 18px 0 6px; font-size: 13px; color: var(--ink); }
+.sameLocationOtherOutcomes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0; }
+.sameLocationOtherOutcomes div { display: grid; gap: 6px; padding: 10px 12px; border-radius: 8px; background: var(--hover); }
+.sameLocationOtherOutcomes dt { font-size: 12px; color: var(--ink-soft); }
+.sameLocationOtherOutcomes dd { margin: 0; font-size: 18px; font-weight: 680; }
+.sameLocationPersonMeta { display: block; margin: 4px 0 0; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.5; }
+.sameLocationMobileList { display: none; }
+@media (max-width: 760px) {
+  .sameLocationStats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sameLocationStats > :last-child { grid-column: 1 / -1; }
+  .sameLocationTable { display: none; }
+  .sameLocationMobileList { display: grid; gap: 12px; padding: 0; margin: 14px 0 0; list-style: none; }
+  .sameLocationPersonCard { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; }
+  .sameLocationPersonHead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6px; }
+  .sameLocationPersonHead strong { font-size: 14px; overflow-wrap: anywhere; }
+  .sameLocationPersonHead span { color: var(--muted); font-size: 11px; }
+  .sameLocationPersonStats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0 0; }
+  .sameLocationPersonStats > :last-child { grid-column: 1 / -1; }
+  .sameLocationPersonStats dt { color: var(--muted); font-size: 11px; line-height: 1.4; }
+  .sameLocationPersonStats dd { margin: 4px 0 0; font-size: 18px; font-weight: 680; }
+  .sameLocationPersonOutcomes { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 12px; margin: 12px 0 0; }
+  .sameLocationPersonOutcomes div { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; }
+  .sameLocationPersonOutcomes dt { color: var(--ink-soft); }
+  .sameLocationPersonOutcomes dd { margin: 0; font-weight: 650; }
+}
+
+.sameLocationStats .timing .suppressedRate { font-size: 13px; font-weight: 500; letter-spacing: 0; line-height: 1.5; }
+.sameLocationPersonStats .suppressedRate { font-size: 12px; font-weight: 500; line-height: 1.5; }

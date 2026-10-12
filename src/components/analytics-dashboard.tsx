@@ -27,6 +27,7 @@ import {
   type AnalyticsFilterState,
 } from "./analytics/filters";
 
+import { isSameLocationReporter } from "@/domain/analytics-same-location";
 import { normalizeManagement, type AnalyticsManagement } from "@/domain/analytics-management";
 import { ManagementSummary } from "./analytics/management-summary";
 
@@ -309,7 +310,7 @@ function participantOptions(data: AnalyticsResponse | null) {
 
 const ROLE_OPTIONS = ["PICKER", "TROUBLESHOOTER", "ASSISTANT", "TEAM_LEADER", "MANAGER", "ADMIN"];
 
-function SameLocationFoundSection({ summary, byUser, tr, locale, canExport, downloading, onDownload, roleLabel }: {
+export function SameLocationFoundSection({ summary, byUser, tr, locale, canExport, downloading, onDownload, roleLabel }: {
   summary: SameLocationFoundSummary | null | undefined;
   byUser: SameLocationFoundUser[];
   tr: Translate;
@@ -320,9 +321,15 @@ function SameLocationFoundSection({ summary, byUser, tr, locale, canExport, down
   roleLabel: (role: string) => string;
 }) {
   if (!summary && !byUser.length) return null;
-  const range = summary && summary.from && summary.to ? rangeLabel(summary.from, summary.to, locale, tr) : "";
-  // Alphabetical by display name: operational signal only, never a ranking by score.
-  const sortedByUser = [...byUser].sort((a, b) => a.displayName.localeCompare(b.displayName));
+  const range = summary?.from && summary.to ? rangeLabel(summary.from, summary.to, locale, tr) : "—";
+  const formatCount = (value: number) => new Intl.NumberFormat(locale).format(value);
+  const formatRate = (value: number | null) => value === null ? tr("analyticsSameLocationCountsOnly") : new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 1 }).format(value / 100);
+  const sortedByUser = byUser.filter((row) => isSameLocationReporter(row.role)).sort((a, b) => a.displayName.localeCompare(b.displayName, locale));
+  const otherOutcomes: Array<{ key: keyof SameLocationFoundCounts; label: MessageKey }> = [
+    { key: "FOUND", label: "analyticsSameLocationElsewhere" },
+    { key: "NOT_FOUND", label: "analyticsResolutionNotFound" },
+    { key: "WRONG_LOCATION", label: "analyticsResolutionWrongLocation" },
+  ];
   return <section className={styles.card} aria-labelledby="analytics-same-location-title">
     <div className={styles.sameLocationHead}>
       <div className={styles.sameLocationTitleRow}>
@@ -330,16 +337,41 @@ function SameLocationFoundSection({ summary, byUser, tr, locale, canExport, down
         {canExport && <div className={styles.reportActions}><button className={styles.exportButton} type="button" onClick={() => onDownload("same-location-found")} disabled={Boolean(downloading)}>{tr("analyticsSameLocationExport")}</button></div>}
       </div>
       <p className={styles.subtle}>{tr("analyticsSameLocationDescription")}</p>
+      <p className={styles.subtle}>{tr("analyticsSameLocationScope")}</p>
+      <p className={styles.sameLocationRange}><span>{tr("analyticsSameLocationDateRange")}</span> {range}</p>
     </div>
-    {summary && <div className={`${styles.timingGrid} ${styles.sameLocationStats}`}>
-      <div className={styles.timing}><span>{tr("analyticsSameLocationEligible")}</span><strong>{summary.numerator} / {summary.denominator}</strong></div>
-      <div className={styles.timing}><span>{tr("analyticsSameLocationRate")}</span><strong>{summary.percentage === null ? tr("analyticsSameLocationRateHidden") : `${summary.percentage}%`}</strong></div>
-      <div className={styles.timing}><span>{tr("analyticsSameLocationDateRange")}</span><strong>{range || "—"}</strong></div>
-      <div className={styles.timing}><span>{tr("analyticsSameLocationOutcomes")}</span><strong>{summary.counts.FOUND_AT_ORIGINAL} / {summary.counts.FOUND} / {summary.counts.NOT_FOUND} / {summary.counts.WRONG_LOCATION}</strong></div>
-    </div>}
-    {sortedByUser.length ? <div className={`${styles.tableWrap} ${styles.sameLocationTable}`}><table><thead><tr><th scope="col">{tr("analyticsSameLocationReporter")}</th><th scope="col">{tr("analyticsRoleFilter")}</th><th scope="col">{tr("analyticsSameLocationEligible")}</th><th scope="col">{tr("analyticsSameLocationRate")}</th><th scope="col">{tr("analyticsSameLocationDateRange")}</th><th scope="col">{tr("analyticsSameLocationOutcomeCounts")}</th></tr></thead><tbody>
-      {sortedByUser.map((row) => <tr key={row.userId}><th scope="row">{row.displayName}</th><td>{roleLabel(row.role)}</td><td>{row.numerator} / {row.denominator}</td><td>{row.percentage === null ? tr("analyticsSameLocationCountsOnly") : `${row.percentage}%`}</td><td>{row.from && row.to ? rangeLabel(row.from, row.to, locale, tr) : "—"}</td><td>{row.counts.FOUND_AT_ORIGINAL} / {row.counts.FOUND} / {row.counts.NOT_FOUND} / {row.counts.WRONG_LOCATION}</td></tr>)}
-    </tbody></table></div> : <p className={styles.empty}>{tr("analyticsNoData")}</p>}
+    {summary && <>
+      <div className={`${styles.timingGrid} ${styles.sameLocationStats}`}>
+        <div className={styles.timing}><span>{tr("analyticsSameLocationFoundCount")}</span><strong>{formatCount(summary.numerator)}</strong></div>
+        <div className={styles.timing}><span>{tr("analyticsSameLocationEligible")}</span><strong>{formatCount(summary.denominator)}</strong></div>
+        <div className={styles.timing}><span>{tr("analyticsSameLocationRate")}</span><strong className={summary.percentage === null ? styles.suppressedRate : undefined}>{formatRate(summary.percentage)}</strong></div>
+      </div>
+      <p className={styles.subtle}>{tr("analyticsSameLocationRateNote")}</p>
+      <h3 className={styles.sameLocationSubheading}>{tr("analyticsSameLocationOutcomes")}</h3>
+      <dl className={styles.sameLocationOtherOutcomes}>{otherOutcomes.map(({ key, label }) => <div key={key}><dt>{tr(label)}</dt><dd>{formatCount(summary.counts[key])}</dd></div>)}</dl>
+    </>}
+    <h3 className={styles.sameLocationSubheading}>{tr("analyticsSameLocationByReporter")}</h3>
+    <p className={styles.subtle}>{tr("analyticsSameLocationReporterNote")}</p>
+    {sortedByUser.length ? <>
+      <div className={`${styles.tableWrap} ${styles.sameLocationTable}`}><table><thead><tr>
+        <th scope="col">{tr("analyticsSameLocationReporter")}</th><th scope="col">{tr("analyticsSameLocationEligible")}</th><th scope="col">{tr("analyticsSameLocationFoundCount")}</th><th scope="col">{tr("analyticsSameLocationRate")}</th>
+        {otherOutcomes.map(({ key, label }) => <th scope="col" key={key}>{tr(label)}</th>)}
+      </tr></thead><tbody>{sortedByUser.map((row) => <tr key={row.userId}>
+        <th scope="row">{row.displayName}<span className={styles.sameLocationPersonMeta}>{roleLabel(row.role)}</span><span className={styles.sameLocationPersonMeta}>{rangeLabel(row.from, row.to, locale, tr)}</span></th>
+        <td>{formatCount(row.denominator)}</td><td>{formatCount(row.numerator)}</td><td>{formatRate(row.percentage)}</td>
+        {otherOutcomes.map(({ key }) => <td key={key}>{formatCount(row.counts[key])}</td>)}
+      </tr>)}</tbody></table></div>
+      <ul className={styles.sameLocationMobileList}>{sortedByUser.map((row) => <li className={styles.sameLocationPersonCard} key={row.userId}>
+        <div className={styles.sameLocationPersonHead}><strong>{row.displayName}</strong><span>{roleLabel(row.role)}</span></div>
+        <p className={styles.sameLocationPersonMeta}>{rangeLabel(row.from, row.to, locale, tr)}</p>
+        <dl className={styles.sameLocationPersonStats}>
+          <div><dt>{tr("analyticsSameLocationEligible")}</dt><dd>{formatCount(row.denominator)}</dd></div>
+          <div><dt>{tr("analyticsSameLocationFoundCount")}</dt><dd>{formatCount(row.numerator)}</dd></div>
+          <div><dt>{tr("analyticsSameLocationRate")}</dt><dd className={row.percentage === null ? styles.suppressedRate : undefined}>{formatRate(row.percentage)}</dd></div>
+        </dl>
+        <dl className={styles.sameLocationPersonOutcomes}>{otherOutcomes.map(({ key, label }) => <div key={key}><dt>{tr(label)}</dt><dd>{formatCount(row.counts[key])}</dd></div>)}</dl>
+      </li>)}</ul>
+    </> : <p className={styles.empty}>{tr("analyticsNoData")}</p>}
   </section>;
 }
 

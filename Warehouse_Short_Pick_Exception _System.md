@@ -1991,6 +1991,8 @@ Do not automatically rank workers.
 
 ### 62A. Same-location-found metric and per-user analytics (added 2026-09-28)
 
+Amended 2026-10-12: this signal includes reporting staff (Picker, Troubleshooter, Assistant and Team Leader). Reports attributed to Admin or Manager accounts are excluded from the overall counts, per-reporter breakdown and CSV/PDF exports. Eligibility uses the reporting account’s current role; the checker may hold any role. Present clearly labeled counts and outcomes, with reporter cards on phones and a compact table on desktop.
+
 Denominator: unique lines reported in the chosen date range whose final conclusive check outcome exists. Numerator: those lines whose latest conclusive outcome is `FOUND_AT_ORIGINAL`. `FOUND` elsewhere, `NOT FOUND`, and `WRONG LOCATION` count in the denominator; unfinished lines, `OTHER`, and cancelled lines without a conclusive check are excluded. Repeat checks never double-count: the latest conclusive outcome per line wins, including a later authorized correction.
 
 Display: always show numerator, denominator, date range, and per-outcome counts for every user. Show a percentage only when the denominator is 20 or more; below that, suppress the percentage (counts only). No worker rankings, disciplinary scoring, or league tables — this is an operational signal, not a performance score. Per-user analytics add a reliable user-directory selector and per-user summaries with CSV/PDF export parity.

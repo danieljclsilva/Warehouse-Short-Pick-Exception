@@ -29,6 +29,8 @@ describeDatabase("same-location-found analytics against PostgreSQL", () => {
   let pickerOneId = "";
   let pickerTwoId = "";
   let configId = "";
+  let adminId = "";
+  let managerId = "";
 
   async function makeUser(role: Role, label: string) {
     const [user] = await getDb().insert(users).values({ identifier: `slf-${suffix}-${label}`, displayName: `SLF ${label}`, pinHash: await hashPin("123456"), role, permissions: [...defaultPermissions(role), "VIEW_ANALYTICS", "EXPORT_ANALYTICS"] }).returning();
@@ -81,6 +83,16 @@ describeDatabase("same-location-found analytics against PostgreSQL", () => {
     // picker two: one WRONG_LOCATION for the role-filter contrast (both are PICKERs; role=PICKER keeps both).
     const l6 = await reportLine(`972${now}06`, pickerTwo.id, inRange);
     await completeTask(l6, "WRONG_LOCATION", new Date(now - 8 * 60_000), leader.id);
+    const admin = await makeUser("ADMIN", "excluded-admin");
+    const manager = await makeUser("MANAGER", "excluded-manager");
+    adminId = admin.id; managerId = manager.id;
+    // More than 20 excluded reports must not inflate the staff percentage sample.
+    for (let i = 0; i < 21; i++) {
+      const reporter = i % 2 ? admin.id : manager.id;
+      const id = await reportLine(`973${now}${String(i).padStart(2, "0")}`, reporter, inRange);
+      await completeTask(id, "FOUND_AT_ORIGINAL", new Date(now - 8 * 60_000), leader.id);
+    }
+
   });
 
   afterAll(async () => {
@@ -128,6 +140,25 @@ describeDatabase("same-location-found analytics against PostgreSQL", () => {
     for (const row of body.kpis.userDirectory) expect(row.role).toBe("PICKER");
     const tl = await analyticsRoute(request(`/api/analytics?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&role=TEAM_LEADER`, "GET", leaderCookie));
     expect((await tl.json()).kpis.sameLocationFoundByUser.find((row: { userId: string }) => row.userId === pickerOneId)).toBeUndefined();
+  });
+
+  it("excludes Admin and Manager reporters from totals, per-user rows and both CSV exports", async () => {
+    const { from, to } = window();
+    const query = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&source=PICKER_REPORT`;
+    const response = await analyticsRoute(request(`/api/analytics?${query}`, "GET", leaderCookie));
+    const data = await response.json();
+    expect(data.kpis.sameLocationFound).toMatchObject({ numerator: 1, denominator: 3, percentage: null });
+    expect(data.kpis.sameLocationFoundByUser.map((row: { userId: string }) => row.userId)).not.toContain(adminId);
+    expect(data.kpis.sameLocationFoundByUser.map((row: { userId: string }) => row.userId)).not.toContain(managerId);
+    const perUser = await csvRoute(request(`/api/analytics/export/csv?dataset=same-location-found&${query}`, "GET", leaderCookie));
+    const csv = await perUser.text();
+    expect(csv).not.toContain(adminId); expect(csv).not.toContain(managerId);
+    const overall = await csvRoute(request(`/api/analytics/export/csv?dataset=same-location-found-overall&${query}`, "GET", leaderCookie));
+    expect(await overall.text()).toContain("1,3,,1,0,1,1,");
+    const filtered = await analyticsRoute(request(`/api/analytics?${query}&pickerUserId=${adminId}`, "GET", leaderCookie));
+    expect((await filtered.json()).kpis.sameLocationFound).toMatchObject({ numerator: 0, denominator: 0 });
+    const roleFiltered = await analyticsRoute(request(`/api/analytics?${query}&role=MANAGER`, "GET", leaderCookie));
+    expect((await roleFiltered.json()).kpis.sameLocationFoundByUser).toEqual([]);
   });
 
   it("keeps CSV and PDF parity with the dashboard counts", async () => {

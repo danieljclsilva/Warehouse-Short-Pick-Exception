@@ -93,4 +93,14 @@ describe("same-location-found metric", () => {
     expect(overall.split("\r\n")[0]).toBe("numerator_found_at_original,denominator_eligible_lines,percentage,count_found_at_original,count_found,count_not_found,count_wrong_location,from,to");
     expect(overall).toContain("1,2,,1,1,0,0,");
   });
+  it("does not serialize administrative reporters in the per-user CSV", () => {
+    const row = { userId: "staff", displayName: "Staff", role: "PICKER", numerator: 1, denominator: 2,
+      percentage: null, percentageSuppressed: true, from: FROM, to: TO,
+      counts: { FOUND_AT_ORIGINAL: 1, FOUND: 1, NOT_FOUND: 0, WRONG_LOCATION: 0 } };
+    const csv = sameLocationFoundCsv([row, { ...row, userId: "excluded-admin", role: "ADMIN" }, { ...row, userId: "excluded-manager", role: "MANAGER" }]);
+    expect(csv).toContain("staff,Staff,PICKER");
+    expect(csv).not.toContain("excluded-admin");
+    expect(csv).not.toContain("excluded-manager");
+  });
+
 });

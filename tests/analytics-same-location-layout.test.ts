@@ -54,11 +54,13 @@ describe("same-location-found phone layout (360px)", () => {
     expect(value).toMatch(/overflow-wrap:\s*anywhere/);
   });
 
-  it("per-reporter table scrolls horizontally with readable columns", () => {
+  it("uses readable desktop columns and cards on phones", () => {
     const table = ruleBody("\\.sameLocationTable table");
     expect(table).toMatch(/min-width:\s*\d+px/);
     const cells = ruleBody("\\.sameLocationTable th,\\s*\\.sameLocationTable td");
-    expect(cells).toMatch(/white-space:\s*nowrap/);
+    expect(cells).toMatch(/white-space:\s*normal/);
+    expect(css).toMatch(/\.sameLocationTable\s*\{[^}]*display:\s*none/);
+    expect(css).toMatch(/\.sameLocationMobileList\s*\{[^}]*display:\s*grid/);
     expect(css).toMatch(/\.sameLocationTable tbody th:first-child[\s\S]*?position:\s*sticky/);
   });
 

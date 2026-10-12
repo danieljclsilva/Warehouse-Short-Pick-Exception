@@ -1,3 +1,4 @@
+import { isSameLocationReporter } from "@/domain/analytics-same-location";
 import type { AnalyticsManagement, PeriodTotals } from "@/domain/analytics-management";
 import PDFDocument from "pdfkit";
 import { join } from "node:path";
@@ -344,39 +345,46 @@ function drawBarChart(doc: PDFKit.PDFDocument, title: string, values: Array<[str
   doc.y = chartY + Math.min(values.length, 8) * 13 + 12;
 }
 
-type SameLocationUserRow = { displayName?: unknown; numerator?: unknown; denominator?: unknown; percentage?: unknown; counts?: Record<string, unknown> };
+type SameLocationUserRow = { role?: unknown; from?: unknown; to?: unknown; displayName?: unknown; numerator?: unknown; denominator?: unknown; percentage?: unknown; counts?: Record<string, unknown> };
 
 function drawSameLocationGrid(doc: PDFKit.PDFDocument, value: unknown, users: unknown, labels: PdfLabels, locale: Locale) {
   if (!value || typeof value !== "object") return;
+  const tr = (key: MessageKey, values?: Record<string, string>) => translate(getMessages(locale).messages, key, values);
   const summary = value as { numerator?: unknown; denominator?: unknown; percentage?: unknown; counts?: Record<string, unknown>; from?: unknown; to?: unknown };
-  const counts = (summary.counts ?? {}) as Record<string, unknown>;
-  const numerator = asNumber(summary.numerator);
-  const denominator = asNumber(summary.denominator);
-  const rate = typeof summary.percentage === "number" ? `${(summary.percentage as number).toLocaleString(intlLocales[locale])}%` : null;
-  drawSection(doc, labels.analyticsSameLocationTitle, labels.analyticsSameLocationDescription);
-  drawKeyValueGrid(doc, [
-    [labels.analyticsSameLocationEligible, `${numerator.toLocaleString(intlLocales[locale])} / ${denominator.toLocaleString(intlLocales[locale])}`],
-    [labels.analyticsSameLocationRate, rate ?? labels.analyticsSameLocationRateHidden],
+  const counts = summary.counts ?? {};
+  const count = (value: unknown) => asNumber(value).toLocaleString(intlLocales[locale]);
+  const rate = (value: unknown) => typeof value === "number" ? new Intl.NumberFormat(intlLocales[locale], { style: "percent", maximumFractionDigits: 1 }).format(value / 100) : tr("analyticsSameLocationCountsOnly");
+  const range = (from: unknown, to: unknown) => {
+    const end = new Date(asString(to));
+    return tr("analyticsSameLocationDateRangeValue", { from: shortDate(from, locale), to: shortDate(Number.isFinite(end.valueOf()) ? new Date(end.valueOf() - 1).toISOString() : to, locale) });
+  };
+  if (doc.y > PAGE_HEIGHT - MARGIN - FOOTER_HEIGHT - 300) doc.addPage();
+  drawSection(doc, tr("analyticsSameLocationTitle"), `${tr("analyticsSameLocationDescription")} ${tr("analyticsSameLocationScope")}`);
+  doc.fillColor(MUTED).font(REPORT_REGULAR).fontSize(8).text(range(summary.from, summary.to));
+  doc.moveDown(.6);
+  drawTable(doc, [{ key: "metric", label: tr("managementMeasure"), width: 280 }, { key: "value", label: tr("managementValue"), width: CONTENT_WIDTH - 280 }], [
+    { metric: tr("analyticsSameLocationFoundCount"), value: count(summary.numerator) },
+    { metric: tr("analyticsSameLocationEligible"), value: count(summary.denominator) },
+    { metric: tr("analyticsSameLocationRate"), value: rate(summary.percentage) },
+    { metric: tr("analyticsSameLocationElsewhere"), value: count(counts.FOUND) },
+    { metric: labels.analyticsNotFound, value: count(counts.NOT_FOUND) },
+    { metric: labels.analyticsWrongLocation, value: count(counts.WRONG_LOCATION) },
   ]);
-  doc.fillColor(MUTED).font(REPORT_REGULAR).fontSize(8.5).text(`${shortDate(summary.from, locale)} - ${shortDate(summary.to, locale)}`);
-  doc.moveDown(0.4);
-  drawBarChart(doc, labels.analyticsSameLocationTitle, [[labels.analyticsResolutionFoundAtOriginal, asNumber(counts["FOUND_AT_ORIGINAL"])], [labels.analyticsFound, asNumber(counts["FOUND"])], [labels.analyticsNotFound, asNumber(counts["NOT_FOUND"])], [labels.analyticsWrongLocation, asNumber(counts["WRONG_LOCATION"])]], locale);
   const rows = (Array.isArray(users) ? users : []) as Array<SameLocationUserRow>;
-  if (!rows.length) return;
-  if (doc.y > PAGE_HEIGHT - MARGIN - FOOTER_HEIGHT - 120) doc.addPage();
+  const staff = rows.filter((row) => typeof row.role !== "string" || isSameLocationReporter(row.role));
+  if (!staff.length) return;
+  if (doc.y > PAGE_HEIGHT - MARGIN - FOOTER_HEIGHT - 240) doc.addPage();
+  drawSection(doc, tr("analyticsSameLocationByReporter"), tr("analyticsSameLocationReporterNote"));
   drawTable(doc, [
-    { key: "reporter", label: labels.analyticsSameLocationReporter, width: 190 },
-    { key: "eligible", label: labels.analyticsSameLocationEligible, width: 130 },
-    { key: "rate", label: labels.analyticsSameLocationRate, width: 90 },
-    { key: "counts", label: labels.analyticsSameLocationOutcomeCounts, width: CONTENT_WIDTH - 410 },
-  ], rows.slice(0, MAX_RENDER_ROWS).map((row) => {
-    const rowCounts = (row.counts ?? {}) as Record<string, unknown>;
-    return {
-      reporter: asString(row.displayName),
-      eligible: `${asNumber(row.numerator).toLocaleString(intlLocales[locale])} / ${asNumber(row.denominator).toLocaleString(intlLocales[locale])}`,
-      rate: typeof row.percentage === "number" ? `${(row.percentage as number).toLocaleString(intlLocales[locale])}%` : labels.analyticsSameLocationCountsOnly,
-      counts: `${asNumber(rowCounts["FOUND_AT_ORIGINAL"])} / ${asNumber(rowCounts["FOUND"])} / ${asNumber(rowCounts["NOT_FOUND"])} / ${asNumber(rowCounts["WRONG_LOCATION"])}`,
-    };
+    { key: "reporter", label: tr("analyticsSameLocationReporter"), width: 150 },
+    { key: "checked", label: tr("analyticsSameLocationEligible"), width: 55 },
+    { key: "original", label: tr("analyticsSameLocationFoundCount"), width: 65 },
+    { key: "rate", label: tr("analyticsSameLocationRate"), width: 80 },
+    { key: "other", label: tr("analyticsSameLocationOutcomes"), width: CONTENT_WIDTH - 350 },
+  ], staff.slice(0, MAX_RENDER_ROWS).map((row) => {
+    const rowCounts = row.counts ?? {};
+    return { reporter: `${asString(row.displayName)}\n${range(row.from ?? summary.from, row.to ?? summary.to)}`, checked: count(row.denominator), original: count(row.numerator), rate: rate(row.percentage),
+      other: `${tr("analyticsSameLocationElsewhere")}: ${count(rowCounts.FOUND)}\n${labels.analyticsNotFound}: ${count(rowCounts.NOT_FOUND)}\n${labels.analyticsWrongLocation}: ${count(rowCounts.WRONG_LOCATION)}` };
   }));
 }
 

@@ -8,6 +8,7 @@ import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/case-errors";
 import { normalizeConfigurationValues } from "@/server/configuration";
 import { workingElapsedMilliseconds, workingHoursFromConfiguration } from "@/domain/working-hours";
+import { SAME_LOCATION_REPORTER_ROLES, isSameLocationReporter } from "@/domain/analytics-same-location";
 import { periodChange, previousReportingPeriod, type AnalyticsManagement, type PeriodTotals } from "@/domain/analytics-management";
 import type { WorkingHours } from "@/domain/working-hours";
 
@@ -581,10 +582,11 @@ async function queryAnalytics(filters: AnalyticsFilters): Promise<AnalyticsData>
   const toExclusive = filters.toExclusive ?? filters.to;
   // Same-location-found runs over its own bounded line+task read so the metric stays
   // exact even when the dashboard row caps truncate the visible tables.
-  const metricLineWhere = and(caseWhere, filters.location ? eq(shortPickLines.originalLocation, filters.location.trim().toUpperCase()) : undefined, filters.sku ? eq(shortPickLines.sku, filters.sku.trim().toUpperCase()) : undefined, filters.resolution ? resolutionPredicate(db, filters.resolution) : undefined, gte(shortPickLines.reportedAt, filters.from), lt(shortPickLines.reportedAt, toExclusive));
+  const metricLineWhere = and(caseWhere, inArray(users.role, [...SAME_LOCATION_REPORTER_ROLES]), filters.location ? eq(shortPickLines.originalLocation, filters.location.trim().toUpperCase()) : undefined, filters.sku ? eq(shortPickLines.sku, filters.sku.trim().toUpperCase()) : undefined, filters.resolution ? resolutionPredicate(db, filters.resolution) : undefined, gte(shortPickLines.reportedAt, filters.from), lt(shortPickLines.reportedAt, toExclusive));
   const metricLinesRaw = await db.select({ id: shortPickLines.id, reportedByUserId: shortPickLines.reportedByUserId, reportedAt: shortPickLines.reportedAt }).from(shortPickLines)
     .innerJoin(orderCases, eq(shortPickLines.caseId, orderCases.id))
     .innerJoin(configurationVersions, eq(orderCases.configurationVersionId, configurationVersions.id))
+    .innerJoin(users, eq(shortPickLines.reportedByUserId, users.id))
     .where(metricLineWhere).limit(ANALYTICS_LIMITS.maxLines);
   const metricLineIds = metricLinesRaw.map((line) => line.id);
   // completionCode is a DB enum: read it as text so FOUND_AT_ORIGINAL survives whether
@@ -596,15 +598,13 @@ async function queryAnalytics(filters: AnalyticsFilters): Promise<AnalyticsData>
   const reporterById = new Map(reporterRows.map((row) => [row.id, row]));
   const sameLocationFoundByUser: SameLocationFoundUser[] = [...metric.byReporter.entries()]
     .map(([userId, outcomes]) => ({ userId, displayName: reporterById.get(userId)?.displayName ?? userId, role: reporterById.get(userId)?.role ?? "PICKER", ...summarizeOutcomes(outcomes, filters.from, toExclusive) }))
-    .filter((entry) => !filters.role || entry.role === filters.role)
+    .filter((entry) => isSameLocationReporter(entry.role) && (!filters.role || entry.role === filters.role))
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
   const directoryRows = await db.select({ id: users.id, displayName: users.displayName, role: users.role }).from(users).orderBy(asc(users.displayName)).limit(500);
   const userDirectory: AnalyticsUserDirectoryEntry[] = directoryRows
     .filter((row) => !filters.role || row.role === filters.role)
     .map((row) => ({ id: row.id, displayName: row.displayName, role: row.role }));
-  const sameLocationFound = filters.role
-    ? summarizeOutcomes(sameLocationFoundByUser.flatMap((entry) => Object.entries(entry.counts).flatMap(([code, count]) => Array<ConclusiveCheckOutcome>(count).fill(code as ConclusiveCheckOutcome))), filters.from, toExclusive)
-    : metric.overall;
+  const sameLocationFound = summarizeOutcomes(sameLocationFoundByUser.flatMap((entry) => Object.entries(entry.counts).flatMap(([code, count]) => Array<ConclusiveCheckOutcome>(count).fill(code as ConclusiveCheckOutcome))), filters.from, toExclusive);
   const partialMetrics = new Set<string>();
   if (casesTruncated) for (const metric of ["casesByPeriod", "casesOverThreshold", "manualCases", "reopenedCases", "casesByConfigurationVersion"]) partialMetrics.add(metric);
   if (linesTruncated) for (const metric of ["linesByLocation", "linesBySku", "foundDuringCheck", "notFound", "wrongLocation", "retrieved", "medianReportToCheckClaimedSeconds", "medianReportToLocationFoundSeconds", "medianReportToRetrievalSeconds", "medianReportToResolutionSeconds"]) partialMetrics.add(metric);
@@ -688,7 +688,7 @@ export function analyticsEventCsv(rows: AnalyticsEventRow[]): string {
 /** Per-user same-location-found CSV: one row per reporting picker with identical counts to the dashboard. */
 export function sameLocationFoundCsv(summary: SameLocationFoundUser[]): string {
   const headers = ["user_id", "display_name", "role", "numerator_found_at_original", "denominator_eligible_lines", "percentage", "count_found_at_original", "count_found", "count_not_found", "count_wrong_location", "from", "to"];
-  const body = summary.map((row) => [row.userId, row.displayName, row.role, row.numerator, row.denominator, row.percentage ?? "", row.counts.FOUND_AT_ORIGINAL, row.counts.FOUND, row.counts.NOT_FOUND, row.counts.WRONG_LOCATION, row.from, row.to]);
+  const body = summary.filter((row) => isSameLocationReporter(row.role)).map((row) => [row.userId, row.displayName, row.role, row.numerator, row.denominator, row.percentage ?? "", row.counts.FOUND_AT_ORIGINAL, row.counts.FOUND, row.counts.NOT_FOUND, row.counts.WRONG_LOCATION, row.from, row.to]);
   return [headers, ...body].map((line) => line.map(csvCell).join(",")).join("\r\n") + "\r\n";
 }
 
