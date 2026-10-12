@@ -1,3 +1,10 @@
+## Working-hours case timing — 2026-10-12 (implemented and verified locally)
+
+- OMP implemented configurable Monday–Friday 08:00–17:00 Europe/Amsterdam defaults, with immutable case configuration snapshots. Shared working elapsed time now governs case displays, attention/global threshold counts, age monitoring and report medians/CSV/PDF wording. Audit timestamps and calendar filters remain intact.
+- Independent review repaired custom Sunday DST repeat/skip windows, added a bounded historical-window cache, and corrected report age-band labels to explicit working hours. Saved schedule, invalid-input handling, legacy defaults, audit and per-case snapshot preservation are verified.
+- Verification: **431 tests / 62 files** pass on a freshly migrated disposable database; typecheck, lint, production build, schema consistency, critical HTTP A–F and security acceptance pass. Isolated Chrome desktop/mobile QA verifies configuration save/reload, validation, snapshot preservation and closed weekend elapsed time without runtime errors or settled-layout overflow.
+- No schema/migration or environment variable change. Commit, push and production deployment authorized by the user on 2026-10-12 after verification. No holidays, overnight/multiple windows or timezone selection; reopen timing retains the existing semantics. Phase 8 operational/device acceptance remains open. Details: [WORKING_HOURS_IMPLEMENTATION.md](./WORKING_HOURS_IMPLEMENTATION.md).
+
 ## Troubleshooter workflow follow-up — 2026-10-11
 
 - OMP implemented Picker parity plus default REPORT_NEW_LOCATION and RECORD_REPLENISHMENT. Active My Work includes original-picker or current-resolver cases once; server visibility and message permissions remain separate. Existing custom grants/revocations are preserved; managers should review existing Troubleshooter replenishment grants.

@@ -2,7 +2,9 @@
 
 import type { ReactNode, RefObject } from "react";
 import type { MessageKey } from "@/i18n/messages";
+
 import { CaseTimeline, type CaseTimelineEvent, type CaseTimelineMessage } from "@/components/case-timeline";
+import { elapsedWorkingMinutes, type WorkingHours } from "@/domain/working-hours";
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
 
@@ -85,11 +87,10 @@ export function CaseDetailView({
   );
 }
 
-export function formatCaseElapsedTime(createdAt?: string) {
+export function formatCaseElapsedTime(createdAt?: string, resolvedAt?: string | null, workingHours?: WorkingHours, now?: number) {
   if (!createdAt) return "—";
-  const start = new Date(createdAt).getTime();
-  const end = Date.now();
-  const minutes = Math.max(0, Math.floor((end - start) / 60_000));
+  const end = resolvedAt ? new Date(resolvedAt).getTime() : (now ?? Date.now());
+  const minutes = elapsedWorkingMinutes(createdAt, end, workingHours, now ?? Date.now());
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;

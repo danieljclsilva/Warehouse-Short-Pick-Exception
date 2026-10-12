@@ -6,6 +6,9 @@ import { caseEvents, checkTasks, configurationVersions, orderCases, shortPickLin
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/case-errors";
+import { normalizeConfigurationValues } from "@/server/configuration";
+import { workingElapsedMilliseconds, workingHoursFromConfiguration } from "@/domain/working-hours";
+import type { WorkingHours } from "@/domain/working-hours";
 
 /** Dashboard and export limits. They protect the transactional database from unbounded analytical reads. */
 export const ANALYTICS_LIMITS = {
@@ -105,6 +108,8 @@ export type AnalyticsCaseRow = {
   configurationVersion: { id: string; version: number };
   criticalThresholdMinutes: number;
   overThreshold: boolean;
+  elapsedWorkingSeconds: number;
+  workingHours: WorkingHours;
   createdAt: Date;
   stagedAt: Date | null;
   resolvedAt: Date | null;
@@ -207,9 +212,9 @@ export type AnalyticsData = {
 
 type EventWithActor = EventRow & { actor: { id: string; displayName: string } | null };
 
-function dateSeconds(start: Date | null | undefined, end: Date | null | undefined): number | null {
+function workingSeconds(start: Date | null | undefined, end: Date | null | undefined, schedule: WorkingHours): number | null {
   if (!start || !end || end.getTime() < start.getTime()) return null;
-  return (end.getTime() - start.getTime()) / 1_000;
+  return workingElapsedMilliseconds(start, end, schedule) / 1_000;
 }
 
 function median(values: number[]): number | null {
@@ -232,12 +237,6 @@ function periodKey(date: Date, kind: "day" | "week" | "month") {
     value.setUTCDate(value.getUTCDate() - day + 1);
   }
   return value.toISOString().slice(0, 10);
-}
-
-function thresholdFor(values: unknown): number {
-  if (!values || typeof values !== "object") return 0;
-  const value = (values as Record<string, unknown>).CRITICAL_THRESHOLD_MINUTES;
-  return typeof value === "number" && Number.isFinite(value) ? value : Number(value) || 0;
 }
 
 function resolutionPredicate(db: Db, code: string) {
@@ -396,14 +395,18 @@ async function queryAnalytics(filters: AnalyticsFilters): Promise<AnalyticsData>
   for (const line of linesRaw) { participantIds.push(line.reportedByUserId); for (const task of tasksByLine.get(line.id) ?? []) { if (task.claimedByUserId) participantIds.push(task.claimedByUserId); if (task.assignedToUserId) participantIds.push(task.assignedToUserId); } if (line.retrievalResponsibleUserId) participantIds.push(line.retrievalResponsibleUserId); }
   const people = await loadUsers(db, participantIds);
   const caseRows: AnalyticsCaseRow[] = caseRowsRaw.map((row) => {
-    const thresholdMinutes = thresholdFor(row.config.values);
+    const normalized = normalizeConfigurationValues(row.config.values);
+    const schedule = workingHoursFromConfiguration(normalized);
+    const thresholdMinutes = normalized.CRITICAL_THRESHOLD_MINUTES;
     const end = row.case.resolvedAt ?? new Date();
+    const elapsedWorkingSeconds = workingElapsedMilliseconds(row.case.createdAt, end, schedule) / 1_000;
     return { id: row.case.id, orderNumber: row.case.orderNumber, phase: row.case.phase, physicalState: row.case.physicalState,
       physicalLocation: row.case.physicalLocation, source: row.case.source, manualReason: row.case.manualReason,
       picker: row.pickerId ? { id: row.pickerId, displayName: row.pickerName! } : null,
       responsible: row.responsibleId ? { id: row.responsibleId, displayName: row.responsibleName! } : null,
       configurationVersion: { id: row.config.id, version: row.config.version }, criticalThresholdMinutes: thresholdMinutes,
-      overThreshold: thresholdMinutes > 0 && (end.getTime() - row.case.createdAt.getTime()) / 60_000 > thresholdMinutes,
+      overThreshold: thresholdMinutes > 0 && elapsedWorkingSeconds / 60 > thresholdMinutes,
+      elapsedWorkingSeconds, workingHours: schedule,
       createdAt: row.case.createdAt, stagedAt: row.case.stagedAt, resolvedAt: row.case.resolvedAt, reopenedAt: row.case.reopenedAt,
       lineCount: linesRaw.filter((line) => line.caseId === row.case.id).length };
   });
@@ -434,13 +437,19 @@ async function queryAnalytics(filters: AnalyticsFilters): Promise<AnalyticsData>
   const eventsForLine = (id: string) => eventsByLine.get(id) ?? [];
   const firstEvent = (id: string, types: string[]) => eventsForLine(id).find((event) => types.includes(event.eventType))?.createdAt ?? null;
   const claimedDurations: number[] = [], foundDurations: number[] = [], retrievalDurations: number[] = [], resolutionDurations: number[] = [];
+  const scheduleByCase = new Map(caseRows.map((row) => [row.id, row.workingHours]));
   for (const line of lineRows) {
-    claimedDurations.push(...(function () { const value = dateSeconds(line.reportedAt, firstEvent(line.id, ["CHECK_CLAIMED", "CHECK_ASSIGNED"])); return value === null ? [] : [value]; })());
-    foundDurations.push(...(function () { const value = dateSeconds(line.reportedAt, firstEvent(line.id, ["NEW_LOCATION_REPORTED"])); return value === null ? [] : [value]; })());
-    retrievalDurations.push(...(function () { const value = dateSeconds(line.reportedAt, firstEvent(line.id, ["RETRIEVAL_CONFIRMED"])); return value === null ? [] : [value]; })());
+    const schedule = scheduleByCase.get(line.caseId) ?? workingHoursFromConfiguration(null);
+    const claimValue = workingSeconds(line.reportedAt, firstEvent(line.id, ["CHECK_CLAIMED", "CHECK_ASSIGNED"]), schedule);
+    if (claimValue !== null) claimedDurations.push(claimValue);
+    const foundValue = workingSeconds(line.reportedAt, firstEvent(line.id, ["NEW_LOCATION_REPORTED"]), schedule);
+    if (foundValue !== null) foundDurations.push(foundValue);
+    const retrievalValue = workingSeconds(line.reportedAt, firstEvent(line.id, ["RETRIEVAL_CONFIRMED"]), schedule);
+    if (retrievalValue !== null) retrievalDurations.push(retrievalValue);
     // A check finding stock is an intermediate location event. Resolution is the
     // line's terminal timestamp, which also covers administrative resolution.
-    resolutionDurations.push(...(function () { const value = dateSeconds(line.reportedAt, line.resolvedAt); return value === null ? [] : [value]; })());
+    const resolutionValue = workingSeconds(line.reportedAt, line.resolvedAt, schedule);
+    if (resolutionValue !== null) resolutionDurations.push(resolutionValue);
   }
   const codeLines = new Map<string, Set<string>>();
   for (const task of tasksRaw) {
@@ -559,11 +568,11 @@ export function csvCell(value: unknown): string {
 
 export function analyticsCsv(data: AnalyticsData, dataset: "case" | "line", rows?: AnalyticsCaseRow[] | AnalyticsLineRow[]): string {
   const headers = dataset === "case"
-    ? ["case_id", "order_number", "phase", "physical_state", "physical_location", "source", "manual_reason", "picker_user_id", "picker_name", "responsible_user_id", "responsible_name", "configuration_version", "critical_threshold_minutes", "over_threshold", "created_at", "staged_at", "resolved_at", "reopened_at", "line_count"]
+    ? ["case_id", "order_number", "phase", "physical_state", "physical_location", "source", "manual_reason", "picker_user_id", "picker_name", "responsible_user_id", "responsible_name", "configuration_version", "critical_threshold_minutes", "over_threshold", "elapsed_working_seconds", "working_hours_time_zone", "working_hours_days", "working_hours_start", "working_hours_end", "created_at", "staged_at", "resolved_at", "reopened_at", "line_count"]
     : ["line_id", "case_id", "order_number", "original_location", "sku", "missing_quantity", "state", "resolution_code", "retrieval_state", "reported_by_user_id", "checker_user_id", "checker_name", "troubleshooter_user_id", "troubleshooter_name", "reported_at", "discovered_at", "retrieved_at", "resolved_at", "configuration_version"];
   const selected = rows ?? (dataset === "case" ? data.rows.cases : data.rows.lines);
   const body = dataset === "case"
-    ? (selected as AnalyticsCaseRow[]).map((row) => [row.id, row.orderNumber, row.phase, row.physicalState, row.physicalLocation, row.source, row.manualReason, row.picker?.id, row.picker?.displayName, row.responsible?.id, row.responsible?.displayName, row.configurationVersion.version, row.criticalThresholdMinutes, row.overThreshold, row.createdAt, row.stagedAt, row.resolvedAt, row.reopenedAt, row.lineCount])
+    ? (selected as AnalyticsCaseRow[]).map((row) => [row.id, row.orderNumber, row.phase, row.physicalState, row.physicalLocation, row.source, row.manualReason, row.picker?.id, row.picker?.displayName, row.responsible?.id, row.responsible?.displayName, row.configurationVersion.version, row.criticalThresholdMinutes, row.overThreshold, row.elapsedWorkingSeconds, row.workingHours.timeZone, row.workingHours.days.join(","), row.workingHours.start, row.workingHours.end, row.createdAt, row.stagedAt, row.resolvedAt, row.reopenedAt, row.lineCount])
     : (selected as AnalyticsLineRow[]).map((row) => [row.id, row.caseId, row.orderNumber, row.originalLocation, row.sku, row.missingQuantity, row.state, row.resolutionCode, row.retrievalState, row.reportedByUserId, row.checker?.id, row.checker?.displayName, row.troubleshooter?.id, row.troubleshooter?.displayName, row.reportedAt, row.discoveredAt, row.retrievedAt, row.resolvedAt, row.configurationVersion]);
   return [headers, ...body].map((line) => line.map(csvCell).join(",")).join("\r\n") + "\r\n";
 }

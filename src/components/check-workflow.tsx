@@ -7,6 +7,7 @@ import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import { PaginationControls } from "@/components/pagination-controls";
 import type { CaseTimelineEvent, CaseTimelineMessage } from "@/components/case-timeline";
+import type { WorkingHours } from "@/domain/working-hours";
 import { CaseDetailView, CaseSummaryCard, formatCaseElapsedTime } from "@/components/case-detail-view";
 import { SharedCaseLineCard, SharedInlineLocationForm } from "@/components/case-line-card";
 import { CaseStatusBadge } from "@/components/case-status-badge";
@@ -44,7 +45,7 @@ type Retrieval = {
 type Worker = { id: string; displayName: string; status: string; permissions: string[] };
 type CaseDetail = {
   id: string; orderNumber: string; phase: string; physicalState: string; physicalLocation: string | null;
-  createdAt?: string; responsibleName?: string | null; responsibleIdentifier?: string | null; source?: string; missingCount?: number;
+  createdAt?: string; resolvedAt?: string | null; workingHours?: WorkingHours; responsibleName?: string | null; responsibleIdentifier?: string | null; source?: string; missingCount?: number;
   lines: Array<{ id: string; location: string; sku: string; quantity: number; state: string; displayStatus?: string | null; discoveredLocation: string | null; retrievalState?: string | null; retrievalResponsibleUserId?: string | null; retrievalResponsibleName?: string | null; replenishmentState?: string | null; replenishmentNote?: string | null; replenishmentActorName?: string | null; responsibleName: string | null; reporterName?: string | null; reporterIdentifier?: string | null }>;
   checks: Array<{ id: string; shortPickLineId: string; status: string; completionCode: string | null; completedAt: string | null; assigneeName: string | null }>;
   events: Array<{ id: string; eventType: string; actorName: string | null; createdAt: string; completionCode?: string | null; discoveredLocation?: string | null; originalLocation?: string | null; taskId?: string | null; resultMessage?: string | null }>;
@@ -346,7 +347,7 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       headingActions={<span className="case-badges"><CaseStatusBadge status={aggregateCaseDisplayStatus(detail.phase, detail.lines)} tr={tr} /><span className="case-phase">{detail.phase === "CLOSED" ? tr("caseClosed") : detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span></span>}
       summary={<>
         {detail.physicalLocation ? <p className="case-physical-state">{detail.physicalLocation}</p> : null}
-        <CaseSummaryCard tr={tr} responsibleName={detail.responsibleName} responsibleIdentifier={detail.responsibleIdentifier} source={detail.source} missingCount={detail.missingCount} elapsedTime={formatCaseElapsedTime(detail.createdAt)} />
+        <CaseSummaryCard tr={tr} responsibleName={detail.responsibleName} responsibleIdentifier={detail.responsibleIdentifier} source={detail.source} missingCount={detail.missingCount} elapsedTime={formatCaseElapsedTime(detail.createdAt, detail.resolvedAt ?? null, detail.workingHours)} />
       </>}
       linesClassName="check-detail-lines"
       showLinesHeading

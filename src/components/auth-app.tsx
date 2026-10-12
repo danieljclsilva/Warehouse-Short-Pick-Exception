@@ -16,6 +16,7 @@ import { PhotoApproval } from "@/components/photo-approval";
 import { EnvironmentBanner } from "@/components/environment-banner";
 import { PaginationControls } from "@/components/pagination-controls";
 import type { CaseTimelineEvent, CaseTimelineMessage } from "@/components/case-timeline";
+import type { WorkingHours } from "@/domain/working-hours";
 import { CaseDetailView, CaseSummaryCard, formatCaseElapsedTime } from "@/components/case-detail-view";
 import { SharedCaseLineCard, type SharedCaseLine } from "@/components/case-line-card";
 import { ThemePicker } from "@/components/theme-picker";
@@ -203,6 +204,7 @@ type DeepLinkCase = {
   createdAt?: string;
   resolvedAt?: string | null;
   closedAt?: string | null;
+  workingHours?: WorkingHours | null;
   lines?: DeepLinkLine[] | null;
   lineProjections?: Array<{ lineId: string; nextActionCode?: string | null; actionOwnerName?: string | null; replenishmentRetrieverName?: string | null }> | null;
   events?: CaseTimelineEvent[] | null;
@@ -299,7 +301,7 @@ export function DeepCaseView({ tr, locale = "en", data, lineId, canViewMessages,
       phaseLabel={data.phase === "STAGED" ? tr("phaseStaged") : data.phase === "CLOSED" ? tr("caseClosed") : tr("phasePicking")}
       headingActions={closed ? <span className="case-badges"><span className="case-status-badge case-status-done">{tr("caseClosedBadge")}</span></span> : undefined}
       summary={<>
-        <CaseSummaryCard tr={tr} responsibleName={data.responsibleName} responsibleIdentifier={data.responsibleIdentifier} source={data.source} missingCount={data.missingCount} elapsedTime={formatCaseElapsedTime(data.createdAt)} />
+        <CaseSummaryCard tr={tr} responsibleName={data.responsibleName} responsibleIdentifier={data.responsibleIdentifier} source={data.source} missingCount={data.missingCount} elapsedTime={formatCaseElapsedTime(data.createdAt, data.resolvedAt ?? null, data.workingHours ?? undefined)} />
         {closed ? <p className="profile-message" role="note">{tr("caseClosedReadOnlyNote")}</p> : null}
         {instruction ? <p className="deep-case-instruction" role="status"><span>{tr(instruction.key, instruction.values)}</span><button className="text-button" type="button" onClick={() => setDismissedInstructionKey(instructionKey)}>{tr("navInstructionDismiss")}</button></p> : null}
       </>}

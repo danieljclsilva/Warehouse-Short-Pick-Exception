@@ -9,6 +9,8 @@ import styles from "./operations-dashboard.module.css";
 import { CaseStatusBadge } from "@/components/case-status-badge";
 import { aggregateCaseDisplayStatus } from "@/domain/case-display-status";
 import type { CaseTimelineEvent } from "@/components/case-timeline";
+import { elapsedWorkingMinutes } from "@/domain/working-hours";
+import type { WorkingHours } from "@/domain/working-hours";
 import { PaginationControls } from "@/components/pagination-controls";
 import { SharedCaseLineCard } from "@/components/case-line-card";
 import { CaseDetailView, CaseSummaryCard, formatCaseElapsedTime } from "@/components/case-detail-view";
@@ -63,6 +65,8 @@ type CaseSummary = {
   attentionLevel?: "NORMAL" | "WARNING" | "ATTENTION" | "CRITICAL";
   resolvedAt?: string | null;
   closedAt?: string | null;
+  workingHours?: WorkingHours;
+  elapsedWorkingMinutes?: number | null;
 };
 type ClosedCaseSummary = {
   id: string;
@@ -109,8 +113,8 @@ async function readBody<T>(response: Response): Promise<T> {
   return (await response.json().catch(() => ({}))) as T;
 }
 
-function formatAge(createdAt: string) {
-  const minutes = Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / 60_000));
+function formatAge(createdAt: string, item?: Pick<CaseSummary, "resolvedAt" | "workingHours" | "elapsedWorkingMinutes">, nowMs?: number | null) {
+  const minutes = item?.elapsedWorkingMinutes ?? elapsedWorkingMinutes(createdAt, item?.resolvedAt ?? (nowMs ?? Date.now()), item?.workingHours, nowMs ?? Date.now());
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${minutes % 60}m`;
@@ -305,6 +309,11 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
     return () => window.clearTimeout(timer);
   }, [canAssign, canCreateManual, canReopen, fetchWorkers]);
 
+  const workingMinutesById: Record<string, number> = useMemo(() => {
+    if (clockNow === null) return {};
+    return Object.fromEntries(cases.map((item) => [item.id, item.elapsedWorkingMinutes ?? elapsedWorkingMinutes(item.createdAt, item.resolvedAt ?? clockNow, item.workingHours, clockNow)]));
+  }, [cases, clockNow]);
+
   const visibleCases = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     return cases
@@ -473,14 +482,14 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
       </div>
       {loading ? <p className={styles.empty}>{tr("loadingCases")}</p> : visibleCases.length ? <><div className={styles.caseList}>
         {visibleCases.map((item) => {
-          const age = clockNow === null ? 0 : Math.floor((clockNow - Date.parse(item.createdAt)) / 60_000);
+          const age = workingMinutesById[item.id] ?? 0;
           const fallbackLevel: NonNullable<CaseSummary["attentionLevel"]> = age >= thresholds.critical ? "CRITICAL" : age >= thresholds.attention ? "ATTENTION" : age >= thresholds.warning ? "WARNING" : "NORMAL";
           const level = item.attentionLevel ?? fallbackLevel;
           const attentionClass = level === "CRITICAL" ? styles.critical : level === "ATTENTION" ? styles.attention : level === "WARNING" ? styles.warning : "";
           const badgeClass = level === "CRITICAL" ? styles.attentionBadgeCritical : level === "ATTENTION" ? styles.attentionBadgeAttention : level === "WARNING" ? styles.attentionBadgeWarning : styles.attentionBadgeNormal;
           return <button type="button" className={`${styles.caseCard} ${attentionClass}`} key={item.id} onClick={() => void loadCase(item.id)}>
             <div className={styles.caseTop}><strong>{tr("orderLabel")} {item.orderNumber}</strong><span className={styles.caseBadges}><span className={styles.caseStatusBadge}><CaseStatusBadge status={aggregateCaseDisplayStatus(item.phase, item.lines, item.lineProjections)} tr={tr} /></span><span className={`${styles.attentionBadge} ${badgeClass}`} aria-label={`${tr("attentionLevelLabel")}: ${attentionLabel(level, tr)}`}>{attentionLabel(level, tr)}</span><span className={`${styles.phase} ${item.phase === "STAGED" ? styles.phaseStaged : ""}`}>{item.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span></span></div>
-            <div className={styles.caseData}><span><b>{item.missingCount}</b> {tr("missingItemsLabel")}</span><span>{item.checkingCount} {tr("checkingLabel")}</span><span className={styles.age}>{formatAge(item.createdAt)}</span></div>
+            <div className={styles.caseData}><span><b>{item.missingCount}</b> {tr("missingItemsLabel")}</span><span>{item.checkingCount} {tr("checkingLabel")}</span><span className={styles.age}>{formatAge(item.createdAt, item, clockNow)}</span></div>
             <div className={styles.caseFoot}><span>{item.pickerName || tr("unknownPicker")}</span><span>{item.currentIssue ? tr(`issue_${item.currentIssue}` as MessageKey) : tr("caseNoCurrentIssue")}</span><span>{item.responsibleName || "—"}</span></div>
           </button>;
         })}
@@ -512,7 +521,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
           </span>}
           summary={<>
             {selected.phase === "CLOSED" ? <p className={styles.drawerSummary}>{tr("caseClosedOn", { date: formatDate(selected.resolvedAt || selected.createdAt, locale) })}</p> : null}
-            <CaseSummaryCard tr={tr} responsibleName={selected.responsibleName} responsibleIdentifier={selected.responsibleIdentifier} source={selected.source} missingCount={selected.missingCount} elapsedTime={formatCaseElapsedTime(selected.createdAt)} />
+            <CaseSummaryCard tr={tr} responsibleName={selected.responsibleName} responsibleIdentifier={selected.responsibleIdentifier} source={selected.source} missingCount={selected.missingCount} elapsedTime={formatCaseElapsedTime(selected.createdAt, selected.resolvedAt ?? null, selected.workingHours)} />
           </>}
           showLinesHeading
           linesClassName={styles.lineList}

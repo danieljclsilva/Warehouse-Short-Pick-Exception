@@ -1,11 +1,13 @@
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { notificationPreferenceKeyEnum, notificationPreferences, notifications, orderCases, pushOutbox, pushSubscriptions, shortPickLines, users } from "@/db/schema";
+import { configurationVersions, notificationPreferenceKeyEnum, notificationPreferences, notifications, orderCases, pushOutbox, pushSubscriptions, shortPickLines, users } from "@/db/schema";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { CaseApiError } from "@/server/cases";
-import { getCurrentConfiguration } from "@/server/configuration";
+import { getCurrentConfiguration, normalizeConfigurationValues } from "@/server/configuration";
+import { elapsedWorkingMinutes, isWithinWorkingHours, workingHoursFromConfiguration } from "@/domain/working-hours";
+import type { WorkingHours } from "@/domain/working-hours";
 import { paginationMeta, paginationOffset, paginationQuerySchema } from "@/server/pagination";
 import { logServerEvent } from "@/server/logger";
 
@@ -141,10 +143,10 @@ export async function insertMonitoringNotifications(tx: DbOperations, input: Omi
 export const EMIT_CASE_CHUNK_SIZE = 100;
 
 /** Stateless eligibility pre-pass so chunk transactions only touch actionable cases. */
-export type UnresolvedEmitWorkItem = { id: string; orderNumber: string; ageMinutes: number };
+export type UnresolvedEmitWorkItem = { id: string; orderNumber: string; ageMinutes: number; workingHours: WorkingHours; withinWorkingHours: boolean };
 
 export function unresolvedEmitWorkItems(
-  cases: ReadonlyArray<{ id: string; orderNumber: string; createdAt: Date }>,
+  cases: ReadonlyArray<{ id: string; orderNumber: string; createdAt: Date; workingHours?: unknown }>,
   unresolvedCaseIds: ReadonlySet<string> | ReadonlyArray<string>,
   now: Date = new Date(),
 ): UnresolvedEmitWorkItem[] {
@@ -152,7 +154,9 @@ export function unresolvedEmitWorkItems(
   const items: UnresolvedEmitWorkItem[] = [];
   for (const item of cases) {
     if (!unresolved.has(item.id)) continue;
-    items.push({ id: item.id, orderNumber: item.orderNumber, ageMinutes: Math.floor((now.getTime() - item.createdAt.getTime()) / 60_000) });
+    const raw = "workingHours" in item ? item.workingHours : null;
+    const workingHours = workingHoursFromConfiguration(raw);
+    items.push({ id: item.id, orderNumber: item.orderNumber, ageMinutes: elapsedWorkingMinutes(item.createdAt, now, workingHours, now), workingHours, withinWorkingHours: isWithinWorkingHours(now, workingHours) });
   }
   return items;
 }
@@ -181,9 +185,11 @@ export async function emitUnresolvedMonitoringNotifications(chunkSize: number = 
   const db = getDb();
   const now = new Date();
   // Reads happen outside any transaction: snapshots only, no locks held.
+  // Each case's pinned configuration supplies its working schedule (legacy
+  // rows without the keys read as the default schedule via normalize).
   const [cases, lines, candidates] = await Promise.all([
-    db.select({ id: orderCases.id, orderNumber: orderCases.orderNumber, createdAt: orderCases.createdAt })
-      .from(orderCases).where(sql`${orderCases.phase} <> 'CLOSED'`),
+    db.select({ id: orderCases.id, orderNumber: orderCases.orderNumber, createdAt: orderCases.createdAt, values: configurationVersions.values })
+      .from(orderCases).innerJoin(configurationVersions, eq(orderCases.configurationVersionId, configurationVersions.id)).where(sql`${orderCases.phase} <> 'CLOSED'`),
     db.select({ caseId: shortPickLines.caseId, state: shortPickLines.state }).from(shortPickLines),
     db.select({ id: users.id, permissions: users.permissions }).from(users).where(eq(users.status, "ACTIVE")),
   ]);
@@ -196,8 +202,10 @@ export async function emitUnresolvedMonitoringNotifications(chunkSize: number = 
     return 0;
   }
   const unresolvedByCase = new Set(lines.filter((line) => line.state !== "RESOLVED" && line.state !== "CANCELLED").map((line) => line.caseId));
-  const work = unresolvedEmitWorkItems(cases, unresolvedByCase, now).filter((item) =>
-    recipients.some((recipient) => item.ageMinutes >= recipient.thresholdMinutes));
+  // Age monitoring pauses outside each case's own working window: no midnight
+  // overdue alerts; responsibility alerts are untouched (separate path).
+  const work = unresolvedEmitWorkItems(cases.map((row) => ({ id: row.id, orderNumber: row.orderNumber, createdAt: row.createdAt, workingHours: workingHoursFromConfiguration(normalizeConfigurationValues(row.values)) })), unresolvedByCase, now)
+    .filter((item) => item.withinWorkingHours && recipients.some((recipient) => item.ageMinutes >= recipient.thresholdMinutes));
   if (!work.length) {
     logServerEvent("info", "notification.monitoring.emit_completed", { area: "notifications", casesScanned: cases.length, eligibleRecipients: recipients.length, created: 0 });
     return 0;

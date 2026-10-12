@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { closeDb, getDb } from "../src/db";
@@ -348,23 +348,32 @@ describeDatabase("Phase 6 configuration versioning and snapshots against Postgre
     const after = await changed.json() as { version: number; versionId: string };
     const newCase = await createCase("threshold-new");
     expect(newCase.configurationVersionId).toBe(after.versionId);
-    const now = Date.now();
-    await getDb().update(orderCases).set({ createdAt: new Date(now - 4 * 60_000), updatedAt: new Date(now - 4 * 60_000) }).where(eq(orderCases.id, oldCase.id));
-    await getDb().update(orderCases).set({ createdAt: new Date(now - 4 * 60_000), updatedAt: new Date(now - 4 * 60_000) }).where(eq(orderCases.id, newCase.id));
-
-    const dashboard = await dashboardRoute(request("/api/operations/dashboard", "GET", undefined, leaderCookie));
-    expect(dashboard.status).toBe(200);
-    const payload = await dashboard.json() as {
-      thresholds: { warning: number; attention: number; critical: number };
-      cases: Array<{ id: string; attentionLevel: string }>;
-    };
-    expect(payload.thresholds).toEqual({ warning: 1, attention: 2, critical: 3 });
-    expect(payload.cases).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: oldCase.id, configurationVersionId: before.versionId, attentionLevel: "ATTENTION" }),
-      expect.objectContaining({ id: newCase.id, configurationVersionId: after.versionId, attentionLevel: "CRITICAL" }),
-    ]));
+    // Explicit business time: Monday 06:30 UTC = 08:30 CEST, inside Mon-Fri
+    // 08:00-17:00, so both 4-real-minute ages read as 4 working minutes.
+    // PostgreSQL I/O needs real timers: fake Date only for the read; fixture
+    // timestamps use explicit business dates.
+    const businessNow = new Date("2026-10-12T06:30:00Z");
+    const agedAt = new Date(businessNow.getTime() - 4 * 60_000);
+    await getDb().update(orderCases).set({ createdAt: agedAt, updatedAt: agedAt }).where(eq(orderCases.id, oldCase.id));
+    await getDb().update(orderCases).set({ createdAt: agedAt, updatedAt: agedAt }).where(eq(orderCases.id, newCase.id));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(businessNow);
+    try {
+      const dashboard = await dashboardRoute(request("/api/operations/dashboard?page=1&pageSize=100", "GET", undefined, leaderCookie));
+      expect(dashboard.status).toBe(200);
+      const payload = await dashboard.json() as {
+        thresholds: { warning: number; attention: number; critical: number };
+        cases: Array<{ id: string; configurationVersionId: string; attentionLevel: string; elapsedWorkingMinutes: number; createdAt: string }>;
+      };
+      expect(payload.thresholds).toEqual({ warning: 1, attention: 2, critical: 3 });
+      const oldRow = payload.cases.find((row) => row.id === oldCase.id);
+      const newRow = payload.cases.find((row) => row.id === newCase.id);
+      expect(oldRow).toMatchObject({ configurationVersionId: before.versionId, attentionLevel: "ATTENTION" });
+      expect(newRow).toMatchObject({ configurationVersionId: after.versionId, attentionLevel: "CRITICAL" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
-
   it("does not route an existing found line to a checker when its staged retrieval setting is disabled", async () => {
     const before = await currentConfiguration();
     const changed = await updateConfiguration(leaderCookie, before.version, {

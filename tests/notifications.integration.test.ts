@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import webpush from "web-push";
 import { closeDb, getDb } from "../src/db";
@@ -260,6 +260,75 @@ describeDatabase("Wave 1 mark-all-read and >100-row recipient isolation", () => 
     expect(await unreadCount(otherCookie)).toBe(3);
   });
 });
+describeDatabase("Emitter working-hours gating with real tick", () => {
+  const suffix = randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase();
+  const userIds: string[] = [];
+  const caseIds: string[] = [];
+  // Monday 2026-10-12 06:30 UTC = 08:30 CEST, inside Mon-Fri 08:00-17:00.
+  const businessNow = new Date("2026-10-12T06:30:00Z");
+  const offHoursNow = new Date("2026-10-12T22:00:00Z");
+  // Friday 16:30 CEST -> Monday 08:30 CEST = 60 working minutes.
+  const agedAt = new Date("2026-10-09T14:30:00Z");
+
+  afterAll(async () => {
+    vi.useRealTimers();
+    const db = getDb();
+    if (caseIds.length) {
+      await db.delete(notifications).where(inArray(notifications.caseId, caseIds));
+      const lineIds = (await db.select({ id: shortPickLines.id }).from(shortPickLines).where(inArray(shortPickLines.caseId, caseIds))).map((row) => row.id);
+      if (lineIds.length) await db.delete(checkTasks).where(inArray(checkTasks.shortPickLineId, lineIds));
+      await db.delete(shortPickLines).where(inArray(shortPickLines.caseId, caseIds));
+      await db.delete(orderCases).where(inArray(orderCases.id, caseIds));
+    }
+    if (userIds.length) {
+      await db.delete(notificationPreferences).where(inArray(notificationPreferences.userId, userIds));
+      await db.delete(notifications).where(inArray(notifications.recipientUserId, userIds));
+      await db.delete(sessions).where(inArray(sessions.userId, userIds));
+      await db.delete(users).where(inArray(users.id, userIds));
+    }
+    await closeDb();
+  });
+
+  it("emits no age alerts off-hours, one deduped mandatory alert during hours", async () => {
+    const db = getDb();
+    const [manager] = await db.insert(users).values({ identifier: `emit-wh-${suffix}-manager`, displayName: "emit-wh-manager",
+      pinHash: await hashPin("123456"), role: "TEAM_LEADER", permissions: defaultPermissions("TEAM_LEADER") }).returning();
+    userIds.push(manager!.id);
+    await db.insert(notificationPreferences).values({ userId: manager!.id, key: "UNRESOLVED_OVER_THRESHOLD", enabled: true, thresholdMinutes: 10 })
+      .onConflictDoUpdate({ target: [notificationPreferences.userId, notificationPreferences.key],
+        set: { enabled: true, thresholdMinutes: 10, updatedAt: new Date() } });
+    const [config] = await db.select().from(configurationVersions).orderBy(configurationVersions.version).limit(1);
+    expect(config).toBeDefined();
+    const [seeded] = await db.insert(orderCases).values({ orderNumber: `8${String(Date.now()).slice(-8)}${suffix.slice(0, 6)}`.replaceAll(/\D/g, "").slice(0, 20),
+      phase: "PICKING", physicalState: "WITH_PICKER", source: "PICKER_REPORT",
+      createdByUserId: manager!.id, pickingUserId: manager!.id, configurationVersionId: config!.id,
+      createdAt: agedAt, updatedAt: agedAt }).returning();
+    caseIds.push(seeded!.id);
+    await db.insert(shortPickLines).values({ caseId: seeded!.id, originalLocation: `EMITWH${suffix}`, sku: "SKU-EMIT-WH", missingQuantity: 1, reportedByUserId: manager!.id });
+    const ownAlerts = async () => db.select().from(notifications)
+      .where(and(eq(notifications.recipientUserId, manager!.id), eq(notifications.caseId, seeded!.id)));
+    expect(await ownAlerts()).toEqual([]);
+    // PostgreSQL I/O needs real timers: fake Date only during the business-age tick.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(offHoursNow);
+      await emitUnresolvedMonitoringNotifications();
+      expect(await ownAlerts()).toEqual([]);
+      vi.setSystemTime(businessNow);
+      await emitUnresolvedMonitoringNotifications();
+      const created = await ownAlerts();
+      expect(created).toHaveLength(1);
+      expect(created[0]).toMatchObject({ type: "UNRESOLVED_OVER_THRESHOLD", caseId: seeded!.id,
+        dedupeKey: `unresolved:${seeded!.id}:10`,
+        payload: { orderNumber: seeded!.orderNumber, ageMinutes: 60, thresholdMinutes: 10 } });
+      await emitUnresolvedMonitoringNotifications();
+      expect(await ownAlerts()).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 
 describeDatabase("Emitter bounded tick: many-user/many-case load, dedupe, early exit, chunk atomicity", () => {
   const suffix = randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase();
@@ -278,8 +347,8 @@ describeDatabase("Emitter bounded tick: many-user/many-case load, dedupe, early 
     return user!;
   }
 
-  async function seedOpenCases(count: number, reporterId: string, configId: string, ageMinutes: number) {
-    const agedAt = new Date(Date.now() - ageMinutes * 60_000);
+  async function seedOpenCases(count: number, reporterId: string, configId: string, baseNow: Date, ageMinutes: number) {
+    const agedAt = new Date(baseNow.getTime() - ageMinutes * 60_000);
     const caseRows = Array.from({ length: count }, () => ({
       orderNumber: `9${String(Date.now()).slice(-8)}${String(orderCounter++ % 1_000_000).padStart(6, "0")}`,
       phase: "PICKING" as const, physicalState: "WITH_PICKER" as const, source: "PICKER_REPORT" as const,
@@ -333,34 +402,63 @@ describeDatabase("Emitter bounded tick: many-user/many-case load, dedupe, early 
   });
 
   it("builds tick work only for unresolved cases", () => {
-    const now = new Date("2026-09-29T12:00:00Z");
+    // Tuesday 2026-09-29 10:00 UTC = 12:00 CEST, inside working hours.
+    const now = new Date("2026-09-29T10:00:00Z");
     const cases = [
-      { id: "a", orderNumber: "1", createdAt: new Date("2026-09-29T11:00:00Z") },
-      { id: "b", orderNumber: "2", createdAt: new Date("2026-09-29T11:50:00Z") },
+      { id: "a", orderNumber: "1", createdAt: new Date("2026-09-29T09:00:00Z") },
+      { id: "b", orderNumber: "2", createdAt: new Date("2026-09-29T09:50:00Z") },
     ];
-    expect(unresolvedEmitWorkItems(cases, new Set(["a"]), now)).toEqual([{ id: "a", orderNumber: "1", ageMinutes: 60 }]);
+    expect(unresolvedEmitWorkItems(cases, new Set(["a"]), now)).toEqual([{ id: "a", orderNumber: "1", ageMinutes: 60,
+      workingHours: { timeZone: "Europe/Amsterdam", days: [1, 2, 3, 4, 5], start: "08:00", end: "17:00" }, withinWorkingHours: true }]);
     expect(unresolvedEmitWorkItems(cases, [], now)).toEqual([]);
+    // Off-hours: same ages, but the tick must not treat them as actionable.
+    // Age is working-clock: 09:00-10:00 UTC (11:00-12:00 CEST) is 60 working
+    // minutes plus 12:00-17:00 CEST (300) before the 22:00 probe: 360 total.
+    const night = new Date("2026-09-29T22:00:00Z");
+    expect(unresolvedEmitWorkItems(cases, new Set(["a"]), night)[0]).toMatchObject({ ageMinutes: 360, withinWorkingHours: false });
   });
 
   it("completes a 30-manager x 50-case tick and dedupes the second tick to zero", async () => {
     const [config] = await getDb().select().from(configurationVersions).orderBy(configurationVersions.version).limit(1);
     expect(config).toBeDefined();
     const managers = await Promise.all(Array.from({ length: 30 }, (_, index) => makeManager(`mgr-${index}`)));
-    const seeded = await seedOpenCases(50, managers[0]!.id, config!.id, 60);
+    // Isolate from other suites' eligible recipients sharing this database:
+    // silence every other active manager so exactly the 30 fresh managers
+    // receive alerts for the 50 seeded cases.
+    const others = (await getDb().select({ id: users.id }).from(users).where(eq(users.status, "ACTIVE")))
+      .map((row) => row.id).filter((id) => !managerIds.includes(id));
+    for (let offset = 0; offset < others.length; offset += 100) {
+      await getDb().insert(notificationPreferences).values(others.slice(offset, offset + 100).map((id) => ({
+        userId: id, key: "UNRESOLVED_OVER_THRESHOLD" as const, enabled: false }))).onConflictDoNothing();
+    }
+    // Monday 2026-10-12 06:30 UTC = 08:30 CEST: 60 working minutes of age lands
+    // inside the shift, so the tick is actionable. Fake Date only; PostgreSQL
+    // I/O keeps real timers.
+    const businessNow = new Date("2026-10-12T06:30:00Z");
+    const seeded = await seedOpenCases(50, managers[0]!.id, config!.id, businessNow, 60);
     expect(seeded).toHaveLength(50);
-    const first = await emitUnresolvedMonitoringNotifications();
-    expect(first).toBe(30 * 50);
-    const stored = await getDb().select({ count: sql<number>`count(*)::int` }).from(notifications)
-      .where(inArray(notifications.caseId, seeded));
-    expect(stored[0]?.count).toBe(30 * 50);
-    // Steady-state tick: every pair now conflicts on (recipientUserId, dedupeKey)
-    // and the unique index turns the whole tick into quiet no-ops.
-    const second = await emitUnresolvedMonitoringNotifications();
-    expect(second).toBe(0);
-    const storedAfter = await getDb().select({ count: sql<number>`count(*)::int` }).from(notifications)
-      .where(inArray(notifications.caseId, seeded));
-    expect(storedAfter[0]?.count).toBe(30 * 50);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(businessNow);
+    try {
+      const first = await emitUnresolvedMonitoringNotifications();
+      // Other suites' stale open cases share this database and also qualify
+      // at business time; the owned 50 must each gain exactly 30 rows.
+      expect(first).toBeGreaterThanOrEqual(30 * 50);
+      const stored = await getDb().select({ count: sql<number>`count(*)::int` }).from(notifications)
+        .where(inArray(notifications.caseId, seeded));
+      expect(stored[0]?.count).toBe(30 * 50);
+      // Steady-state tick: every pair now conflicts on (recipientUserId, dedupeKey)
+      // and the unique index turns the whole tick into quiet no-ops.
+      const second = await emitUnresolvedMonitoringNotifications();
+      expect(second).toBe(0);
+      const storedAfter = await getDb().select({ count: sql<number>`count(*)::int` }).from(notifications)
+        .where(inArray(notifications.caseId, seeded));
+      expect(storedAfter[0]?.count).toBe(30 * 50);
+    } finally {
+      vi.useRealTimers();
+    }
   }, 60_000);
+
 
   it("keeps prior chunks committed when a later chunk fails (per-chunk atomicity)", async () => {
     const [config] = await getDb().select().from(configurationVersions).orderBy(configurationVersions.version).limit(1);
@@ -374,14 +472,21 @@ describeDatabase("Emitter bounded tick: many-user/many-case load, dedupe, early 
     const [survivor] = await getDb().insert(users).values({ identifier: `emit-${suffix}-survivor`, displayName: "survivor",
       pinHash: await hashPin("123456"), role: "TEAM_LEADER", permissions: defaultPermissions("TEAM_LEADER") }).returning();
     userIds.push(survivor!.id);
-    const seeded = await seedOpenCases(3, survivor!.id, config!.id, 60);
+    const businessNow = new Date("2026-10-12T06:30:00Z");
+    const seeded = await seedOpenCases(3, survivor!.id, config!.id, businessNow, 60);
     const before = await getDb().select({ count: sql<number>`count(*)::int` }).from(notifications)
       .where(inArray(notifications.caseId, seeded));
     expect(before[0]?.count).toBe(0);
     // The survivor has no dedupe rows yet, so the tick creates one row per
     // open case old enough to qualify — 53 independent single-case
     // transactions (3 fresh + 50 load-test leftovers), each committing alone.
-    expect(await emitUnresolvedMonitoringNotifications(1)).toBeGreaterThanOrEqual(3);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(businessNow);
+    try {
+      expect(await emitUnresolvedMonitoringNotifications(1)).toBeGreaterThanOrEqual(3);
+    } finally {
+      vi.useRealTimers();
+    }
     await expect(getDb().transaction(async (tx) => {
       await insertNotification(tx, { recipientUserId: survivor!.id, type: "UNRESOLVED_OVER_THRESHOLD",
         caseId: seeded[0]!, dedupeKey: `atomic-${suffix}` });
@@ -396,12 +501,17 @@ describeDatabase("Emitter bounded tick: many-user/many-case load, dedupe, early 
   it("emits an INFO tick summary with cases scanned, eligible, and created", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     let summary: Record<string, unknown> | undefined;
+    // Steady state after the load tests above: every eligible pair already has
+    // its dedupe row, so the tick stays quiet (created 0) at business time.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-12T06:30:00Z"));
     try {
       await emitUnresolvedMonitoringNotifications();
       summary = info.mock.calls.map(([line]) => {
         try { return JSON.parse(String(line)); } catch { return null; }
       }).find((record) => record?.event === "notification.monitoring.emit_completed");
     } finally {
+      vi.useRealTimers();
       info.mockRestore();
     }
     expect(summary).toMatchObject({ level: "info", area: "notifications" });

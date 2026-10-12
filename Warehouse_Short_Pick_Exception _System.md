@@ -1734,6 +1734,20 @@ Do not hard-code presentation logic permanently.
 
 ---
 
+# 54A. Working-Hours Case Clock (added 2026-10-12)
+
+Case elapsed time counts only time inside the case's configured working schedule. Default: Monday–Friday, 08:00 inclusive to 17:00 exclusive, Europe/Amsterdam. The IANA timezone accounts for summer/winter time; the user's device or server timezone must not change the calculation. Authorized configuration managers may change the working weekdays and same-day start/end times. At least one weekday and a start earlier than the end are required; overnight shifts and holiday calendars are outside this release.
+
+Use the same working-time basis for active case ages, attention thresholds, unresolved-over-threshold monitoring, analytics timing medians, report threshold counts and CSV/PDF timing output. Age monitoring is evaluated during that case's working window; responsibility/assignment notifications remain immediate. Preserve actual timestamps, audit history and calendar date filters. Closed case elapsed time ends at resolved_at. Reopened cases follow the existing created_at-to-latest-resolution timing model; working hours do not introduce a separate closure-interval exclusion.
+
+Settings are versioned and audited with the existing configuration system. Each case retains its pinned configuration version. Configuration versions written before these settings existed use the default schedule; their stored JSON and original timestamps remain immutable. Subsequent schedule changes apply to new cases. Historical durations are recalculated on the working-time basis; already-generated PDF artifacts remain unchanged.
+
+Configuration keys: WORKING_HOURS_TIME_ZONE (Europe/Amsterdam), WORKING_HOURS_DAYS (ISO weekdays 1–7, default 1–5), WORKING_HOURS_START (08:00), WORKING_HOURS_END (17:00). Reports must identify working-time durations and retain per-case schedule metadata where needed for reproducibility. Open-backlog age buckets measured as 24/72/168 working hours must say so, not imply calendar or scheduled working days.
+
+Example: Friday 16:30 to Monday 08:30 counts as 60 minutes. A case reported after closing remains at zero until the next configured opening.
+
+---
+
 # 55. Picker UI Permission Rendering
 
 Frontend must derive picker navigation/actions from permissions.

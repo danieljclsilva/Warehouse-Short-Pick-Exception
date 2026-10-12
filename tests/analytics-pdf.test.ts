@@ -15,6 +15,8 @@ function sampleData(rowCount = 0) {
     configurationVersion: { id: "config-3", version: 3 },
     criticalThresholdMinutes: 30,
     overThreshold: false,
+    elapsedWorkingSeconds: 0,
+    workingHours: { timeZone: "Europe/Amsterdam", days: [1, 2, 3, 4, 5], start: "08:00", end: "17:00" },
     createdAt: new Date("2026-09-25T08:00:00.000Z"),
     stagedAt: null,
     resolvedAt: index % 3 === 0 ? new Date("2026-09-25T08:08:00.000Z") : null,

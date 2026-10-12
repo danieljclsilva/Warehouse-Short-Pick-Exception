@@ -5,6 +5,7 @@ import type { Locale, MessageKey } from "@/i18n/messages";
 import { ScanInput } from "@/components/scan-input";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import type { CaseTimelineEvent, CaseTimelineMessage } from "@/components/case-timeline";
+import type { WorkingHours } from "@/domain/working-hours";
 import { CaseDetailView, CaseSummaryCard, formatCaseElapsedTime } from "@/components/case-detail-view";
 import { SharedCaseLineCard } from "@/components/case-line-card";
 import { PaginationControls } from "@/components/pagination-controls";
@@ -16,6 +17,8 @@ type OrderCase = {
   phase: string;
   physicalState: string;
   createdAt: string;
+  resolvedAt?: string | null;
+  workingHours?: WorkingHours;
   pickingUserId?: string | null;
   currentCaseResponsibleUserId?: string | null;
   responsibleName?: string | null;
@@ -467,7 +470,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
           phaseLabel={tr("casePhase", { phase: phaseLabel(displayCase.phase, tr) })}
           summary={<>
             <p className="case-physical-state">{tr("physicalState", { state: physicalStateLabel(displayCase.physicalState, tr) })}</p>
-            {displayCase.id ? <CaseSummaryCard tr={tr} responsibleName={displayCase.responsibleName} responsibleIdentifier={displayCase.responsibleIdentifier} source={displayCase.source} missingCount={displayCase.missingCount} elapsedTime={formatCaseElapsedTime(displayCase.createdAt)} /> : null}
+            {displayCase.id ? <CaseSummaryCard tr={tr} responsibleName={displayCase.responsibleName} responsibleIdentifier={displayCase.responsibleIdentifier} source={displayCase.source} missingCount={displayCase.missingCount} elapsedTime={formatCaseElapsedTime(displayCase.createdAt, displayCase.resolvedAt ?? null, displayCase.workingHours)} /> : null}
           </>}
           linesClassName="check-detail-lines"
           lines={displayCase.lines.length === 0 ? <p className="case-empty-lines">{tr("noItemsYet")}</p> : displayCase.lines.map((line) => {

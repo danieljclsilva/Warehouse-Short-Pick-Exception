@@ -28,16 +28,26 @@ describe("analytics derive helpers", () => {
     ]);
   });
 
-  it("buckets open-case aging and ignores resolved cases", () => {
-    const day = 86_400_000;
-    const now = new Date("2026-10-02T00:00:00.000Z").getTime();
-    const buckets = agingBuckets([
-      { createdAt: new Date(now - 2 * day).toISOString(), resolvedAt: null },
-      { createdAt: new Date(now - 10 * day).toISOString(), resolvedAt: null },
-      { createdAt: new Date(now - 10 * day).toISOString(), resolvedAt: new Date(now - day).toISOString() },
-    ], now);
-    expect(buckets).toMatchObject({ open: 2, d1to3: 1, over7d: 1 });
-  });
+  it("buckets open-case aging in working hours and ignores resolved cases", () => {
+      // Friday 2026-10-02 16:00 CEST: 1 working hour remains until 17:00 close.
+      // Monday 2026-10-05 08:00 CEST snapshot.
+      const now = Date.parse("2026-10-05T08:00:00+02:00");
+      const buckets = agingBuckets([
+        { createdAt: "2026-10-02T16:00:00+02:00", resolvedAt: null },
+        // Three working days earlier: Wed 09:00 -> Fri close (2x9h) + nothing over the weekend.
+        { createdAt: "2026-09-30T09:00:00+02:00", resolvedAt: null },
+        { createdAt: "2026-09-30T09:00:00+02:00", resolvedAt: "2026-10-01T09:00:00+02:00" },
+      ], now);
+      expect(buckets).toMatchObject({ open: 2, under1d: 1, d1to3: 1 });
+    });
+
+  it("prefers pinned elapsedWorkingSeconds under the row schedule", () => {
+      const now = Date.parse("2026-10-05T08:00:00+02:00");
+      const buckets = agingBuckets([
+        { createdAt: "2026-09-01T00:00:00+02:00", resolvedAt: null, elapsedWorkingSeconds: 60 * 60 },
+      ], now);
+      expect(buckets).toMatchObject({ open: 1, under1d: 1 });
+    });
 
   it("counts phase mix and reporter volume over slices", () => {
     expect(phaseMix([{ phase: "OPEN" }, { phase: "OPEN" }, {}])).toEqual([

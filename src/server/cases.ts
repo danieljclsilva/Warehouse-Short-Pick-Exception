@@ -1,11 +1,12 @@
 import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
-import { auditLog, caseEvents, caseMessages, checkTasks, orderCases, shortPickLines, users } from "@/db/schema";
+import { auditLog, caseEvents, caseMessages, checkTasks, configurationVersions, orderCases, shortPickLines, users } from "@/db/schema";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
 import { insertMonitoringNotifications } from "@/server/notifications";
 import { getCurrentConfiguration } from "@/server/configuration";
+import { elapsedWorkingMinutes, workingHoursFromConfiguration } from "@/domain/working-hours";
 import { paginationMeta, paginationOffset, paginationQuerySchema } from "@/server/pagination";
 import { CaseApiError } from "@/server/case-errors";
 import { aggregateCaseDisplayStatus } from "@/domain/case-display-status";
@@ -178,6 +179,8 @@ export type CaseTimelinePage = { page?: number; pageSize?: number };
 async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: string, includeMessages: boolean, timeline: CaseTimelinePage = {}) {
   const [record] = await db.select().from(orderCases).where(eq(orderCases.id, caseId)).limit(1);
   if (!record) return null;
+  const [versionRow] = await db.select().from(configurationVersions).where(eq(configurationVersions.id, record.configurationVersionId)).limit(1);
+  const workingHours = workingHoursFromConfiguration(versionRow?.values);
   const lines = await db.select().from(shortPickLines).where(eq(shortPickLines.caseId, caseId)).orderBy(shortPickLines.createdAt, shortPickLines.id);
   const checks = lines.length ? await db.select().from(checkTasks).where(inArray(checkTasks.shortPickLineId, lines.map((line) => line.id))).orderBy(checkTasks.createdAt, checkTasks.id) : [];
   const timelineParsed = caseTimelineQuerySchema.parse({ page: timeline.page ?? 1, pageSize: timeline.pageSize ?? 50 });
@@ -235,6 +238,8 @@ async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: st
   const currentIssue = aggregate === "WAITING_RETRIEVAL" || aggregate === "RETRIEVING" ? "RETRIEVAL_PENDING" : aggregate;
   const unresolvedLines = lines.filter((line) => line.state !== "RESOLVED" && line.state !== "CANCELLED");
   const projection: CaseProjection = { caseId: record.id, orderNumber: record.orderNumber, phase: record.phase, openLineCount: unresolvedLines.length, lines: lineProjections };
+  const now = new Date();
+  const elapsedWorkingMinutesValue = elapsedWorkingMinutes(record.createdAt, record.resolvedAt ?? now, workingHours, now);
   return { ...record, pickerName: record.pickingUserId ? names.get(record.pickingUserId) ?? null : null,
     pickerIdentifier: record.pickingUserId ? identifiers.get(record.pickingUserId) ?? null : null,
     responsibleName: record.currentCaseResponsibleUserId ? names.get(record.currentCaseResponsibleUserId) ?? null : null,
@@ -244,7 +249,8 @@ async function readCase(db: Pick<ReturnType<typeof getDb>, "select">, caseId: st
       responsibleName: line.currentResponsibleUserId ? (names.get(line.currentResponsibleUserId) ?? null) : null,
       reporterName: names.get(line.reportedByUserId) ?? null, reporterIdentifier: identifiers.get(line.reportedByUserId) ?? null })),
     checks: checks.map((check) => { const workerId = check.assignedToUserId ?? check.claimedByUserId; return { ...check, assigneeName: workerId ? (names.get(workerId) ?? null) : null }; }),
-    events: shapedWithAssignee, eventsPagination: paginationMeta(eventTotal, timelineParsed.page, timelineParsed.pageSize), messages, projection, lineProjections };
+    events: shapedWithAssignee, eventsPagination: paginationMeta(eventTotal, timelineParsed.page, timelineParsed.pageSize), messages, projection, lineProjections,
+    workingHours, elapsedWorkingMinutes: elapsedWorkingMinutesValue };
 }
 
 function canReadCase(auth: AuthContext, row: typeof orderCases.$inferSelect) {
@@ -428,7 +434,15 @@ export async function listCasesForUser(auth: AuthContext, scope: "mine" | "activ
   const lines = ids.length ? await db.select().from(shortPickLines).where(inArray(shortPickLines.caseId, ids)).orderBy(shortPickLines.createdAt) : [];
   const grouped = new Map<string, typeof lines>();
   for (const line of lines) grouped.set(line.caseId, [...(grouped.get(line.caseId) ?? []), line]);
-  const cases = rows.map((row) => ({ ...row, lines: (grouped.get(row.id) ?? []).map((line) => ({ id: line.id, state: line.state, quantity: line.missingQuantity, location: line.originalLocation, sku: line.sku })) }));
+  const versionIds = [...new Set(rows.map((row) => row.configurationVersionId))];
+  const versionRows = versionIds.length
+    ? await db.select({ id: configurationVersions.id, values: configurationVersions.values }).from(configurationVersions).where(inArray(configurationVersions.id, versionIds))
+    : [];
+  const schedules = new Map(versionRows.map((row) => [row.id, workingHoursFromConfiguration(row.values)]));
+  const now = new Date();
+  const cases = rows.map((row) => { const workingHours = schedules.get(row.configurationVersionId) ?? workingHoursFromConfiguration(null);
+    return { ...row, workingHours, elapsedWorkingMinutes: elapsedWorkingMinutes(row.createdAt, row.resolvedAt ?? now, workingHours, now),
+      lines: (grouped.get(row.id) ?? []).map((line) => ({ id: line.id, state: line.state, quantity: line.missingQuantity, location: line.originalLocation, sku: line.sku })) }; });
   return { cases, ...paginationMeta(total, parsed.page, parsed.pageSize) };
 }
 
@@ -439,8 +453,15 @@ export async function listCaseHistoryForUser(auth: AuthContext, options: { page?
   const where = and(eq(orderCases.phase, "CLOSED"), eq(orderCases.pickingUserId, auth.user.id));
   const [countRow] = await db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(where);
   const total = countRow?.count ?? 0;
-  const rows = await db.select({ id: orderCases.id, orderNumber: orderCases.orderNumber, createdAt: orderCases.createdAt, resolvedAt: orderCases.resolvedAt })
+  const rows = await db.select({ id: orderCases.id, orderNumber: orderCases.orderNumber, createdAt: orderCases.createdAt, resolvedAt: orderCases.resolvedAt, configurationVersionId: orderCases.configurationVersionId })
     .from(orderCases).where(where).orderBy(desc(orderCases.resolvedAt), desc(orderCases.createdAt))
     .limit(parsed.pageSize).offset(paginationOffset(parsed.page, parsed.pageSize));
-  return { cases: rows, ...paginationMeta(total, parsed.page, parsed.pageSize) };
+  const historyVersionIds = [...new Set(rows.map((row) => row.configurationVersionId))];
+  const historyVersions = historyVersionIds.length
+    ? await db.select({ id: configurationVersions.id, values: configurationVersions.values }).from(configurationVersions).where(inArray(configurationVersions.id, historyVersionIds))
+    : [];
+  const historySchedules = new Map(historyVersions.map((row) => [row.id, workingHoursFromConfiguration(row.values)]));
+  const historyNow = new Date();
+  return { cases: rows.map((row) => { const workingHours = historySchedules.get(row.configurationVersionId) ?? workingHoursFromConfiguration(null);
+    return { ...row, workingHours, elapsedWorkingMinutes: elapsedWorkingMinutes(row.createdAt, row.resolvedAt ?? historyNow, workingHours, historyNow) }; }), ...paginationMeta(total, parsed.page, parsed.pageSize) };
 }

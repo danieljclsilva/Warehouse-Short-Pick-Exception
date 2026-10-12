@@ -1,5 +1,7 @@
 "use client";
 
+import { workingElapsedMilliseconds, workingHoursFromConfiguration } from "@/domain/working-hours";
+
 export type UnknownRow = Record<string, unknown>;
 
 export type VolumePoint = { period: string; cases: number; lines: number; resolved: number };
@@ -70,20 +72,30 @@ export function phaseMix(caseRows: UnknownRow[]): Array<{ phase: string; count: 
 }
 
 export type AgingBuckets = { open: number; under1d: number; d1to3: number; d3to7: number; over7d: number };
-const DAY_MS = 86_400_000;
-/** Aging of still-open cases in the loaded slice. A case counts as open when it has no resolvedAt. */
+/**
+ * Aging of still-open cases in the loaded slice, measured in working time.
+ * A case counts as open when it has no resolvedAt. Each row prefers its
+ * pinned `elapsedWorkingSeconds` (server-computed under the case's schedule);
+ * otherwise working time is computed from the row's pinned `workingHours`.
+ * Bucket edges are 24/72/168 working hours.
+ */
 export function agingBuckets(caseRows: UnknownRow[], nowMs: number): AgingBuckets {
   const buckets: AgingBuckets = { open: 0, under1d: 0, d1to3: 0, d3to7: 0, over7d: 0 };
   for (const row of caseRows) {
     if (asDate(row.resolvedAt)) continue;
     const createdAt = asDate(row.createdAt);
     if (!createdAt) continue;
-    const ageMs = nowMs - createdAt.getTime();
+    const pinnedSeconds = typeof row.elapsedWorkingSeconds === "number" && Number.isFinite(row.elapsedWorkingSeconds) && row.elapsedWorkingSeconds >= 0
+      ? row.elapsedWorkingSeconds
+      : null;
+    const ageMs = pinnedSeconds !== null
+      ? pinnedSeconds * 1000
+      : workingElapsedMilliseconds(createdAt, nowMs, workingHoursFromConfiguration(row.workingHours ?? row));
     if (ageMs < 0) continue;
     buckets.open += 1;
-    if (ageMs < DAY_MS) buckets.under1d += 1;
-    else if (ageMs < 3 * DAY_MS) buckets.d1to3 += 1;
-    else if (ageMs < 7 * DAY_MS) buckets.d3to7 += 1;
+    if (ageMs < 24 * 3_600_000) buckets.under1d += 1;
+    else if (ageMs < 72 * 3_600_000) buckets.d1to3 += 1;
+    else if (ageMs < 168 * 3_600_000) buckets.d3to7 += 1;
     else buckets.over7d += 1;
   }
   return buckets;

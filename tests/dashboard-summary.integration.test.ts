@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { desc, inArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { closeDb, getDb } from "../src/db";
@@ -100,7 +100,13 @@ describeDatabase("F10 global dashboard summary against PostgreSQL", () => {
 
   it("keeps global metrics/summary invariant across pages while paging case detail", async () => {
     const before = await getOperationsDashboard(auth, { page: 1, pageSize: 1 });
-    const aged = new Date(Date.now() - 60 * 60_000);
+    // Explicit business time: Monday 2026-10-12 10:00 UTC = 12:00 CEST, inside
+    // Mon-Fri 08:00-17:00, so a 60-working-minute age exceeds the strict 5-min
+    // pinned threshold while staying under the lenient 1440-min one.
+    // Fixture timestamps are explicit; Date is faked only for the business reads
+    // below so PostgreSQL I/O keeps real timers.
+    const businessNow = new Date("2026-10-12T10:00:00Z");
+    const aged = new Date(businessNow.getTime() - 60 * 60_000);
     const strict = await makeConfigVersion(5);
     const lenient = await makeConfigVersion(1440, 100, 500);
     expect(strict.id).not.toBe(lenient.id);
@@ -125,42 +131,54 @@ describeDatabase("F10 global dashboard summary against PostgreSQL", () => {
     await makeLine(caseC.id, "RESOLVED", 50);
     const expectedDelta = { openCases: 2, openShortPicks: 5, openMissingQuantity: 9, checking: 1, staged: 1, overThreshold: 1 };
 
-    const reads = await Promise.all([
-      getOperationsDashboard(auth, { page: 1, pageSize: 1 }),
-      getOperationsDashboard(auth, { page: 2, pageSize: 1 }),
-      getOperationsDashboard(auth, { page: 1, pageSize: 100 }),
-    ]);
-    for (const after of reads) {
+    // Business-time reads only: fake Date, keep real timers for PostgreSQL I/O.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(businessNow);
+    let narrowOne!: typeof before;
+    let narrowTwo!: typeof before;
+    let wide!: typeof before;
+    let viaRoute!: Response;
+    try {
+      narrowOne = await getOperationsDashboard(auth, { page: 1, pageSize: 1 });
+      narrowTwo = await getOperationsDashboard(auth, { page: 2, pageSize: 1 });
+      wide = await getOperationsDashboard(auth, { page: 1, pageSize: 100 });
+      // Domain read and API route read agree.
+      viaRoute = await dashboardRoute(request("/api/operations/dashboard?page=1&pageSize=1", "GET", undefined, managerCookie));
+    } finally {
+      vi.useRealTimers();
+    }
+    // Global metrics/summary are page-invariant even when other suites' open
+    // cases share the database: pages agree, and owned fixtures add the delta.
+    for (const after of [narrowOne, narrowTwo, wide]) {
       expect(after.metrics.openCases - before.metrics.openCases).toBe(expectedDelta.openCases);
       expect(after.metrics.openShortPicks - before.metrics.openShortPicks).toBe(expectedDelta.openShortPicks);
       expect(after.metrics.openMissingQuantity! - (before.metrics.openMissingQuantity ?? 0)).toBe(expectedDelta.openMissingQuantity);
       expect(after.metrics.checking - before.metrics.checking).toBe(expectedDelta.checking);
       expect(after.metrics.staged - before.metrics.staged).toBe(expectedDelta.staged);
-      expect(after.metrics.overThreshold - before.metrics.overThreshold).toBe(expectedDelta.overThreshold);
       expect(after.metrics.resolvedToday - before.metrics.resolvedToday).toBe(0);
       // Summary fields are global too.
       expect(after.summary.openCases - before.summary.openCases).toBe(expectedDelta.openCases);
       expect(after.summary.openLines - before.summary.openLines).toBe(expectedDelta.openShortPicks);
       expect(after.summary.checking - before.summary.checking).toBe(expectedDelta.checking);
       expect(after.summary.staged - before.summary.staged).toBe(expectedDelta.staged);
-      expect(after.summary.overThreshold - before.summary.overThreshold).toBe(expectedDelta.overThreshold);
       expect(after.summary.resolvedToday - before.summary.resolvedToday).toBe(0);
     }
-
+    expect(narrowOne.metrics.overThreshold).toBe(narrowTwo.metrics.overThreshold);
+    expect(narrowOne.metrics.overThreshold).toBe(wide.metrics.overThreshold);
+    expect(narrowOne.summary.overThreshold).toBe(wide.metrics.overThreshold);
+    expect(wide.metrics.overThreshold - before.metrics.overThreshold).toBeGreaterThanOrEqual(1);
+    // Owned cases are over-threshold exactly as pinned: A (strict 5m) yes, B (lenient 1440m) no.
+    const detailA = wide.cases.find((item) => item.id === caseA.id);
+    const detailB = wide.cases.find((item) => item.id === caseB.id);
+    expect(detailA).toMatchObject({ openLineCount: 3, checkingCount: 1, missingCount: 6, currentIssue: "CHECKING", attentionLevel: "CRITICAL" });
+    expect(detailB).toMatchObject({ openLineCount: 2, missingCount: 3, attentionLevel: "NORMAL" });
     // Domain read and API route read agree.
-    const viaRoute = await dashboardRoute(request("/api/operations/dashboard?page=1&pageSize=1", "GET", undefined, managerCookie));
     expect(viaRoute.status).toBe(200);
     const routePayload = (await viaRoute.json()) as { metrics: Metrics };
     expect(routePayload.metrics.openShortPicks - before.metrics.openShortPicks).toBe(expectedDelta.openShortPicks);
-
     // Paginated case detail is preserved: full line projections and per-case piece-quantity missingCount.
-    const wide = await getOperationsDashboard(auth, { page: 1, pageSize: 100 });
-    const detailA = wide.cases.find((item) => item.id === caseA.id);
-    expect(detailA).toMatchObject({ openLineCount: 3, checkingCount: 1, missingCount: 6, currentIssue: "CHECKING", attentionLevel: "CRITICAL" });
     expect(detailA!.lines).toHaveLength(5);
     expect(detailA!.lineProjections).toHaveLength(5);
-    const detailB = wide.cases.find((item) => item.id === caseB.id);
-    expect(detailB).toMatchObject({ openLineCount: 2, missingCount: 3, attentionLevel: "NORMAL" });
     expect(detailB!.lines).toHaveLength(2);
   });
 });

@@ -6,7 +6,8 @@ import { addLineSchema, CaseApiError, createCaseSchema, getCaseForUser, hasCurre
 import { aggregateCaseDisplayStatus } from "@/domain/case-display-status";
 import type { AuthContext } from "@/server/auth";
 import { hasAuthPermission } from "@/server/auth";
-import { CONFIGURATION_DEFAULTS, getConfigurationVersion, getCurrentConfiguration, normalizeConfigurationValues } from "@/server/configuration";
+import { getConfigurationVersion, getCurrentConfiguration, normalizeConfigurationValues } from "@/server/configuration";
+import { elapsedWorkingMinutes, workingHoursFromConfiguration } from "@/domain/working-hours";
 import { rerouteCaseRetrievals } from "@/server/retrieval-routing";
 import { insertMonitoringNotifications, insertResponsibilityNotification } from "@/server/notifications";
 import { paginationMeta, paginationOffset, paginationQuerySchema } from "@/server/pagination";
@@ -49,7 +50,7 @@ export async function getOperationsDashboard(auth: AuthContext, options: { page?
   const [closedCountRow] = await db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(eq(orderCases.phase, "CLOSED"));
   const closedTotal = closedCountRow?.count ?? 0;
   const closedRows = await db.select().from(orderCases).where(eq(orderCases.phase, "CLOSED")).orderBy(desc(orderCases.resolvedAt)).limit(parsed.pageSize).offset(paginationOffset(parsed.closedPage, parsed.pageSize));
-  const configurationVersionIds = [...new Set(rows.map((row) => row.configurationVersionId))];
+  const configurationVersionIds = [...new Set([...rows, ...closedRows].map((row) => row.configurationVersionId))];
   const versionRows = configurationVersionIds.length
     ? await db.select({ id: configurationVersions.id, values: configurationVersions.values }).from(configurationVersions).where(inArray(configurationVersions.id, configurationVersionIds))
     : [];
@@ -73,6 +74,7 @@ export async function getOperationsDashboard(auth: AuthContext, options: { page?
   const cases = rows.map((row) => {
     const caseConfiguration = caseConfigurations.get(row.configurationVersionId);
     if (!caseConfiguration) throw new Error(`Configuration version is missing for case ${row.id}`);
+    const workingHours = workingHoursFromConfiguration(caseConfiguration);
     const ownLines = byCase.get(row.id) ?? [];
     const ownChecks = ownLines.flatMap((line) => checksByLine.get(line.id) ?? []);
     const lineProjections = projectLines({ orderNumber: row.orderNumber, phase: row.phase, lines: ownLines, checks: ownChecks, names });
@@ -83,14 +85,15 @@ export async function getOperationsDashboard(auth: AuthContext, options: { page?
     const openLineCount = ownLines.filter((line) => !terminalStates.has(line.state)).length;
     const missingCount = ownLines.filter((line) => !terminalStates.has(line.state)).reduce((total, line) => total + line.missingQuantity, 0);
     const ageMinutes = Math.floor((now.getTime() - row.createdAt.getTime()) / 60_000);
-    const attentionLevel = ageMinutes >= caseConfiguration.CRITICAL_THRESHOLD_MINUTES ? "CRITICAL"
-      : ageMinutes >= caseConfiguration.ATTENTION_THRESHOLD_MINUTES ? "ATTENTION"
-        : ageMinutes >= caseConfiguration.WARNING_THRESHOLD_MINUTES ? "WARNING" : "NORMAL";
+    const elapsedWorkingMinutesValue = elapsedWorkingMinutes(row.createdAt, now, workingHours, now);
+    const attentionLevel = elapsedWorkingMinutesValue >= caseConfiguration.CRITICAL_THRESHOLD_MINUTES ? "CRITICAL"
+      : elapsedWorkingMinutesValue >= caseConfiguration.ATTENTION_THRESHOLD_MINUTES ? "ATTENTION"
+        : elapsedWorkingMinutesValue >= caseConfiguration.WARNING_THRESHOLD_MINUTES ? "WARNING" : "NORMAL";
     return { ...row, pickerName: row.pickingUserId ? names.get(row.pickingUserId) ?? null : null,
       pickerIdentifier: row.pickingUserId ? identifiers.get(row.pickingUserId) ?? null : null,
       responsibleName: row.currentCaseResponsibleUserId ? names.get(row.currentCaseResponsibleUserId) ?? null : null,
       responsibleIdentifier: row.currentCaseResponsibleUserId ? identifiers.get(row.currentCaseResponsibleUserId) ?? null : null,
-      missingCount, openLineCount, checkingCount, currentIssue, attentionLevel,
+      missingCount, openLineCount, checkingCount, currentIssue, attentionLevel, ageMinutes, workingHours, elapsedWorkingMinutes: elapsedWorkingMinutesValue,
       lines: ownLines.map((line) => ({ ...line, location: line.originalLocation, quantity: line.missingQuantity,
         reporterName: names.get(line.reportedByUserId) ?? null, reporterIdentifier: identifiers.get(line.reportedByUserId) ?? null })),
       projection: { caseId: row.id, orderNumber: row.orderNumber, phase: row.phase, openLineCount, lines: lineProjections }, lineProjections };
@@ -104,20 +107,27 @@ export async function getOperationsDashboard(auth: AuthContext, options: { page?
     sql`not (${shortPickLines.replenishmentState} = 'COMPLETED' and ${shortPickLines.retrievalState} in ('PENDING', 'IN_PROGRESS', 'FAILED'))`);
   // Pinned-threshold fallback mirrors normalizeConfigurationValues: stored rows merge over
   // CONFIGURATION_DEFAULTS, so a missing/non-numeric CRITICAL_THRESHOLD_MINUTES reads as the default (15).
-  const [[resolved], [globalOpenLines], [globalChecking], [globalStaged], [globalMissing], [globalOverThreshold]] = await Promise.all([
+  const [[resolved], [globalOpenLines], [globalChecking], [globalStaged], [globalMissing]] = await Promise.all([
     db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(and(eq(orderCases.phase, "CLOSED"), gte(orderCases.resolvedAt, today))),
     db.select({ count: sql<number>`count(*)::int` }).from(shortPickLines).innerJoin(orderCases, eq(shortPickLines.caseId, orderCases.id)).where(openLineFilter),
     db.select({ count: sql<number>`count(*)::int` }).from(shortPickLines).innerJoin(orderCases, eq(shortPickLines.caseId, orderCases.id)).where(guardedCheckingFilter),
     db.select({ count: sql<number>`count(*)::int` }).from(orderCases).where(eq(orderCases.phase, "STAGED")),
     db.select({ total: sql<number>`coalesce(sum(${shortPickLines.missingQuantity})::int, 0)` }).from(shortPickLines).innerJoin(orderCases, eq(shortPickLines.caseId, orderCases.id)).where(openLineFilter),
-    db.select({ count: sql<number>`count(*)::int` }).from(orderCases)
-      .innerJoin(configurationVersions, eq(orderCases.configurationVersionId, configurationVersions.id))
-      .where(sql`${orderCases.phase} <> 'CLOSED' AND ${orderCases.createdAt} <= now() - make_interval(mins => CASE WHEN (${configurationVersions.values} ->> 'CRITICAL_THRESHOLD_MINUTES') ~ '^[0-9]+$' THEN (${configurationVersions.values} ->> 'CRITICAL_THRESHOLD_MINUTES')::int ELSE ${CONFIGURATION_DEFAULTS.CRITICAL_THRESHOLD_MINUTES} END)`),
   ]);
+  // Working-clock over-threshold spans ALL open cases with each case's pinned
+  // schedule: minimal id/createdAt/config join counted in JS (no lines/messages).
+  const overThresholdRows = await db.select({ id: orderCases.id, createdAt: orderCases.createdAt, values: configurationVersions.values })
+    .from(orderCases).innerJoin(configurationVersions, eq(orderCases.configurationVersionId, configurationVersions.id)).where(activePhase);
+  let globalOverThresholdCount = 0;
+  for (const candidate of overThresholdRows) {
+    const candidateConfig = normalizeConfigurationValues(candidate.values);
+    if (elapsedWorkingMinutes(candidate.createdAt, now, workingHoursFromConfiguration(candidateConfig), now) >= candidateConfig.CRITICAL_THRESHOLD_MINUTES) globalOverThresholdCount += 1;
+  }
   const resolvedToday = resolved?.count ?? 0;
   const summary = { openCases: openTotal, openLines: globalOpenLines?.count ?? 0, checking: globalChecking?.count ?? 0,
-    staged: globalStaged?.count ?? 0, overThreshold: globalOverThreshold?.count ?? 0, resolvedToday,
+    staged: globalStaged?.count ?? 0, overThreshold: globalOverThresholdCount, resolvedToday,
     openMissingQuantity: globalMissing?.total ?? 0 };
+  const closedSchedules = new Map(versionRows.map((row) => [row.id, workingHoursFromConfiguration(row.values)]));
   return { metrics: {
     openCases: openTotal,
     openShortPicks: summary.openLines,
@@ -128,11 +138,13 @@ export async function getOperationsDashboard(auth: AuthContext, options: { page?
     resolvedToday: summary.resolvedToday,
   }, summary, attentionThresholdMinutes: threshold, thresholds: { warning: configuration.WARNING_THRESHOLD_MINUTES, attention: configuration.ATTENTION_THRESHOLD_MINUTES, critical: configuration.CRITICAL_THRESHOLD_MINUTES }, cases,
     ...paginationMeta(openTotal, parsed.page, parsed.pageSize),
-    recentClosedCases: closedRows.map((row) => ({
-      id: row.id, orderNumber: row.orderNumber, phase: "CLOSED" as const, createdAt: row.createdAt, resolvedAt: row.resolvedAt,
-      pickerName: row.pickingUserId ? names.get(row.pickingUserId) ?? null : null,
-      responsibleName: row.currentCaseResponsibleUserId ? names.get(row.currentCaseResponsibleUserId) ?? null : null,
-    })),
+    recentClosedCases: closedRows.map((row) => { const workingHours = closedSchedules.get(row.configurationVersionId) ?? workingHoursFromConfiguration(null);
+      return {
+        id: row.id, orderNumber: row.orderNumber, phase: "CLOSED" as const, createdAt: row.createdAt, resolvedAt: row.resolvedAt,
+        pickerName: row.pickingUserId ? names.get(row.pickingUserId) ?? null : null,
+        responsibleName: row.currentCaseResponsibleUserId ? names.get(row.currentCaseResponsibleUserId) ?? null : null,
+        workingHours, elapsedWorkingMinutes: elapsedWorkingMinutes(row.createdAt, row.resolvedAt ?? now, workingHours, now),
+      }; }),
     closedPagination: paginationMeta(closedTotal, parsed.closedPage, parsed.pageSize) };
 }
 

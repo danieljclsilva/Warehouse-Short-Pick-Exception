@@ -28,6 +28,10 @@ export const CONFIGURATION_DEFAULTS = {
   ASSISTANT_CAN_MANAGE_CONFIGURATION: false,
   PUSH_ENABLED: true,
   PROFILE_PHOTO_MAX_UPLOAD_BYTES: 5 * 1024 * 1024,
+  WORKING_HOURS_TIME_ZONE: "Europe/Amsterdam",
+  WORKING_HOURS_DAYS: [1, 2, 3, 4, 5],
+  WORKING_HOURS_START: "08:00",
+  WORKING_HOURS_END: "17:00",
 } as const;
 
 export type ConfigurationValues = {
@@ -49,9 +53,14 @@ export type ConfigurationValues = {
   ASSISTANT_CAN_MANAGE_CONFIGURATION: boolean;
   PUSH_ENABLED: boolean;
   PROFILE_PHOTO_MAX_UPLOAD_BYTES: number;
+  WORKING_HOURS_TIME_ZONE: "Europe/Amsterdam";
+  WORKING_HOURS_DAYS: number[];
+  WORKING_HOURS_START: string;
+  WORKING_HOURS_END: string;
 };
 
 const integer = (min: number, max: number) => z.number().int().min(min).max(max);
+const workingTime = z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/, "Working hours time must be HH:mm");
 const configurationShape = z.object({
   MAX_SIMULTANEOUS_CHECKS_PER_CASE: integer(1, 100).nullable(),
   CLAIM_CHECKS_ENABLED: z.boolean(),
@@ -72,11 +81,17 @@ const configurationShape = z.object({
   ASSISTANT_CAN_MANAGE_CONFIGURATION: z.boolean(),
   PUSH_ENABLED: z.boolean(),
   PROFILE_PHOTO_MAX_UPLOAD_BYTES: integer(64 * 1024, 25 * 1024 * 1024),
+  WORKING_HOURS_TIME_ZONE: z.literal("Europe/Amsterdam"),
+  WORKING_HOURS_DAYS: z.array(z.number().int().min(1).max(7)).min(1).max(7)
+    .superRefine((values, ctx) => { if (new Set(values).size !== values.length) ctx.addIssue({ code: "custom", message: "Working days must be unique" }); }),
+  WORKING_HOURS_START: workingTime,
+  WORKING_HOURS_END: workingTime,
 }).strict();
 
 const storedConfigurationSchema = z.object(configurationShape.shape).superRefine((values, ctx) => {
   if (values.WARNING_THRESHOLD_MINUTES > values.ATTENTION_THRESHOLD_MINUTES) ctx.addIssue({ code: "custom", path: ["WARNING_THRESHOLD_MINUTES"], message: "Warning threshold cannot exceed attention threshold" });
   if (values.ATTENTION_THRESHOLD_MINUTES > values.CRITICAL_THRESHOLD_MINUTES) ctx.addIssue({ code: "custom", path: ["ATTENTION_THRESHOLD_MINUTES"], message: "Attention threshold cannot exceed critical threshold" });
+  if (values.WORKING_HOURS_START >= values.WORKING_HOURS_END) ctx.addIssue({ code: "custom", path: ["WORKING_HOURS_START"], message: "Working hours start must be before end (no overnight shifts)" });
 });
 
 export function zodIssuePaths(error: unknown): string[] {

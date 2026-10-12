@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MessageKey } from "@/i18n/messages";
+import { DEFAULT_WORKING_HOURS } from "@/domain/working-hours";
 import { PaginationControls } from "@/components/pagination-controls";
 import styles from "./configuration-panel.module.css";
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
-type ConfigValue = boolean | number | string | string[] | null;
+type ConfigValue = boolean | number | string | string[] | number[] | null;
 type ConfigValues = Record<string, ConfigValue>;
 type ConfigurationRecord = {
   id?: string;
@@ -49,6 +50,10 @@ const defaults: ConfigValues = {
   LOGIN_MAX_FAILED_ATTEMPTS: 5,
   LOGIN_LOCKOUT_MINUTES: 15,
   SHORT_PICK_HOLD_LOCATION_NAME: "SHORT PICK / HOLD",
+  WORKING_HOURS_TIME_ZONE: DEFAULT_WORKING_HOURS.timeZone,
+  WORKING_HOURS_DAYS: [...DEFAULT_WORKING_HOURS.days],
+  WORKING_HOURS_START: DEFAULT_WORKING_HOURS.start,
+  WORKING_HOURS_END: DEFAULT_WORKING_HOURS.end,
   ALLOWED_RESOLUTION_CODES: ["FOUND", "NOT_FOUND", "WRONG_LOCATION", "OTHER"],
   MANUAL_CASE_CREATION_ENABLED: true,
   ASSISTANT_CAN_MANAGE_CONFIGURATION: false,
@@ -117,7 +122,11 @@ const definitions: Array<{ title: MessageKey; description: MessageKey; settings:
 function readValue(value: unknown, fallback: ConfigValue): ConfigValue {
   if (typeof fallback === "boolean") return typeof value === "boolean" ? value : fallback;
   if (typeof fallback === "number") return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-  if (Array.isArray(fallback)) return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : fallback;
+  if (Array.isArray(fallback)) {
+    if (!Array.isArray(value)) return fallback;
+    if (fallback.every((item) => typeof item === "number")) return value.filter((item): item is number => typeof item === "number");
+    return value.filter((item): item is string => typeof item === "string");
+  }
   return typeof value === "string" ? value : fallback;
 }
 
@@ -156,6 +165,27 @@ function mebibytesToBytes(value: string): number | null {
   if (!Number.isFinite(mebibytes)) return null;
   const bytes = Math.round(mebibytes * MEBIBYTE_BYTES);
   return Number.isSafeInteger(bytes) ? bytes : null;
+}
+
+const WORKING_HOUR_DAYS: Array<{ day: number; label: MessageKey }> = [
+  { day: 1, label: "workingHoursMonday" },
+  { day: 2, label: "workingHoursTuesday" },
+  { day: 3, label: "workingHoursWednesday" },
+  { day: 4, label: "workingHoursThursday" },
+  { day: 5, label: "workingHoursFriday" },
+  { day: 6, label: "workingHoursSaturday" },
+  { day: 7, label: "workingHoursSunday" },
+];
+
+function isValidTimeRange(start: string, end: string) {
+  if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(start)) return false;
+  if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(end)) return false;
+  return start < end;
+}
+
+function formatWorkingHoursDefault(days: unknown, start: unknown, end: unknown, timeZone: unknown) {
+  const dayList = Array.isArray(days) ? days.filter((item): item is number => typeof item === "number").join(", ") : String(days ?? "");
+  return `${dayList} · ${start ?? ""}–${end ?? ""} · ${timeZone ?? ""}`;
 }
 
 function actorName(actor: HistoryRecord["changedBy"]) {
@@ -234,6 +264,17 @@ export function ConfigurationPanel({ tr, locale, role }: Props) {
       setError(tr("configurationUploadLimitInvalid"));
       return;
     }
+    const workingDays = Array.isArray(values.WORKING_HOURS_DAYS) ? values.WORKING_HOURS_DAYS : [];
+    if (workingDays.length === 0) {
+      setError(tr("configurationWorkingHoursEmptyDays"));
+      return;
+    }
+    const workingStart = typeof values.WORKING_HOURS_START === "string" ? values.WORKING_HOURS_START : "";
+    const workingEnd = typeof values.WORKING_HOURS_END === "string" ? values.WORKING_HOURS_END : "";
+    if (!isValidTimeRange(workingStart, workingEnd)) {
+      setError(tr("configurationWorkingHoursInvalidRange"));
+      return;
+    }
     setSaving(true);
     setError("");
     setNotice("");
@@ -274,7 +315,7 @@ export function ConfigurationPanel({ tr, locale, role }: Props) {
     }
   };
 
-  const settingCount = useMemo(() => definitions.reduce((count, group) => count + group.settings.filter((setting) => role !== "ASSISTANT" || setting.key !== "ASSISTANT_CAN_MANAGE_CONFIGURATION").length, 0), [role]);
+  const settingCount = useMemo(() => definitions.reduce((count, group) => count + group.settings.filter((setting) => role !== "ASSISTANT" || setting.key !== "ASSISTANT_CAN_MANAGE_CONFIGURATION").length, 4), [role]);
 
   if (loading) return <div className={styles.panel}><p className={styles.loading} aria-live="polite">{tr("configurationLoading")}</p></div>;
   if (error && version === 0) return <div className={styles.panel}><div className={styles.error} role="alert"><span>{error}</span><div className={styles.errorActions}><button className={styles.reload} type="button" onClick={() => void load()}>{tr("tryAgain")}</button></div></div></div>;
@@ -318,6 +359,34 @@ export function ConfigurationPanel({ tr, locale, role }: Props) {
             </div>
           </section>
         ))}
+        <section className={styles.section} aria-labelledby="configuration-working-hours-title">
+          <div className={styles.sectionHeading}><div><h2 id="configuration-working-hours-title">{tr("configurationWorkingHoursTitle")}</h2><p>{tr("configurationWorkingHoursDescription")}</p></div></div>
+          <div className={styles.settings}>
+            <div className={styles.setting}>
+              <div><h3>{tr("configurationWorkingHoursTimezone")}</h3><p>{tr("configurationWorkingHoursTimezoneDescription")}</p><small className={styles.default}>{tr("configurationWorkingHoursTimezoneValue")}</small></div>
+              <div className={styles.control}><span aria-label={tr("configurationWorkingHoursTimezone")}>{tr("configurationWorkingHoursTimezoneValue")}</span></div>
+            </div>
+            <div className={styles.setting}>
+              <div><h3>{tr("configurationWorkingHoursDays")}</h3><p>{tr("configurationWorkingHoursDaysDescription")}</p><small className={styles.default}>{tr("configurationDefault", { value: formatWorkingHoursDefault(serverDefaults.WORKING_HOURS_DAYS, serverDefaults.WORKING_HOURS_START, serverDefaults.WORKING_HOURS_END, serverDefaults.WORKING_HOURS_TIME_ZONE) })}</small></div>
+              <div className={styles.control}><fieldset className={styles.dayGroup}><legend className={styles.srOnly}>{tr("configurationWorkingHoursDays")}</legend>{WORKING_HOUR_DAYS.map(({ day, label }) => {
+                const selected: number[] = Array.isArray(values.WORKING_HOURS_DAYS) ? (values.WORKING_HOURS_DAYS as number[]) : [];
+                const checked = selected.includes(day);
+                return <label key={day} className={styles.toggle}><input type="checkbox" checked={checked} onChange={(event) => {
+                  const next = event.target.checked ? [...selected, day].sort((a, b) => a - b) : selected.filter((item) => item !== day);
+                  updateValue("WORKING_HOURS_DAYS", next);
+                }} /><span>{tr(label)}</span></label>;
+              })}</fieldset></div>
+            </div>
+            <div className={styles.setting}>
+              <div><h3>{tr("configurationWorkingHoursStart")}</h3><p>{tr("configurationWorkingHoursStartDescription")}</p></div>
+              <div className={styles.control}><input type="time" value={typeof values.WORKING_HOURS_START === "string" ? values.WORKING_HOURS_START : DEFAULT_WORKING_HOURS.start} onChange={(event) => updateValue("WORKING_HOURS_START", event.target.value)} aria-label={tr("configurationWorkingHoursStart")} /></div>
+            </div>
+            <div className={styles.setting}>
+              <div><h3>{tr("configurationWorkingHoursEnd")}</h3><p>{tr("configurationWorkingHoursEndDescription")}</p></div>
+              <div className={styles.control}><input type="time" value={typeof values.WORKING_HOURS_END === "string" ? values.WORKING_HOURS_END : DEFAULT_WORKING_HOURS.end} onChange={(event) => updateValue("WORKING_HOURS_END", event.target.value)} aria-label={tr("configurationWorkingHoursEnd")} /></div>
+            </div>
+          </div>
+        </section>
         <div className={styles.actions}><button className={styles.reload} type="button" onClick={() => void load()} disabled={saving}>{tr("reloadConfiguration")}</button><button className={styles.save} type="submit" disabled={saving}>{saving ? tr("savingConfiguration") : tr("saveConfiguration")}</button></div>
       </form>
       <section className={styles.section} aria-labelledby="configuration-history-title">

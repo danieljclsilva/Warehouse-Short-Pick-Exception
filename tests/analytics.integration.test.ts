@@ -40,7 +40,10 @@ describeDatabase("Phase 7 analytics and CSV against PostgreSQL", () => {
     pickerId = picker.id;
     leaderCookie = (await createSession(leader.id)).cookie.split(";")[0]!;
     pickerCookie = (await createSession(picker.id)).cookie.split(";")[0]!;
-    const now = Date.now();
+    // Fixed business time: Monday 2026-10-12 06:30 UTC = 08:30 CEST, inside
+    // Mon-Fri 08:00-17:00, so every event offset below lands in working hours
+    // and working-clock medians equal wall-clock gaps (300/480/1020/1080s).
+    const now = new Date("2026-10-12T06:30:00Z").getTime();
     const orderNumber = `970${now}`;
     analyticsOrder = orderNumber;
     analyticsConfigurationVersion = config[0]!.version;
@@ -73,8 +76,8 @@ describeDatabase("Phase 7 analytics and CSV against PostgreSQL", () => {
   });
 
   it("returns filtered structured metrics, duplicate order history, and event-derived medians", async () => {
-    const from = new Date(Date.now() - 60 * 60_000).toISOString();
-    const to = new Date(Date.now() + 60 * 60_000).toISOString();
+    const from = new Date(new Date("2026-10-12T06:30:00Z").getTime() - 60 * 60_000).toISOString();
+    const to = new Date(new Date("2026-10-12T06:30:00Z").getTime() + 60 * 60_000).toISOString();
     const response = await analyticsRoute(request(`/api/analytics?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&source=TL_MANUAL`, "GET", leaderCookie));
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -100,7 +103,7 @@ describeDatabase("Phase 7 analytics and CSV against PostgreSQL", () => {
   });
 
   it("enforces view/export permissions and protects spreadsheet formula cells", async () => {
-    const query = `from=${encodeURIComponent(new Date(Date.now() - 60 * 60_000).toISOString())}&to=${encodeURIComponent(new Date(Date.now() + 60 * 60_000).toISOString())}`;
+    const query = `from=${encodeURIComponent(new Date(new Date("2026-10-12T06:30:00Z").getTime() - 60 * 60_000).toISOString())}&to=${encodeURIComponent(new Date(new Date("2026-10-12T06:30:00Z").getTime() + 60 * 60_000).toISOString())}`;
     expect((await analyticsRoute(request(`/api/analytics?${query}`, "GET", pickerCookie))).status).toBe(403);
     expect((await csvRoute(request(`/api/analytics/export/csv?dataset=line&${query}`, "GET", pickerCookie))).status).toBe(403);
     const response = await csvRoute(request(`/api/analytics/export/csv?dataset=line&${query}`, "GET", leaderCookie));
@@ -113,7 +116,7 @@ describeDatabase("Phase 7 analytics and CSV against PostgreSQL", () => {
     expect(events.status).toBe(200);
     expect(await events.text()).toContain("event_id,case_id,line_id");
 
-    const eventWindow = `from=${encodeURIComponent(new Date(Date.now() - 4 * 60_000).toISOString())}&to=${encodeURIComponent(new Date(Date.now() + 60_000).toISOString())}`;
+    const eventWindow = `from=${encodeURIComponent(new Date(new Date("2026-10-12T06:30:00Z").getTime() - 4 * 60_000).toISOString())}&to=${encodeURIComponent(new Date(new Date("2026-10-12T06:30:00Z").getTime() + 60_000).toISOString())}`;
     const recentEvents = await csvRoute(request(`/api/analytics/export/csv?dataset=event&${eventWindow}`, "GET", leaderCookie));
     const recentCsv = await recentEvents.text();
     expect(recentEvents.status).toBe(200);
