@@ -4,6 +4,11 @@ Production web and PostgreSQL remain online. Push delivery uses the latest
 configured working days/start/end in Europe/Amsterdam, rather than a fixed UTC
 shift. In-app notifications remain available regardless of working hours.
 
+The exact Railway environment name `test` keeps its worker running until the
+TEST lifecycle script parks it, preserving replica readiness for after-hours QA.
+This does not bypass delivery hours or PUSH_ENABLED: it only preserves the TEST
+process. Production and unknown environments retain the scheduled exit policy.
+
 Railway runs `node build/push-worker.cjs` with cron `*/5 * * * *` and restart
 policy `NEVER`. Each run reads the current configuration. Outside the shift or
 15-minute warm-up window it closes the database pool and exits. Within that

@@ -1,8 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 import { currentWorkingWindowStart, DEFAULT_WORKING_HOURS, isWithinPushWorkerHours } from "../src/domain/working-hours";
 import { runPushWorker } from "../src/server/push-worker-loop";
+import { shouldRunPushWorker } from "../src/server/push-worker-schedule";
+import { CONFIGURATION_DEFAULTS, type ConfigurationValues } from "../src/server/configuration";
 
 describe("push shift schedule", () => {
+  it("keeps the Railway TEST replica available for lifecycle readiness, even with push disabled", () => {
+    const values = { ...CONFIGURATION_DEFAULTS, WORKING_HOURS_DAYS: [1, 2, 3, 4, 5], ALLOWED_RESOLUTION_CODES: [...CONFIGURATION_DEFAULTS.ALLOWED_RESOLUTION_CODES], PUSH_ENABLED: false } as ConfigurationValues;
+    expect(shouldRunPushWorker(values, new Date("2026-10-12T20:00:00Z"), "test")).toBe(true);
+    expect(shouldRunPushWorker(values, new Date("2026-10-12T20:00:00Z"), "production")).toBe(false);
+  });
+
+  it("does not exempt unknown or local environments from shift or push-disabled checks", () => {
+    const values = { ...CONFIGURATION_DEFAULTS, WORKING_HOURS_DAYS: [1, 2, 3, 4, 5], ALLOWED_RESOLUTION_CODES: [...CONFIGURATION_DEFAULTS.ALLOWED_RESOLUTION_CODES] } as ConfigurationValues;
+    for (const name of [undefined, "development", "staging", "production"]) {
+      expect(shouldRunPushWorker(values, new Date("2026-10-12T20:00:00Z"), name)).toBe(false);
+      expect(shouldRunPushWorker(values, new Date("2026-10-12T06:00:00Z"), name)).toBe(true);
+      expect(shouldRunPushWorker({ ...values, PUSH_ENABLED: false }, new Date("2026-10-12T06:00:00Z"), name)).toBe(false);
+    }
+  });
   it("warms 15 minutes before opening, stops at closing and stays off over weekends", () => {
     const schedule = DEFAULT_WORKING_HOURS;
     expect(isWithinPushWorkerHours("2026-10-12T05:44:59Z", schedule)).toBe(false);
