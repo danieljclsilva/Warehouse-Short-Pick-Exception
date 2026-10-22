@@ -1,3 +1,12 @@
+# Hosted TEST environment retired — 2026-10-22
+
+The Railway `test` environment, `web-test`, `Postgres-ltHj`, and the test instance
+of `push-delivery` have been deleted at the owner's request. Database-volume
+deletion was accepted by Railway; its cleanup patch is still APPLYING at handoff.
+Production push-delivery remains. This document and lifecycle fixture tests are
+historical; do not run the hosted start/stop commands against the retired resources.
+Local disposable database testing remains supported.
+
 # Test environment runbook (Railway)
 
 On-demand start/stop/status for the Railway `test` environment. Explicit

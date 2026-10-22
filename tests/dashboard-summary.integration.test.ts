@@ -99,13 +99,22 @@ describeDatabase("F10 global dashboard summary against PostgreSQL", () => {
   });
 
   it("keeps global metrics/summary invariant across pages while paging case detail", async () => {
-    const before = await getOperationsDashboard(auth, { page: 1, pageSize: 1 });
     // Explicit business time: Monday 2026-10-12 10:00 UTC = 12:00 CEST, inside
     // Mon-Fri 08:00-17:00, so a 60-working-minute age exceeds the strict 5-min
     // pinned threshold while staying under the lenient 1440-min one.
     // Fixture timestamps are explicit; Date is faked only for the business reads
     // below so PostgreSQL I/O keeps real timers.
     const businessNow = new Date("2026-10-12T10:00:00Z");
+    // Compare both snapshots against the same business day, including retained
+    // fixtures from other suites. The workstation date must not affect the delta.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(businessNow);
+    let before!: Awaited<ReturnType<typeof getOperationsDashboard>>;
+    try {
+      before = await getOperationsDashboard(auth, { page: 1, pageSize: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
     const aged = new Date(businessNow.getTime() - 60 * 60_000);
     const strict = await makeConfigVersion(5);
     const lenient = await makeConfigVersion(1440, 100, 500);
@@ -125,7 +134,7 @@ describeDatabase("F10 global dashboard summary against PostgreSQL", () => {
     await makeLine(caseB.id, "OPEN", 2);
     await makeLine(caseB.id, "FOUND", 1);
     // Case C (CLOSED, resolved 48h ago): excluded from open metrics and from resolvedToday.
-    const caseC = await makeCase("CLOSED", lenient.id, new Date(Date.now() - 48 * 60 * 60_000));
+    const caseC = await makeCase("CLOSED", lenient.id, new Date(businessNow.getTime() - 48 * 60 * 60_000));
     // Legacy inconsistent data on a closed case must not leak into open totals.
     await makeLine(caseC.id, "OPEN", 99);
     await makeLine(caseC.id, "RESOLVED", 50);

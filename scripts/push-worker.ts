@@ -1,7 +1,7 @@
 import { closeDb } from "../src/db";
 import { deliverPushBatch } from "../src/server/push";
-import { runPushWorker } from "../src/server/push-worker-loop";
-import { logServerError } from "../src/server/logger";
+import { runPushWorker, transientPushDatabaseCode } from "../src/server/push-worker-loop";
+import { logServerError, logServerEvent } from "../src/server/logger";
 import { getCurrentConfiguration } from "../src/server/configuration";
 import { shouldRunPushWorker } from "../src/server/push-worker-schedule";
 
@@ -14,7 +14,9 @@ void runPushWorker(() => deliverPushBatch(25), stop.signal, (counters) => {
 }, 5000, async () => {
   const configuration = await getCurrentConfiguration();
   return shouldRunPushWorker(configuration.values, new Date(), process.env.RAILWAY_ENVIRONMENT_NAME);
+}, (code, attemptCount) => {
+  logServerEvent("warn", "notification.push.database_retry", { area: "notifications", code, attemptCount });
 }).catch((error) => {
-  logServerError("notification.push.worker_failed", error, { area: "notifications" });
+  logServerError("notification.push.worker_failed", error, { area: "notifications", code: transientPushDatabaseCode(error) });
   process.exitCode = 1;
 }).finally(async () => { await closeDb(); console.log(JSON.stringify({ event: "push.worker.stopped" })); });

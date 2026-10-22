@@ -26,14 +26,12 @@ export default defineRailway(() => {
     preDeploy: "npm run db:migrate",
     replicas: { "europe-west4-drams3a": 1 },
     domains: ["shortpickexception.nl"],
-    env: { APP_URL: preserve(), DATABASE_URL: preserve(), PUSH_PRIVATE_KEY: preserve(), PUSH_PUBLIC_KEY: preserve(), PUSH_SUBJECT: preserve(), STORAGE_ACCESS_KEY_ID: preserve(), STORAGE_BUCKET: preserve(), STORAGE_ENDPOINT: preserve(), STORAGE_FORCE_PATH_STYLE: preserve(), STORAGE_REGION: preserve(), STORAGE_SECRET_ACCESS_KEY: preserve() },
+    env: { APP_URL: preserve(), DATABASE_URL: preserve(), PUSH_PRIVATE_KEY: preserve(), PUSH_PUBLIC_KEY: preserve(), PUSH_SUBJECT: preserve(), STORAGE_ACCESS_KEY_ID: ref(profilePhotosAndReports, "ACCESS_KEY_ID"), STORAGE_BUCKET: preserve(), STORAGE_ENDPOINT: preserve(), STORAGE_FORCE_PATH_STYLE: preserve(), STORAGE_REGION: preserve(), STORAGE_SECRET_ACCESS_KEY: ref(profilePhotosAndReports, "SECRET_ACCESS_KEY") },
   });
   // Cron checks the current Amsterdam schedule, exits outside shift/warm-up,
   // and polls every 5s during the shift. Railway skips overlapping cron runs.
-  // Whole-project IaC apply
-  // deletes live resources this file omits (test env: Postgres-ltHj,
-  // push-delivery, web-test) — NEVER apply without first running
-  // `railway config pull` to import them, or scope IaC to production resources.
+  // The hosted test environment and its dedicated resources were retired on
+  // 2026-10-22. Review a fresh plan before any whole-project IaC apply.
   const pushDelivery = service("push-delivery", {
     build: { builder: "DOCKERFILE", dockerfilePath: "push/Dockerfile" },
     start: "node build/push-worker.cjs",

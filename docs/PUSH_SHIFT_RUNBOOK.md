@@ -4,6 +4,12 @@ Production web and PostgreSQL remain online. Push delivery uses the latest
 configured working days/start/end in Europe/Amsterdam, rather than a fixed UTC
 shift. In-app notifications remain available regardless of working hours.
 
+The hosted Railway `test` environment was deleted on 2026-10-22, together with
+its dedicated web/database services. Database-volume deletion was requested;
+platform cleanup remains pending. Local disposable test
+databases remain supported. The following TEST compatibility behavior is retained
+for historical lifecycle fixtures, not an instruction to recreate that environment.
+
 The exact Railway environment name `test` keeps its worker running until the
 TEST lifecycle script parks it, preserving replica readiness for after-hours QA.
 This does not bypass delivery hours or PUSH_ENABLED: it only preserves the TEST
@@ -20,7 +26,13 @@ provider requests. An in-flight provider request may finish after closing.
 Cron has five-minute granularity and platform startup delay. For starts not
 aligned to five-minute boundaries, warm-up begins roughly 10–15 minutes before
 opening, plus any platform delay. This is not a precise readiness guarantee.
-An error exits nonzero; the next five-minute cron run retries. No external
+Known database connection/restart errors (including wrapped driver causes) retry
+serially after 5, 10, 20, 30 and 30 seconds. Every retry rechecks current hours
+before delivery; cancellation interrupts the wait. A successful batch resets the
+budget. Unknown errors and exhausted retries exit nonzero. Logs include only a
+fixed allowlisted error code and retry count, never query text or exception messages.
+Verify subsequent cron executions after a fatal exit; a cron expression alone is
+not proof of recovery. No external
 scheduler, Railway API token, or new environment variable is required.
 
 Queued notifications from before the current shift are marked `DISABLED` in
@@ -46,5 +58,5 @@ specific compiler savings. Brief off-hours cron checks still incur some usage.
 
 Rollback: restore the previously recorded production push build/start/cron/restart
 configuration and redeploy its prior successful deployment. Do not apply the
-whole-project IaC file: it omits live test resources. Scope every live mutation
+whole-project IaC file without reviewing a fresh plan. Scope every live mutation
 to production push-delivery only. No schema change or migration is needed.
