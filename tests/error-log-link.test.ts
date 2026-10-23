@@ -35,4 +35,12 @@ describe("buildErrorLogHref", () => {
     const url = new URL(buildErrorLogHref(BASE, "172024", [{ location: "01.AA.1", sku: "X" }])!);
     expect(url.searchParams.has("case")).toBe(false);
   });
+  it("replaces configured payload params and normalizes locations and SKUs", () => {
+    const url = new URL(buildErrorLogHref(`${BASE}?loc=stale&sku=stale&case=stale&view=research`, " 172024 ", [{ location: "3aa1", sku: " mixed-sku " }])!);
+    expect(url.searchParams.getAll("loc")).toEqual(["03.AA.1"]);
+    expect(url.searchParams.getAll("sku")).toEqual(["MIXED-SKU"]);
+    expect(url.searchParams.has("case")).toBe(false);
+    expect(url.searchParams.get("view")).toBe("research");
+  });
+
 });

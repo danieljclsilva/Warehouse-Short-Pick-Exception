@@ -1,3 +1,4 @@
+import { normalizeWarehouseLocation } from "@/domain/warehouse-location";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
@@ -12,7 +13,7 @@ import { loadExplicitPickerOverride, loadRoutingConfig, resolveRetrievalOwner } 
 export const assignCheckSchema = z.object({ userId: z.string().uuid(), pickerRetrieval: z.boolean().default(false) });
 export const completeCheckSchema = z.object({
   code: z.enum(["FOUND", "FOUND_AT_ORIGINAL", "NOT_FOUND", "WRONG_LOCATION", "OTHER"]),
-  discoveredLocation: z.string().trim().min(1).max(128).transform((value) => value.toUpperCase()).optional(),
+  discoveredLocation: z.string().trim().min(1).max(128).transform(normalizeWarehouseLocation).optional(),
   message: z.string().trim().max(500).default(""),
 }).superRefine((value, context) => {
   if (value.code === "FOUND" && !value.discoveredLocation) {
@@ -230,7 +231,7 @@ export async function assignCheck(auth: AuthContext, taskId: string, userId: str
 }
 
 export const discoveredLocationSchema = z.object({
-  location: z.string().trim().min(1).max(128).transform((value) => value.toUpperCase()),
+  location: z.string().trim().min(1).max(128).transform(normalizeWarehouseLocation),
   note: z.string().trim().max(500).default(""),
 });
 

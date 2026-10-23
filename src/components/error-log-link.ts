@@ -1,3 +1,5 @@
+import { normalizeWarehouseLocation } from "@/domain/warehouse-location";
+
 /** Base URL of the external error log app; the link is hidden when this is not set. */
 export const errorLogBaseUrl = process.env.NEXT_PUBLIC_ERROR_LOG_URL;
 
@@ -19,10 +21,13 @@ export function buildErrorLogHref(baseUrl: string | undefined, orderNumber: stri
   }
   if (url.protocol !== "https:") return null;
   url.searchParams.set("order", orderNumber.trim());
+  url.searchParams.delete("loc");
+  url.searchParams.delete("sku");
+  url.searchParams.delete("case");
   const seen = new Set<string>();
   for (const item of items) {
-    const location = (item.location ?? "").trim();
-    const sku = (item.sku ?? "").trim();
+    const location = normalizeWarehouseLocation(item.location ?? "");
+    const sku = (item.sku ?? "").trim().toUpperCase();
     const key = `${location}\u0000${sku}`;
     if (!location || seen.has(key)) continue;
     seen.add(key);

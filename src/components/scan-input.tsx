@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { FocusEvent, InputHTMLAttributes, KeyboardEvent } from "react";
 import { flushSync } from "react-dom";
 import type * as ZXingBrowser from "@zxing/browser";
+import { formatLocationInput, normalizeWarehouseLocation, suggestWarehouseLocations } from "@/domain/warehouse-location";
 import type { MessageKey } from "@/i18n/messages";
 
 export type ScanKind = "order" | "location" | "sku";
@@ -18,7 +19,7 @@ export function normalizeScannedValue(raw: string, kind: ScanKind): string {
     if (!runs || runs.length !== 1) return trimmed;
     return runs[0] ?? trimmed;
   }
-  return trimmed.toUpperCase();
+  return kind === "location" ? normalizeWarehouseLocation(trimmed) : trimmed.toUpperCase();
 }
 
 type DetectedBarcode = { rawValue: string };
@@ -56,7 +57,12 @@ type ScanInputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onC
   type?: string;
 };
 
-export function ScanInput({ value, onChange, onScannedExtra, tr, scanKind, fieldLabel, id, onBlur, onKeyDown, ...inputProps }: ScanInputProps) {
+export function ScanInput({ value, onChange, onScannedExtra, tr, scanKind, fieldLabel, id, onBlur, onFocus, onKeyDown, ...inputProps }: ScanInputProps) {
+  const suggestionId = useId();
+  const [locationFocused, setLocationFocused] = useState(false);
+  const [selectedSuggestion, setSelectedSuggestion] = useState(-1);
+  const suggestions = scanKind === "location" ? suggestWarehouseLocations(value) : [];
+  const showSuggestions = locationFocused && suggestions.length > 0;
   const [open, setOpen] = useState(false);
   const [supported, setSupported] = useState(false);
   const [error, setError] = useState("");
@@ -91,17 +97,41 @@ export function ScanInput({ value, onChange, onScannedExtra, tr, scanKind, field
     inputRef.current?.focus();
   };
 
+  const selectLocation = (location: string) => {
+    onChange(location);
+    setSelectedSuggestion(-1);
+    inputRef.current?.focus();
+  };
+
   const handleBlur = (event: FocusEvent<HTMLInputElement>) => {
-    if (scanKind === "order") {
-      const normalized = normalizeScannedValue(event.currentTarget.value, "order");
+    setLocationFocused(false);
+    setSelectedSuggestion(-1);
+    if (scanKind === "order" || scanKind === "location" || scanKind === "sku") {
+      const normalized = normalizeScannedValue(event.currentTarget.value, scanKind);
       if (normalized !== event.currentTarget.value) onChange(normalized);
     }
     onBlur?.(event);
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter" && scanKind === "order") {
-      const normalized = normalizeScannedValue(event.currentTarget.value, "order");
+    if (showSuggestions && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      setSelectedSuggestion((current) => current < 0 ? (event.key === "ArrowDown" ? 0 : suggestions.length - 1) : (current + (event.key === "ArrowDown" ? 1 : -1) + suggestions.length) % suggestions.length);
+      return;
+    }
+    if (showSuggestions && event.key === "Escape") {
+      event.preventDefault();
+      setLocationFocused(false);
+      setSelectedSuggestion(-1);
+      return;
+    }
+    if (showSuggestions && event.key === "Enter" && selectedSuggestion >= 0 && suggestions[selectedSuggestion]) {
+      event.preventDefault();
+      selectLocation(suggestions[selectedSuggestion]!);
+      return;
+    }
+    if (event.key === "Enter") {
+      const normalized = normalizeScannedValue(event.currentTarget.value, scanKind);
       if (normalized !== event.currentTarget.value) flushSync(() => onChange(normalized));
     }
     onKeyDown?.(event);
@@ -219,11 +249,39 @@ export function ScanInput({ value, onChange, onScannedExtra, tr, scanKind, field
 
   return (
     <>
+      <div className="scan-input-group">
       <div className="scan-field">
-        <input ref={inputRef} id={id} value={value} onChange={(event) => onChange(event.target.value)} onBlur={handleBlur} onKeyDown={handleKeyDown} {...inputProps} />
+        <input ref={inputRef} id={id} value={value} {...inputProps}
+          autoCapitalize={scanKind === "order" ? inputProps.autoCapitalize : "characters"}
+          autoComplete={scanKind === "location" ? "off" : inputProps.autoComplete}
+          placeholder={inputProps.placeholder ?? (scanKind === "location" ? "00.AA.0" : undefined)}
+          role={scanKind === "location" ? "combobox" : inputProps.role}
+          aria-autocomplete={scanKind === "location" ? "list" : undefined}
+          aria-expanded={scanKind === "location" ? showSuggestions : undefined}
+          aria-controls={scanKind === "location" ? suggestionId : undefined}
+          aria-activedescendant={showSuggestions && selectedSuggestion >= 0 ? `${suggestionId}-${selectedSuggestion}` : undefined}
+          onFocus={(event) => { setLocationFocused(true); onFocus?.(event); }}
+          onChange={(event) => {
+            setSelectedSuggestion(-1);
+            setLocationFocused(true);
+            const raw = event.target.value;
+            const formatted = scanKind === "location" ? formatLocationInput(raw) : scanKind === "sku" ? raw.toUpperCase() : raw;
+            const caret = event.target.selectionStart;
+            // Preserve editing in the middle of an existing value when formatting adds separators.
+            onChange(formatted);
+            if (caret !== null && caret < raw.length) requestAnimationFrame(() => inputRef.current?.setSelectionRange(caret + formatted.length - raw.length, caret + formatted.length - raw.length));
+          }} onBlur={handleBlur} onKeyDown={handleKeyDown} />
         <button type="button" className="scan-button" aria-label={tr("scanButtonLabel", { field: fieldLabel })} title={tr("scanButtonLabel", { field: fieldLabel })} onClick={openScanner}>
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3" /><path d="M4 12h16" /></svg>
         </button>
+      </div>
+      {scanKind === "location" && <>
+        {showSuggestions && <div id={suggestionId} className="location-suggestions" role="listbox" aria-label={tr("locationSuggestions")}>
+          {suggestions.map((location, index) => <button key={location} id={`${suggestionId}-${index}`} type="button" role="option" aria-selected={index === selectedSuggestion} tabIndex={-1}
+            onPointerDown={(event) => event.preventDefault()} onClick={() => selectLocation(location)}>{location}</button>)}
+        </div>}
+        <small className="location-format-hint">{tr("locationFormatHint")}</small>
+      </>}
       </div>
       {open && (
         <div className="scan-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeScanner(); }}>

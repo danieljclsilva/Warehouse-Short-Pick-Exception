@@ -349,7 +349,7 @@ button { color: inherit; }
 .error-log-reminder { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 12px; padding: 10px 14px; border: 1px solid var(--green); border-radius: 12px; background: var(--green-wash); }
 .error-log-reminder p { flex: 1; min-width: 180px; margin: 0; font-weight: 600; }
 .error-log-reminder-links { display: flex; flex-wrap: wrap; gap: 6px; }
-.error-log-reminder-links .secondary-button { display: inline-flex; align-items: center; width: auto; min-height: 36px; margin: 0; padding: 0 12px; text-decoration: none; }
+.error-log-reminder-links .secondary-button { display: inline-flex; align-items: center; width: auto; min-height: 44px; margin: 0; padding: 0 12px; text-decoration: none; }
 .case-detail-section-title { margin: 4px 0 0; color: var(--ink); font-size: 16px; }
 .case-summary-card { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .case-summary-card > div { display: grid; align-content: start; gap: 6px; min-width: 0; }
@@ -654,3 +654,13 @@ button { color: inherit; }
 .user-card-heading > img.avatar { object-fit: cover; }
 :root[data-theme="dark"] option, :root[data-theme="dark"] optgroup { background: var(--input); color: var(--ink); }
 :root[data-theme="dark"] input, :root[data-theme="dark"] select, :root[data-theme="dark"] textarea { color-scheme: dark; }
+
+.error-log-dialog { color: var(--ink); border: 1px solid var(--line); margin: auto; max-width: min(480px, calc(100vw - 32px)); }
+.error-log-dialog::backdrop { background: var(--backdrop); }
+
+.scan-input-group { min-width: 0; width: 100%; }
+.location-suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; max-height: 150px; overflow-y: auto; }
+.location-suggestions button { min-height: 44px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font-size: 13px; cursor: pointer; }
+.location-suggestions button[aria-selected="true"] { border-color: var(--green); background: var(--green-wash); }
+.location-format-hint { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.error-log-dialog .dialog-actions > * { min-width: 0; flex: 1; }

@@ -6,7 +6,8 @@ import type { MessageKey } from "@/i18n/messages";
 import { CaseTimeline, type CaseTimelineEvent, type CaseTimelineMessage } from "@/components/case-timeline";
 import { elapsedWorkingMinutes, type WorkingHours } from "@/domain/working-hours";
 import { buildErrorLogHref, errorLogBaseUrl, type ErrorLogItem } from "@/components/error-log-link";
-import { removePending } from "@/components/error-log-reminders";
+import { useErrorLogUser } from "@/components/error-log-reminders";
+import { removePending } from "@/components/error-log-storage";
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
 
@@ -59,6 +60,7 @@ export function CaseDetailView({
   afterTimeline?: ReactNode;
   errorLog?: { caseId?: string; items: ReadonlyArray<ErrorLogItem> };
 }) {
+  const errorLogUser = useErrorLogUser();
   const errorLogHref = errorLog ? buildErrorLogHref(errorLogBaseUrl, orderNumber, errorLog.items, errorLog.caseId) : null;
   return (
     <section
@@ -80,7 +82,7 @@ export function CaseDetailView({
       <div className={linesClassName} aria-label={tr("reportedItems")}>{lines}</div>
       {afterLines}
       {errorLogHref ? (
-        <a className="secondary-button case-error-log-link" href={errorLogHref} target="_blank" rel="noopener noreferrer" onClick={() => { if (errorLog?.caseId) removePending(errorLog.caseId); }}>{tr("openErrorLog")}</a>
+        <a className="secondary-button case-error-log-link" href={errorLogHref} target="_blank" rel="noopener noreferrer" onClick={() => { if (errorLog?.caseId) removePending(errorLogUser, errorLog.caseId); }}>{tr("openErrorLog")}</a>
       ) : null}
       {showTimeline ? (
         <section className="case-timeline-section" aria-label={tr("caseTimeline")}>
