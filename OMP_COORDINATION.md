@@ -17,8 +17,8 @@ The director owns scope, material product decisions, final verification, and rel
 
 ## Cost-reduction batch (2026-10-08, superseded by native lifecycle correction)
 - Baseline: `72bbc47`. Implementation branch: `codex/railway-cost-reduction`.
-- Worktree: `/Users/komorinokage/.codex/worktrees/railway-cost-reduction/ShortPickException`.
-- Run directory: `/Users/komorinokage/.codex/omp-runs/shortpick-cost-reduction-20261008`.
+- Worktree: the local task worktree (outside this repository).
+- Run directory: the private local task run directory.
 - Manager and substantive workers: `opencode-go/muse-spark-1.3-contributor` via the task tool. File ownership: infra → `scripts/railway-test-env.*` + `docs/TEST_ENV_RUNBOOK.md` + guard test; frontend → `auth-app.tsx`, `notification-center.tsx`, `use-visibility-polling.ts` + test; config → `.railway/railway.ts` push-delivery stanza + `scripts/push-worker.ts` + `src/server/push-worker-loop.ts` + test; manager → `package.json` shared edits, `DEVELOPMENT_PLAN.md`, coordination, gates.
 - Scope: on-demand test-env start/stop/status scripts + runbook; visibility/offline-gated badge+notification polling; push-delivery reconciled as continuous `push:worker`. No production serverless/sleep changes; no merges, pushes, deployments, or live mutations. Older batch details below are superseded, retained as history.
 - Result: commits `4ffd620` + `07821a3` + `5135e31`; handoff `handoff.md`, signal `review_ready`. Prior verification-batch notes below are historical, not current.
@@ -40,6 +40,6 @@ The Codex app must remain running and the workstation available for local schedu
 
 - Prior OMP native-lifecycle and repair handoffs were independently reviewed; unsupported completion claims were not accepted. Root took integration and live/release ownership after unattended coordinator inbox findings remained unprocessed.
 - Shell worker: dispatcher, bounded runner, shell fixtures, actual child/descendant tests. State worker: strict snapshot helper, guard, state/guard tests and pagination. Independent explorer: read-only review against the reported findings. All workers preserved shared edits; only root may perform the final live cycle and release.
-- Durable final evidence: `/Users/komorinokage/.codex/omp-runs/shortpick-cost-reduction-20261008/native-lifecycle-final-repair-20261009-0538`. Release authorized by the user after checks pass; no additional approval required.
+- Durable final evidence: the private local verification directory. Release authorized by the user after checks pass; no additional approval required.
 
 - Final root acceptance: candidate `2d333e0`, all gates and live roundtrip verified. Test left parked. Docs-only proof commit follows; tested script bytes remain identical. User-authorized merge/push/production web autodeploy follows after clean-tree checks. Final release IDs/CI are stored in the durable external handoff to avoid triggering extra deployments solely to log deployment IDs.
