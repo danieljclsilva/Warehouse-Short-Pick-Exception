@@ -7,6 +7,7 @@ import { useLiveRefresh } from "@/components/use-live-refresh";
 import type { CaseTimelineEvent, CaseTimelineMessage } from "@/components/case-timeline";
 import type { WorkingHours } from "@/domain/working-hours";
 import { CaseDetailView, CaseSummaryCard, formatCaseElapsedTime } from "@/components/case-detail-view";
+import { ErrorLogPrompt, ErrorLogReminderStrip, type ErrorLogPromptEntry } from "@/components/error-log-reminders";
 import { SharedCaseLineCard } from "@/components/case-line-card";
 import { PaginationControls } from "@/components/pagination-controls";
 
@@ -172,6 +173,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
   const [stageConfirm, setStageConfirm] = useState(false);
   const [actionNotice, setActionNotice] = useState("");
   const [caseMessage, setCaseMessage] = useState("");
+  const [errorLogPrompt, setErrorLogPrompt] = useState<ErrorLogPromptEntry | null>(null);
   // Success confirmations dismiss themselves; errors stay until the next action.
   useEffect(() => {
     if (!actionNotice) return;
@@ -372,6 +374,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
     }
     if (!response.ok || !body.case) throw new Error(tr("caseCreateError"));
     setActiveCase(body.case);
+    setErrorLogPrompt({ caseId: body.case.id, orderNumber: body.case.orderNumber, items: [{ location: location.trim().toUpperCase(), sku: sku.trim().toUpperCase() }] });
     await loadOpenCaseTabs();
     setPendingOrder("");
     setOrderNumber("");
@@ -404,6 +407,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
         return;
       }
       if (!response.ok) throw new Error(tr("lineCreateError"));
+      setErrorLogPrompt({ caseId: activeCase.id, orderNumber: activeCase.orderNumber, items: [{ location: location.trim().toUpperCase(), sku: sku.trim().toUpperCase() }] });
       setDuplicateLine(null);
       setLocation("");
       setSku("");
@@ -441,6 +445,8 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
 
   return (
     <div className="picker-workflow">
+      <ErrorLogReminderStrip tr={tr} />
+      <ErrorLogPrompt tr={tr} entry={errorLogPrompt} onDone={() => setErrorLogPrompt(null)} />
       {error && <p className="case-alert" role="alert">{error}</p>}
       {actionNotice && <p className="check-notice" role="status">{actionNotice}</p>}
       {canReportShortPick && <section className="order-lookup-panel" aria-labelledby="report-short-pick-title">
@@ -467,6 +473,7 @@ export function PickerWorkflow({ locale, tr, userId, canReportShortPick, canView
           titleId="case-detail-title"
           tr={tr}
           orderNumber={displayCase.orderNumber}
+          errorLog={displayCase.id ? { caseId: displayCase.id, items: displayCase.lines.map((line) => ({ location: line.location, sku: line.sku })) } : undefined}
           phaseLabel={tr("casePhase", { phase: phaseLabel(displayCase.phase, tr) })}
           summary={<>
             <p className="case-physical-state">{tr("physicalState", { state: physicalStateLabel(displayCase.physicalState, tr) })}</p>

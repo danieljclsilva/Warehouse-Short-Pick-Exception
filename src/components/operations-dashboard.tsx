@@ -513,6 +513,7 @@ export function OperationsDashboard({ tr, locale, canCreateManual, canMessage, c
           titleId="case-drawer-title"
           className={styles.drawerDetail}
           orderNumber={selected.orderNumber}
+          errorLog={{ caseId: selected.id, items: (selected.lines ?? []).map((line) => ({ location: line.location, sku: line.sku })) }}
           phaseLabel={selected.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}
           headingActions={<span className={`case-badges ${styles.caseStatusBadge}`}>
             <CaseStatusBadge status={aggregateCaseDisplayStatus(selected.phase, selected.lines, selected.lineProjections)} tr={tr} />

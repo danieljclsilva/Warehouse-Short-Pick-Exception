@@ -343,6 +343,7 @@ export function CheckWorkflow({ locale, tr, canViewAvailable, canClaim, canCompl
       titleId="check-case-title"
       tr={tr}
       orderNumber={detail.orderNumber}
+      errorLog={{ caseId: detail.id, items: detail.lines.map((line) => ({ location: line.location, sku: line.sku })) }}
       phaseLabel={detail.phase === "CLOSED" ? tr("caseClosed") : detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}
       headingActions={<span className="case-badges"><CaseStatusBadge status={aggregateCaseDisplayStatus(detail.phase, detail.lines)} tr={tr} /><span className="case-phase">{detail.phase === "CLOSED" ? tr("caseClosed") : detail.phase === "STAGED" ? tr("phaseStaged") : tr("phasePicking")}</span></span>}
       summary={<>

@@ -298,6 +298,7 @@ export function DeepCaseView({ tr, locale = "en", data, lineId, canViewMessages,
       headingRef={headingRef}
       tabIndex={-1}
       orderNumber={data.orderNumber}
+      errorLog={{ caseId: data.id, items: lines.map((line) => ({ location: line.location, sku: line.sku })) }}
       phaseLabel={data.phase === "STAGED" ? tr("phaseStaged") : data.phase === "CLOSED" ? tr("caseClosed") : tr("phasePicking")}
       headingActions={closed ? <span className="case-badges"><span className="case-status-badge case-status-done">{tr("caseClosedBadge")}</span></span> : undefined}
       summary={<>

@@ -5,6 +5,8 @@ import type { MessageKey } from "@/i18n/messages";
 
 import { CaseTimeline, type CaseTimelineEvent, type CaseTimelineMessage } from "@/components/case-timeline";
 import { elapsedWorkingMinutes, type WorkingHours } from "@/domain/working-hours";
+import { buildErrorLogHref, errorLogBaseUrl, type ErrorLogItem } from "@/components/error-log-link";
+import { removePending } from "@/components/error-log-reminders";
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
 
@@ -31,6 +33,7 @@ export function CaseDetailView({
   messageComposer,
   showTimeline = true,
   afterTimeline,
+  errorLog,
 }: {
   tr: Translator;
   id?: string;
@@ -54,7 +57,9 @@ export function CaseDetailView({
   messageComposer?: ReactNode;
   showTimeline?: boolean;
   afterTimeline?: ReactNode;
+  errorLog?: { caseId?: string; items: ReadonlyArray<ErrorLogItem> };
 }) {
+  const errorLogHref = errorLog ? buildErrorLogHref(errorLogBaseUrl, orderNumber, errorLog.items, errorLog.caseId) : null;
   return (
     <section
       ref={panelRef}
@@ -74,6 +79,9 @@ export function CaseDetailView({
       {showLinesHeading ? <h3 className="case-detail-section-title">{tr("reportedItems")}</h3> : null}
       <div className={linesClassName} aria-label={tr("reportedItems")}>{lines}</div>
       {afterLines}
+      {errorLogHref ? (
+        <a className="secondary-button case-error-log-link" href={errorLogHref} target="_blank" rel="noopener noreferrer" onClick={() => { if (errorLog?.caseId) removePending(errorLog.caseId); }}>{tr("openErrorLog")}</a>
+      ) : null}
       {showTimeline ? (
         <section className="case-timeline-section" aria-label={tr("caseTimeline")}>
           <h3>{tr("caseTimeline")}</h3>
