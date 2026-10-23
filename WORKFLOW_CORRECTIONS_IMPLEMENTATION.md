@@ -6,7 +6,7 @@ Owner: Codex coordinates and reviews; OMP implements the ordered packages below.
 
 You are not alone in this checkout. Preserve existing changes to DEVELOPMENT_PLAN.md, WORKFLOW_REVIEW_2026-10-11.md, and the picker-assignment regression test. Do not revert others' changes. Do not commit, push, deploy, change Railway configuration, inspect credentials, send real push notifications, or change test-environment service lifecycle scripts. Use only the guarded local PostgreSQL test environment via `scripts/with-test-env.sh`; never source production `.env`.
 
-Read AGENTS.md and the product source of truth first. Read relevant installed Next.js guides in `node_modules/next/dist/docs/` before changing Next.js code. For React changes, read `/Users/komorinokage/.codex/plugins/cache/openai-curated-remote/build-web-apps/0.1.2/skills/react-best-practices/SKILL.md`, applying functional state updates, cleanup of async effects, and no duplicate case-detail screens. No unnecessary dependency or broad refactor.
+Read AGENTS.md and the product source of truth first. Read relevant installed Next.js guides in `node_modules/next/dist/docs/` before changing Next.js code. For React changes, read the installed `build-web-apps:react-best-practices` skill, applying functional state updates, cleanup of async effects, and no duplicate case-detail screens. No unnecessary dependency or broad refactor.
 
 Use strict TypeScript, existing centralized enums/permissions, server authorization, case-row locking, atomic state/event/audit/notification transactions, and tracked migrations for schema changes. All user-facing text must be in the EN/NL/PL/ES dictionaries with English fallback. Operational identifiers are never translated. Session semantics do not change.
 

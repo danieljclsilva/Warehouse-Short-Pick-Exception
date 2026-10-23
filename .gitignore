@@ -16,6 +16,26 @@ next-env.d.ts
 *.p12
 *.sqlite
 *.sqlite3
+*.pfx
+*.jks
+.pgpass
+age-identity*.txt
+age-key*.txt
+
+# Private runtime data and local audit/browser artifacts
+/uploads/
+/backups/
+/playwright-report/
+/test-results/
+/railway-plan*.json
+/gitleaks*.json
+*.dump
+*.dump.age
+*.dump.age.manifest.json
+*.backup
+*.sql.gz
+*.har
+*.log
 
 # Local tooling
 .DS_Store

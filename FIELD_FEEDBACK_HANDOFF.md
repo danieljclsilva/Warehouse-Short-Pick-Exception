@@ -10,7 +10,7 @@ Updated: 2026-09-28. This is a continuation note for the approved sixteen-item w
 
 ## Exact repository state
 
-The main checkout `/Users/komorinokage/Developer/ShortPickException` is clean on `codex/field-feedback` at `a02c9a3`. It contains the approved plan and Wave 0 contracts, the notification slice, and the iOS scanner fallback. No field-feedback deployment has been made.
+The main checkout (repository root) is clean on `codex/field-feedback` at `a02c9a3`. It contains the approved plan and Wave 0 contracts, the notification slice, and the iOS scanner fallback. No field-feedback deployment has been made.
 
 | Worktree | Branch | State |
 | --- | --- | --- |
