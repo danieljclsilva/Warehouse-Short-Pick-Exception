@@ -843,6 +843,14 @@ becomes:
 03.AA.1
 ```
 
+Assisted location entry (amended 2026-10-23):
+
+- Format recognizable rack input such as `03aa1` as `03.AA.1`, with the same normalization for typed input, scans and server writes.
+- Support hall/backwall names such as `H.A/BACKWALL1.01` and `H.B/BACKWALL1.01`, and endcaps with or without a bay letter, such as `H.A/A ENDCAP -1` and `H.A/ENDCAP -1`. Preserve the bay letter when present.
+- Offer selectable format completions with keyboard and touch support. These are format suggestions, not a verified inventory of warehouse locations.
+- Keep older and unrecognized location names usable, trimmed and uppercased. Do not infer a missing hall/bay, rewrite historical records, or silently merge different locations.
+- Do not require a live warehouse-system connection or a barcode for manual entry.
+
 ## SKU
 
 Allow:
@@ -3383,3 +3391,12 @@ The software should model one operational truth:
 > The order moves through the warehouse as one physical object, while its individual shortages may be investigated independently.
 
 Everything else—permissions, responsibility, notifications, checks, staging, analytics and configuration—should support that model without making the picker workflow unnecessarily complicated.
+
+
+# 104. Optional External Error Log (2026-10-23)
+
+An optional one-way form handoff supports operational data collection. When a valid HTTPS `NEXT_PUBLIC_ERROR_LOG_URL` is configured at build time, authorized case views may open it with `order`, paired repeated `loc`/`sku`, and `case` query parameters. Reporting a shortage may offer Log now or Later. Only the newly reported line is sent by that prompt; the full-case link sends its distinct location/SKU pairs.
+
+The receiving app owns submission, storage and subsequent processing. ShortPick does not require a receipt or saved-record confirmation, and opening a link must not be presented as proof of saving a record. This handoff must never block reporting, staging or closing a case.
+
+Deferred reminders are optional, local to the authenticated user on that browser, limited to twenty cases and seven days, and cleared on explicit logout. Opening a new line must preserve earlier deferred lines on the same case. Stored browser data is untrusted and must be validated before rendering. Prompts support keyboard focus containment and Escape dismissal. No database, warehouse-stock or Odoo integration is introduced.

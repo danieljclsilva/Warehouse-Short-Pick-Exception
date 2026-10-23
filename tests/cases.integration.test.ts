@@ -63,6 +63,25 @@ describeDatabase("Phase 2 case workflow against PostgreSQL", () => {
     await closeDb();
   });
 
+  it("stores canonical typed locations and applies duplicate checks to the canonical pair", async () => {
+    const orderNumber = `99${runOrder}`;
+    const response = await createCaseRoute(request("/api/cases", "POST", {
+      orderNumber, firstLine: { location: "3aa1", sku: " mixed-case ", quantity: 1 },
+    }, pickerCookie));
+    expect(response.status).toBe(201);
+    const created = (await response.json()).case as { id: string; lines: Array<{ location: string; sku: string }> };
+    caseIds.push(created.id);
+    expect(created.lines[0]).toMatchObject({ location: "03.AA.1", sku: "MIXED-CASE" });
+    const duplicate = await addLine(request(`/api/cases/${created.id}/lines`, "POST", {
+      location: "03.AA.1", sku: "mixed-case", quantity: 1,
+    }, pickerCookie), { params: Promise.resolve({ id: created.id }) });
+    expect(duplicate.status).toBe(409);
+    expect((await duplicate.json()).code).toBe("DUPLICATE_LINE");
+    const events = await getDb().select().from(caseEvents).where(and(eq(caseEvents.caseId, created.id), eq(caseEvents.eventType, "SHORT_PICK_LINE_ADDED")));
+    expect(events).toHaveLength(1);
+    expect(events[0]?.details).toMatchObject({ location: "03.AA.1", sku: "MIXED-CASE" });
+  });
+
   it("requires digits-only order identifiers and preserves leading zeroes", async () => {
     expect((await lookup(request("/api/cases/lookup", "POST", { orderNumber: " 000341151 " }, pickerCookie))).status).toBe(200);
     for (const orderNumber of ["NLVW341151", "34 1151", "341151.0", ""]) {

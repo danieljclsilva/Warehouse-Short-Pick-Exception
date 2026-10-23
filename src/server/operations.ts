@@ -1,3 +1,4 @@
+import { normalizeWarehouseLocation } from "@/domain/warehouse-location";
 import { and, desc, eq, gte, inArray, ne, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
@@ -315,8 +316,8 @@ export const repairCaseSchema = z.object({
   physicalState: z.enum(["WITH_PICKER", "SHORT_PICK_HOLD", "OTHER_KNOWN_LOCATION", "UNKNOWN"]).optional(),
   physicalLocation: z.string().trim().max(128).nullable().optional(),
   userId: z.uuid().optional(),
-  location: z.string().trim().min(1).max(128).transform((value) => value.toUpperCase()).optional(),
-  discoveredLocation: z.string().trim().max(128).transform((value) => value.toUpperCase()).nullable().optional(),
+  location: z.string().trim().min(1).max(128).transform(normalizeWarehouseLocation).optional(),
+  discoveredLocation: z.string().trim().max(128).transform(normalizeWarehouseLocation).nullable().optional(),
   lineState: z.enum(lineStateValues).optional(),
   retrievalState: z.enum(retrievalStateValues).optional(),
   responsibleUserId: z.uuid().optional(),

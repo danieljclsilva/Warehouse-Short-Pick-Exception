@@ -1,3 +1,4 @@
+import { normalizeWarehouseLocation } from "@/domain/warehouse-location";
 import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
@@ -14,7 +15,7 @@ import { aggregateCaseDisplayStatus } from "@/domain/case-display-status";
 export const orderNumberSchema = z.string().trim().regex(/^\d+$/, "Order number must contain digits only").max(64);
 export const lookupOrderSchema = z.object({ orderNumber: orderNumberSchema });
 export const addLineSchema = z.object({
-  location: z.string().trim().min(1).max(128).transform((value) => value.toUpperCase()),
+  location: z.string().trim().min(1).max(128).transform(normalizeWarehouseLocation),
   sku: z.string().trim().min(1).max(128).transform((value) => value.toUpperCase()),
   quantity: z.number().int().positive().max(1_000_000),
   confirmDuplicate: z.boolean().default(false),
@@ -353,7 +354,7 @@ export async function createCase(auth: AuthContext, rawOrderNumber: string, conf
 
 export async function addCaseLine(auth: AuthContext, caseId: string, input: z.infer<typeof addLineSchema>) {
   const db = getDb();
-  const normalizedLocation = input.location.trim().toUpperCase();
+  const normalizedLocation = normalizeWarehouseLocation(input.location);
   const normalizedSku = input.sku.trim().toUpperCase();
   const result = await db.transaction(async (tx) => {
     // Locking the case row serializes concurrent line submissions before duplicate detection.

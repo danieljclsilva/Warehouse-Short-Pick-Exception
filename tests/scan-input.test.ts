@@ -22,4 +22,10 @@ describe("normalizeScannedValue", () => {
     expect(normalizeScannedValue("03.aa.1", "location")).toBe("03.AA.1");
     expect(normalizeScannedValue("ff405d-42", "sku")).toBe("FF405D-42");
   });
+  it("uses the shared location formatter for scanner payloads", () => {
+    expect(normalizeScannedValue(" 3aa1 ", "location")).toBe("03.AA.1");
+    expect(normalizeScannedValue("h.a/a endcap - 1", "location")).toBe("H.A/A ENDCAP -1");
+    expect(normalizeScannedValue("old-rack west", "location")).toBe("OLD-RACK WEST");
+  });
+
 });

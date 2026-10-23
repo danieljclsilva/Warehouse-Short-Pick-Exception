@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { clearPending } from "@/components/error-log-storage";
+import { ErrorLogUserScope } from "@/components/error-log-reminders";
 import { PickerWorkflow } from "@/components/picker-workflow";
 import { CaseHistory } from "@/components/case-history";
 import { CheckWorkflow } from "@/components/check-workflow";
@@ -298,6 +300,7 @@ export function DeepCaseView({ tr, locale = "en", data, lineId, canViewMessages,
       headingRef={headingRef}
       tabIndex={-1}
       orderNumber={data.orderNumber}
+      errorLog={{ caseId: data.id, items: lines.map((line) => ({ location: line.location, sku: line.sku })) }}
       phaseLabel={data.phase === "STAGED" ? tr("phaseStaged") : data.phase === "CLOSED" ? tr("caseClosed") : tr("phasePicking")}
       headingActions={closed ? <span className="case-badges"><span className="case-status-badge case-status-done">{tr("caseClosedBadge")}</span></span> : undefined}
       summary={<>
@@ -1004,6 +1007,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
     try {
       const response = await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
       if (!response.ok) throw new Error("Logout failed");
+      if (user) clearPending(user.id);
       setUser(null);
       setIdentifier("");
       setPin("");
@@ -1023,7 +1027,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
 
   if (view === "workspace" && user) {
     return (
-      <>
+      <ErrorLogUserScope key={user.id} userId={user.id}>
         <EnvironmentBanner tr={tr} />
       <div className="app-shell">
         {mobileNavOpen && <button className="nav-scrim" aria-label={tr("closeMenu")} onClick={() => setMobileNavOpen(false)} />}
@@ -1168,7 +1172,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
           </main>
         </div>
         </div>
-      </>
+      </ErrorLogUserScope>
     );
   }
 
