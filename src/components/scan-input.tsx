@@ -256,6 +256,8 @@ export function ScanInput({ value, onChange, onScannedExtra, tr, scanKind, field
           autoComplete={scanKind === "location" ? "off" : inputProps.autoComplete}
           placeholder={inputProps.placeholder ?? (scanKind === "location" ? "00.AA.0" : undefined)}
           role={scanKind === "location" ? "combobox" : inputProps.role}
+          aria-label={inputProps["aria-label"] ?? fieldLabel}
+          aria-describedby={[inputProps["aria-describedby"], scanKind === "location" ? `${suggestionId}-hint` : null].filter(Boolean).join(" ") || undefined}
           aria-autocomplete={scanKind === "location" ? "list" : undefined}
           aria-expanded={scanKind === "location" ? showSuggestions : undefined}
           aria-controls={scanKind === "location" ? suggestionId : undefined}
@@ -280,7 +282,7 @@ export function ScanInput({ value, onChange, onScannedExtra, tr, scanKind, field
           {suggestions.map((location, index) => <button key={location} id={`${suggestionId}-${index}`} type="button" role="option" aria-selected={index === selectedSuggestion} tabIndex={-1}
             onPointerDown={(event) => event.preventDefault()} onClick={() => selectLocation(location)}>{location}</button>)}
         </div>}
-        <small className="location-format-hint">{tr("locationFormatHint")}</small>
+        <small id={`${suggestionId}-hint`} className="location-format-hint">{tr("locationFormatHint")}</small>
       </>}
       </div>
       {open && (
