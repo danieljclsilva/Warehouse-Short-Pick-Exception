@@ -1,3 +1,10 @@
+## External error-log enablement — 2026-10-26
+
+- Configured the production web service's public build-time `NEXT_PUBLIC_ERROR_LOG_URL` from the owner-supplied reply on PR #1. The URL remains in Railway configuration, not source. Added `preserve()` to the tracked web environment declaration so future IaC updates retain it. No application logic, schema, migrations, or warehouse data changed.
+- Production deployment `bd59d642-00b6-42ff-9596-51b2df0ed798` completed successfully. Verified the exact configured destination in the JavaScript served by production and healthy `/health`, `/api/health`, and production environment responses.
+- Validation: 13 focused link/reminder tests, type checking, focused IaC lint and a read-only Railway plan pass; the plan has zero changes and no diagnostics. An outgoing-link check using the actual destination preserves order, paired locations/SKUs, and case ID without sending test records to the receiving app.
+- The receiving app owner remains responsible for form handling and testing prefill on that side. No receipt/save confirmation is required. Existing Phase 8 physical-device and operational acceptance limitations remain open.
+
 ## Optional error-log handoff and assisted locations — 2026-10-23
 
 - Reviewed coworker PR #1 and corrected shared-device reminder exposure, loss of older deferred lines when a later line is opened, malformed nested storage handling, and dialog keyboard behavior. Reminders are keyed by authenticated user, cleared on explicit logout, capped at twenty cases/seven days, and survive same-user reloads. The prompt sends only the latest line; the case link sends distinct pairs. Wording records deferred opening, not successful external submission.
