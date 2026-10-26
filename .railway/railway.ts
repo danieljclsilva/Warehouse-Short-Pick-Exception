@@ -26,7 +26,7 @@ export default defineRailway(() => {
     preDeploy: "npm run db:migrate",
     replicas: { "europe-west4-drams3a": 1 },
     domains: ["shortpickexception.nl"],
-    env: { APP_URL: preserve(), DATABASE_URL: preserve(), PUSH_PRIVATE_KEY: preserve(), PUSH_PUBLIC_KEY: preserve(), PUSH_SUBJECT: preserve(), STORAGE_ACCESS_KEY_ID: ref(profilePhotosAndReports, "ACCESS_KEY_ID"), STORAGE_BUCKET: preserve(), STORAGE_ENDPOINT: preserve(), STORAGE_FORCE_PATH_STYLE: preserve(), STORAGE_REGION: preserve(), STORAGE_SECRET_ACCESS_KEY: ref(profilePhotosAndReports, "SECRET_ACCESS_KEY") },
+    env: { APP_URL: preserve(), NEXT_PUBLIC_ERROR_LOG_URL: preserve(), DATABASE_URL: preserve(), PUSH_PRIVATE_KEY: preserve(), PUSH_PUBLIC_KEY: preserve(), PUSH_SUBJECT: preserve(), STORAGE_ACCESS_KEY_ID: ref(profilePhotosAndReports, "ACCESS_KEY_ID"), STORAGE_BUCKET: preserve(), STORAGE_ENDPOINT: preserve(), STORAGE_FORCE_PATH_STYLE: preserve(), STORAGE_REGION: preserve(), STORAGE_SECRET_ACCESS_KEY: ref(profilePhotosAndReports, "SECRET_ACCESS_KEY") },
   });
   // Cron checks the current Amsterdam schedule, exits outside shift/warm-up,
   // and polls every 5s during the shift. Railway skips overlapping cron runs.
