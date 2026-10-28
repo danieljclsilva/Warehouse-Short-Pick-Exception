@@ -1,3 +1,11 @@
+## Error-log display name and fork collaboration — 2026-10-28
+
+- Adopted coworker commit `df8bbb0a4a093bf3f8945465dcbb797961d2b627` as the branch ancestor, preserving its authorship and exact commit ID. Added `by` (the signed-in actor's display name) to the documented one-way handoff contract. No new API, environment variable, schema, migration, or receiving-app acknowledgement is required.
+- Fixed the profile-name refresh gap: a successful profile save updates the matching current account's display name immediately. Only ID/name are passed back to the shell; account permissions and role are unchanged, failed saves leave identity intact, and late results from another account cannot overwrite the current user's name.
+- Validation: **505 tests / 70 files** pass on a freshly migrated disposable local database; migration consistency, type checking, full lint, production build/worker compilation and critical/security HTTP E2E pass. Added provider/URL tests for the actor name, absent names, stale configured names and accented/query-punctuation names.
+- Chrome QA at `http://127.0.0.1:3220` (1440×1000 and 390×844) verifies profile rename without reload, all three outgoing links, failed-save preservation, correct encoding and settled mobile layout without runtime errors or horizontal overflow. Browser plugin unavailable; existing Playwright and installed Chrome use locally intercepted API fixtures and external navigation. No production or receiving-app test records were created.
+- README now describes the feature-branch/PR/sync workflow. The merge must retain the coworker's commit (no squash/rebase replacement); afterward his current fork head can fast-forward to upstream. Our GitHub account has no write access to the fork, so its owner must complete **Sync fork → Update branch**. Phase 8 physical-device and operational acceptance remain open.
+
 ## External error-log enablement — 2026-10-26
 
 - Configured the production web service's public build-time `NEXT_PUBLIC_ERROR_LOG_URL` from the owner-supplied reply on PR #1. The URL remains in Railway configuration, not source. Added `preserve()` to the tracked web environment declaration so future IaC updates retain it. No application logic, schema, migrations, or warehouse data changed.

@@ -7,10 +7,11 @@ export type ErrorLogItem = { location?: string | null; sku?: string | null };
 
 /**
  * Builds the link that opens the external error log app with the case's order number,
- * its distinct location and SKU pairs (as parallel loc/sku parameters) and the case id prefilled.
+ * its distinct location and SKU pairs (as parallel loc/sku parameters), the case id and
+ * the display name of the signed-in user (as "by") prefilled.
  * Returns null when no valid HTTPS base URL is configured.
  */
-export function buildErrorLogHref(baseUrl: string | undefined, orderNumber: string, items: ReadonlyArray<ErrorLogItem>, caseId?: string): string | null {
+export function buildErrorLogHref(baseUrl: string | undefined, orderNumber: string, items: ReadonlyArray<ErrorLogItem>, caseId?: string, loggedBy?: string): string | null {
   const base = baseUrl?.trim();
   if (!base) return null;
   let url: URL;
@@ -24,6 +25,7 @@ export function buildErrorLogHref(baseUrl: string | undefined, orderNumber: stri
   url.searchParams.delete("loc");
   url.searchParams.delete("sku");
   url.searchParams.delete("case");
+  url.searchParams.delete("by");
   const seen = new Set<string>();
   for (const item of items) {
     const location = normalizeWarehouseLocation(item.location ?? "");
@@ -35,5 +37,7 @@ export function buildErrorLogHref(baseUrl: string | undefined, orderNumber: stri
     url.searchParams.append("sku", sku);
   }
   if (caseId) url.searchParams.set("case", caseId);
+  const by = loggedBy?.trim();
+  if (by) url.searchParams.set("by", by);
   return url.toString();
 }

@@ -26,7 +26,7 @@ Use Node.js 22, npm, and PostgreSQL. Work with a local development database.
 
 An administrator creates invitations for additional users. Environment variables for optional storage, push notifications, backups, and administrator recovery are documented in [`.env.example`](./.env.example).
 
-To enable the optional external error-log handoff, set `NEXT_PUBLIC_ERROR_LOG_URL` before building. The destination receives order numbers, locations, SKUs, and a case identifier. Leave it blank to disable the handoff. This URL is public browser configuration; never include credentials or secret query parameters.
+To enable the optional external error-log handoff, set `NEXT_PUBLIC_ERROR_LOG_URL` before building. The destination receives order numbers, locations, SKUs, a case identifier, and the signed-in user’s display name as `by`. This is the person opening the error log, who may differ from the original reporter. Leave it blank to disable the handoff. This URL is public browser configuration; never include credentials or secret query parameters.
 
 ## Checks
 
@@ -42,6 +42,12 @@ npm run db:check
 ```
 
 `db:check` uses `.env`; test commands use `.env.test`. CI also runs backup, lifecycle-script, end-to-end, and secret-scanning checks.
+
+## Fork collaboration
+
+Treat this upstream repository's `main` as the shared source of truth. Fork owners should sync their `main` before starting work, create a feature branch, and open a pull request back to upstream. Enable maintainer edits when collaborators should be able to update that PR branch.
+
+After the upstream PR merges, the fork owner can use GitHub's **Sync fork → Update branch**. When incorporating commits already made on a fork's `main`, preserve their original commit IDs with a merge commit so that fork can fast-forward afterward. Do not force-sync away unmerged work; incorporate those commits first. Repository owners still control write access to their own forks.
 
 ## Public repository safety
 

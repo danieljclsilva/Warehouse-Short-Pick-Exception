@@ -8,13 +8,20 @@ export type { ErrorLogPromptEntry } from "@/components/error-log-storage";
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
 const ErrorLogUserContext = createContext<string>("");
+const ErrorLogUserNameContext = createContext<string>("");
 export const useErrorLogUser = () => useContext(ErrorLogUserContext);
+/** Display name of the signed-in user, passed to the error log as "logged by". */
+export const useErrorLogUserName = () => useContext(ErrorLogUserNameContext);
 
-export function ErrorLogUserScope({ userId, children }: { userId: string; children: ReactNode }) {
+export function ErrorLogUserScope({ userId, displayName = "", children }: { userId: string; displayName?: string; children: ReactNode }) {
   useEffect(() => {
     discardUnscopedPending();
   }, [userId]);
-  return <ErrorLogUserContext.Provider value={userId}>{children}</ErrorLogUserContext.Provider>;
+  return (
+    <ErrorLogUserContext.Provider value={userId}>
+      <ErrorLogUserNameContext.Provider value={displayName}>{children}</ErrorLogUserNameContext.Provider>
+    </ErrorLogUserContext.Provider>
+  );
 }
 
 function usePendingErrorLogs(userId: string) {
@@ -37,9 +44,10 @@ function usePendingErrorLogs(userId: string) {
 
 export function ErrorLogReminderStrip({ tr }: { tr: Translator }) {
   const userId = useErrorLogUser();
+  const userName = useErrorLogUserName();
   const pending = usePendingErrorLogs(userId);
   const linked = pending.flatMap((entry) => {
-    const href = buildErrorLogHref(errorLogBaseUrl, entry.orderNumber, entry.items, entry.caseId);
+    const href = buildErrorLogHref(errorLogBaseUrl, entry.orderNumber, entry.items, entry.caseId, userName);
     return href ? [{ entry, href }] : [];
   });
   if (!userId || linked.length === 0) return null;
@@ -56,10 +64,11 @@ export function ErrorLogReminderStrip({ tr }: { tr: Translator }) {
 
 export function ErrorLogPrompt({ tr, entry, onDone }: { tr: Translator; entry: ErrorLogPromptEntry | null; onDone: () => void }) {
   const userId = useErrorLogUser();
+  const userName = useErrorLogUserName();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const doneRef = useRef(onDone);
   useEffect(() => { doneRef.current = onDone; });
-  const href = entry ? buildErrorLogHref(errorLogBaseUrl, entry.orderNumber, entry.items, entry.caseId) : null;
+  const href = entry ? buildErrorLogHref(errorLogBaseUrl, entry.orderNumber, entry.items, entry.caseId, userName) : null;
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!entry || !href || !userId || !dialog) return;

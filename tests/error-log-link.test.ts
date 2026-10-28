@@ -43,4 +43,18 @@ describe("buildErrorLogHref", () => {
     expect(url.searchParams.get("view")).toBe("research");
   });
 
+  it("passes the signed-in user's name as by, and omits it when empty", () => {
+    const withName = new URL(buildErrorLogHref(BASE, "172024", [{ location: "01.AA.1", sku: "X" }], "case-1", " Natalia Altin ")!);
+    expect(withName.searchParams.get("by")).toBe("Natalia Altin");
+    const without = new URL(buildErrorLogHref(BASE, "172024", [{ location: "01.AA.1", sku: "X" }], "case-1", "  ")!);
+    expect(without.searchParams.has("by")).toBe(false);
+  });
+  it("replaces stale names and safely encodes accented names and query punctuation", () => {
+    const name = "Zoë & Łukasz + Ana #1";
+    const url = new URL(buildErrorLogHref(`${BASE}?by=old&by=other`, "172024", [], "case-1", name)!);
+    expect(url.searchParams.getAll("by")).toEqual([name]);
+    expect(url.hash).toBe("");
+    expect(new URL(buildErrorLogHref(`${BASE}?by=old`, "172024", [])!).searchParams.has("by")).toBe(false);
+  });
+
 });

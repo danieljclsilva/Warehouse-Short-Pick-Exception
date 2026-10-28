@@ -16,9 +16,9 @@ type Profile = {
   permissions?: string[];
   photoUrl?: string | null;
 };
-type Props = { locale: Locale; tr: (key: MessageKey, values?: Record<string, string>) => string; onLanguageChange: (locale: Locale) => void };
+type Props = { locale: Locale; tr: (key: MessageKey, values?: Record<string, string>) => string; onLanguageChange: (locale: Locale) => void; onProfileSaved?: (profile: Pick<Profile, "id" | "displayName">) => void };
 
-export function ProfilePanel({ locale, tr, onLanguageChange }: Props) {
+export function ProfilePanel({ locale, tr, onLanguageChange, onProfileSaved }: Props) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [name, setName] = useState("");
   const [photo, setPhoto] = useState<File | null>(null);
@@ -54,6 +54,7 @@ export function ProfilePanel({ locale, tr, onLanguageChange }: Props) {
       const body = await response.json() as { profile?: Profile; error?: string };
       if (!response.ok || !body.profile) throw new Error(body.error || tr("profileSaveError"));
       setProfile(body.profile); setName(body.profile.displayName); setNotice(tr("profileSaved"));
+      onProfileSaved?.({ id: body.profile.id, displayName: body.profile.displayName });
     } catch (cause) { setError(cause instanceof Error ? cause.message : tr("unknownError")); }
     finally { setBusy(false); }
   };
