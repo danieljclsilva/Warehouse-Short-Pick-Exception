@@ -3395,7 +3395,7 @@ Everything else—permissions, responsibility, notifications, checks, staging, a
 
 # 104. Optional External Error Log (2026-10-23)
 
-An optional one-way form handoff supports operational data collection. When a valid HTTPS `NEXT_PUBLIC_ERROR_LOG_URL` is configured at build time, authorized case views may open it with `order`, paired repeated `loc`/`sku`, and `case` query parameters. Reporting a shortage may offer Log now or Later. Only the newly reported line is sent by that prompt; the full-case link sends its distinct location/SKU pairs.
+An optional one-way form handoff supports operational data collection. When a valid HTTPS `NEXT_PUBLIC_ERROR_LOG_URL` is configured at build time, authorized case views may open it with `order`, paired repeated `loc`/`sku`, `case`, and `by` (the signed-in user’s display name) query parameters. The name identifies the person opening the error log, who may differ from the original reporter. Successful profile name edits must refresh this shared identity immediately, without requiring a page reload. Reporting a shortage may offer Log now or Later. Only the newly reported line is sent by that prompt; the full-case link sends its distinct location/SKU pairs.
 
 The receiving app owns submission, storage and subsequent processing. ShortPick does not require a receipt or saved-record confirmation, and opening a link must not be presented as proof of saving a record. This handoff must never block reporting, staging or closing a case.
 

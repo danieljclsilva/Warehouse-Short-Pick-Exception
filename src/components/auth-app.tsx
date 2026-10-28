@@ -1074,7 +1074,9 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
             {activeSection === "configuration" && allowedNavigation.some((item) => item.key === "configuration") ? (
               <ConfigurationPanel tr={tr} locale={locale} role={user.role} />
             ) : activeSection === "profile" ? (
-              <ProfilePanel locale={locale} tr={tr} onLanguageChange={changeLocale} />
+              <ProfilePanel locale={locale} tr={tr} onLanguageChange={changeLocale} onProfileSaved={(profile) => {
+                setUser((current) => current?.id === profile.id ? { ...current, displayName: profile.displayName } : current);
+              }} />
             ) : activeSection === "users" && allowedNavigation.some((item) => item.key === "users") ? (
               <>{user.permissions.includes("VIEW_USERS") || user.role === "ADMIN" ? <UserManagement actorId={user.id} actorRole={user.role} actorPermissions={user.permissions} tr={tr} /> : null}
                 {user.permissions.includes("APPROVE_PROFILE_PHOTO") || user.role === "ADMIN" ? <PhotoApproval locale={locale} tr={tr} onQueueChange={setPendingPhotoCount} /> : null}</>
