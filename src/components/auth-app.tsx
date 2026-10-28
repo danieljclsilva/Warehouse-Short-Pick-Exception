@@ -1027,7 +1027,7 @@ export function AuthApp({ initialInviteToken = "", initialView = "login" }: Auth
 
   if (view === "workspace" && user) {
     return (
-      <ErrorLogUserScope key={user.id} userId={user.id}>
+      <ErrorLogUserScope key={user.id} userId={user.id} displayName={user.displayName}>
         <EnvironmentBanner tr={tr} />
       <div className="app-shell">
         {mobileNavOpen && <button className="nav-scrim" aria-label={tr("closeMenu")} onClick={() => setMobileNavOpen(false)} />}

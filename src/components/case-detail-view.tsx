@@ -6,7 +6,7 @@ import type { MessageKey } from "@/i18n/messages";
 import { CaseTimeline, type CaseTimelineEvent, type CaseTimelineMessage } from "@/components/case-timeline";
 import { elapsedWorkingMinutes, type WorkingHours } from "@/domain/working-hours";
 import { buildErrorLogHref, errorLogBaseUrl, type ErrorLogItem } from "@/components/error-log-link";
-import { useErrorLogUser } from "@/components/error-log-reminders";
+import { useErrorLogUser, useErrorLogUserName } from "@/components/error-log-reminders";
 import { removePending } from "@/components/error-log-storage";
 
 type Translator = (key: MessageKey, values?: Record<string, string>) => string;
@@ -61,7 +61,8 @@ export function CaseDetailView({
   errorLog?: { caseId?: string; items: ReadonlyArray<ErrorLogItem> };
 }) {
   const errorLogUser = useErrorLogUser();
-  const errorLogHref = errorLog ? buildErrorLogHref(errorLogBaseUrl, orderNumber, errorLog.items, errorLog.caseId) : null;
+  const errorLogUserName = useErrorLogUserName();
+  const errorLogHref = errorLog ? buildErrorLogHref(errorLogBaseUrl, orderNumber, errorLog.items, errorLog.caseId, errorLogUserName) : null;
   return (
     <section
       ref={panelRef}

@@ -43,4 +43,10 @@ describe("buildErrorLogHref", () => {
     expect(url.searchParams.get("view")).toBe("research");
   });
 
+  it("passes the signed-in user's name as by, and omits it when empty", () => {
+    const withName = new URL(buildErrorLogHref(BASE, "172024", [{ location: "01.AA.1", sku: "X" }], "case-1", " Natalia Altin ")!);
+    expect(withName.searchParams.get("by")).toBe("Natalia Altin");
+    const without = new URL(buildErrorLogHref(BASE, "172024", [{ location: "01.AA.1", sku: "X" }], "case-1", "  ")!);
+    expect(without.searchParams.has("by")).toBe(false);
+  });
 });
